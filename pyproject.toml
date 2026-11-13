@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "radio-bench"
+version = "0.1.0"
+description = "Harbor 2x2 ablation benchmark for radio interferometric reduction"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "harbor>=0.20",
+    "numpy>=1.26",
+    "astropy>=6.0",
+    "scipy>=1.11",
+    "pandas>=2.1",
+    "matplotlib>=3.8",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    "tomli-w>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
+casa = [
+    "casatools==6.7.6.14",
+    "casatasks==6.7.6.14",
+]
+
+[project.scripts]
+radio-bench-podman = "radio_bench.podman_env:main"
+radio-bench-export-skills = "radio_bench.export_skills:main"
+radio-bench-build-tasks = "radio_bench.build_tasks:main"
+radio-bench-analyze = "radio_bench.analysis.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/radio_bench"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+cache_dir = "/var/mnt/fast/radio-bench/pytest_cache"
+testpaths = ["tests"]

@@ -1,0 +1,14 @@
+.pixi
+tasks
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+casa-*.log
+*.last
+*.ms/
+*.ms.flagversions/
+exported_skills/
