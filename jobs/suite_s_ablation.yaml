@@ -1,0 +1,56 @@
+job_name: suite_s_ablation
+jobs_dir: /var/mnt/fast/radio_bench_runs
+n_attempts: 5
+n_concurrent_trials: 2
+retry:
+  max_retries: 2
+  min_wait_sec: 5.0
+  max_wait_sec: 60.0
+  wait_multiplier: 2.0
+environment:
+  type: podman
+  delete: true
+agents:
+- name: claude-code
+  model_name: anthropic/claude-haiku-4-5
+  kwargs:
+    disable_web_search: true
+- name: claude-code
+  model_name: anthropic/claude-sonnet-4-6
+  kwargs:
+    disable_web_search: true
+- name: opencode
+  model_name: nrp/kimi
+  kwargs:
+    base_url: https://ellm.nrp-nautilus.io/v1
+    model_api_key_name: NRP_API_KEY
+    model_api_format: openai_chat_completions
+    disable_web_search: true
+- name: opencode
+  model_name: nrp/glm-5
+  kwargs:
+    base_url: https://ellm.nrp-nautilus.io/v1
+    model_api_key_name: NRP_API_KEY
+    model_api_format: openai_chat_completions
+    disable_web_search: true
+tasks:
+- path: /var/mnt/fast/radio-bench/tasks/s1_inspect__00_none
+- path: /var/mnt/fast/radio-bench/tasks/s1_inspect__01_skills_raw
+- path: /var/mnt/fast/radio-bench/tasks/s1_inspect__01_skills_casa
+- path: /var/mnt/fast/radio-bench/tasks/s1_inspect__10_tools
+- path: /var/mnt/fast/radio-bench/tasks/s1_inspect__11_full
+- path: /var/mnt/fast/radio-bench/tasks/s1_precal__00_none
+- path: /var/mnt/fast/radio-bench/tasks/s1_precal__01_skills_raw
+- path: /var/mnt/fast/radio-bench/tasks/s1_precal__01_skills_casa
+- path: /var/mnt/fast/radio-bench/tasks/s1_precal__10_tools
+- path: /var/mnt/fast/radio-bench/tasks/s1_precal__11_full
+- path: /var/mnt/fast/radio-bench/tasks/s1_calibrate__00_none
+- path: /var/mnt/fast/radio-bench/tasks/s1_calibrate__01_skills_raw
+- path: /var/mnt/fast/radio-bench/tasks/s1_calibrate__01_skills_casa
+- path: /var/mnt/fast/radio-bench/tasks/s1_calibrate__10_tools
+- path: /var/mnt/fast/radio-bench/tasks/s1_calibrate__11_full
+- path: /var/mnt/fast/radio-bench/tasks/s1_image__00_none
+- path: /var/mnt/fast/radio-bench/tasks/s1_image__01_skills_raw
+- path: /var/mnt/fast/radio-bench/tasks/s1_image__01_skills_casa
+- path: /var/mnt/fast/radio-bench/tasks/s1_image__10_tools
+- path: /var/mnt/fast/radio-bench/tasks/s1_image__11_full

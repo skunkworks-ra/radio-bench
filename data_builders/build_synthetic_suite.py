@@ -217,6 +217,64 @@ def _build_s1_calibrate_checkpoint(
     }
 
 
+def stage_s1_calibrators_ms(cal_checkpoint_ms: Path, calibrators_ms: Path) -> None:
+    """Split calibrator fields from s1_calibrate/input.ms and set PB2017 MODEL_DATA cleanly."""
+    from casatasks import setjy, split
+    from casatools import table
+
+    if calibrators_ms.exists():
+        for root_str, _dirnames, filenames in os.walk(calibrators_ms):
+            root_p = Path(root_str)
+            os.chmod(root_p, 0o755)
+            for fn in filenames:
+                os.chmod(root_p / fn, 0o644)
+        shutil.rmtree(calibrators_ms)
+
+    calibrators_ms.parent.mkdir(parents=True, exist_ok=True)
+    split(
+        vis=str(cal_checkpoint_ms),
+        outputvis=str(calibrators_ms),
+        field=f"{FLUX_CAL_NAME},{PHASE_CAL_NAME}",
+        datacolumn="data",
+        keepflags=True,
+    )
+    setjy(
+        vis=str(calibrators_ms),
+        field=FLUX_CAL_NAME,
+        standard="Perley-Butler 2017",
+        usescratch=True,
+    )
+
+    tb_cal = table()
+    opened = False
+    try:
+        tb_cal.open(str(calibrators_ms), nomodify=False)
+        opened = True
+        fids_cal = tb_cal.getcol("FIELD_ID")
+        model_cal = tb_cal.getcol("MODEL_DATA")
+        non_f0 = fids_cal != 0
+        model_cal[:, :, non_f0] = 0.0 + 0.0j
+        model_cal[0, :, non_f0] = 1.0 + 0.0j
+        model_cal[3, :, non_f0] = 1.0 + 0.0j
+        tb_cal.putcol("MODEL_DATA", model_cal)
+        if "CORRECTED_DATA" in tb_cal.colnames():
+            tb_cal.removecols(["CORRECTED_DATA"])
+    finally:
+        try:
+            if opened:
+                tb_cal.close()
+        finally:
+            tb_cal.done()
+
+    clear_ms_history(calibrators_ms)
+    verify_ms_unlocked(calibrators_ms)
+    for root_str, _dirnames, filenames in os.walk(calibrators_ms):
+        root_p = Path(root_str)
+        os.chmod(root_p, 0o755)
+        for fn in filenames:
+            os.chmod(root_p / fn, 0o644)
+
+
 def _verify_precal_workflow(
     s1_precal_ms: Path,
     masks_npz: Path,
@@ -1503,6 +1561,12 @@ def build_synthetic_suite(
             raise RuntimeError(f"Missing expected output MS: {ms_dir}")
         _assert_history_empty(ms_dir)
         verify_ms_unlocked(ms_dir)
+        if tid == "s1_calibrate":
+            cal_split_dir = out_dir / tid / "calibrators.ms"
+            if not cal_split_dir.exists():
+                raise RuntimeError(f"Missing expected output calibrators.ms: {cal_split_dir}")
+            _assert_history_empty(cal_split_dir)
+            verify_ms_unlocked(cal_split_dir)
         sizes_mb[tid] = _dir_size_mb(out_dir / tid)
 
     elapsed_s = round(time.perf_counter() - t_start, 2)

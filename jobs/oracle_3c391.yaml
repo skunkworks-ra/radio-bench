@@ -1,0 +1,17 @@
+job_name: oracle_3c391
+jobs_dir: /var/mnt/fast/radio_bench_runs
+n_attempts: 1
+n_concurrent_trials: 1
+retry:
+  max_retries: 0
+environment:
+  type: podman
+  delete: true
+agents:
+- name: oracle
+tasks:
+- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_inspect__00_none
+- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_precal__00_none
+- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_calibrate__00_none
+- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_image__00_none
+- path: /var/mnt/fast/radio-bench/tasks/r2_3c391_e2e__00_none

@@ -647,10 +647,28 @@ class TestSuiteSSynthetic:
     def test_suite_s_column_and_stage_invariants(self) -> None:
         for task_id in SUITE_S_TASKS:
             task_dir = SYNTH_ROOT / task_id
-            # calibrators.ms is produced by the agent during precal, never pre-staged in task input dirs
-            assert not (task_dir / "calibrators.ms").exists(), (
-                f"Unexpected pre-staged calibrators.ms in {task_dir}"
-            )
+            cal_split_path = task_dir / "calibrators.ms"
+            if task_id == "s1_calibrate":
+                assert cal_split_path.is_dir(), f"Missing pre-staged calibrators.ms in {task_dir}"
+                _assert_unlocked(cal_split_path)
+                _assert_no_history_leaks(cal_split_path)
+                with _open_table(cal_split_path) as tb_c:
+                    c_cols = set(tb_c.colnames())
+                    c_fids = tb_c.getcol("FIELD_ID")
+                    c_model = tb_c.getcol("MODEL_DATA")
+                assert "DATA" in c_cols and "MODEL_DATA" in c_cols
+                assert "CORRECTED_DATA" not in c_cols
+                c_j1331_par = 0.5 * (
+                    np.abs(c_model[0, :, c_fids == 0]) + np.abs(c_model[3, :, c_fids == 0])
+                )
+                assert abs(float(np.mean(c_j1331_par)) - 7.60) / 7.60 <= 0.015
+                assert np.allclose(c_model[0, :, c_fids == 1], 1.0 + 0.0j)
+                assert np.allclose(c_model[3, :, c_fids == 1], 1.0 + 0.0j)
+                assert np.allclose(c_model[1:3, :, c_fids == 1], 0.0 + 0.0j)
+            else:
+                assert not cal_split_path.exists(), (
+                    f"Unexpected pre-staged calibrators.ms in {task_dir}"
+                )
 
             ms_path = task_dir / "input.ms"
             with _open_table(ms_path) as tb:

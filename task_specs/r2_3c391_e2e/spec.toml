@@ -1,0 +1,15 @@
+task_id = "r2_3c391_e2e"
+suite = "3c391"
+stage = "e2e"
+is_e2e = true
+difficulty = "hard"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "vla", "interferometry"]
+data_dir = "/var/mnt/fast/radio_bench_data/checkpoints/3c391/r2_3c391_e2e"
+input_ms = "/var/mnt/fast/radio_bench_data/checkpoints/3c391/raw/input.ms"
+ground_truth = "/var/mnt/fast/radio_bench_data/checkpoints/3c391/r2_3c391_e2e/ground_truth.json"
+extra_test_files = ["precal_masks.npz"]
+agent_timeout_sec = 3600.0
+verifier_timeout_sec = 900.0
+cpus = 4
+memory_mb = 12288

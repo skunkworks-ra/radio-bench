@@ -1,0 +1,15 @@
+task_id = "r1_3c391_image"
+suite = "3c391"
+stage = "image"
+is_e2e = false
+difficulty = "medium"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "vla", "interferometry"]
+data_dir = "/var/mnt/fast/radio_bench_data/checkpoints/3c391/r1_3c391_image"
+input_ms = "/var/mnt/fast/radio_bench_data/checkpoints/3c391/post_calibrate/input.ms"
+ground_truth = "/var/mnt/fast/radio_bench_data/checkpoints/3c391/r1_3c391_image/ground_truth.json"
+extra_test_files = []
+agent_timeout_sec = 1800.0
+verifier_timeout_sec = 600.0
+cpus = 4
+memory_mb = 12288
