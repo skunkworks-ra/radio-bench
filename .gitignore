@@ -1,14 +1,56 @@
+# Pixi, virtual environments, and compiled Harbor task directories
 .pixi
+.venv
+venv/
+env/
+.env
+.envrc
 tasks
+exported_skills/
+
+# Markdown notes and task prompt specs live in the separate Vault repository
+*.md
+!/README.md
+
+# Python packaging and bytecode
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
 build/
 dist/
 *.egg-info/
-__pycache__/
-*.py[cod]
+.eggs/
+
+# Test, lint, and coverage caches
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# CASA tables, flag backups, caltables, images, and logs
 casa-*.log
 *.last
 *.ms/
 *.ms.flagversions/
-exported_skills/
+*.cal/
+*.G0/
+*.G1/
+*.K0/
+*.B0/
+*.fluxscale/
+*.image/
+*.residual/
+*.model/
+*.pb/
+*.psf/
+*.sumwt/
+*.mask/
+
+# Editor and local agent settings
+.claude/settings.local.json
+.cursorignore
+.cursorindexingignore
+.DS_Store
