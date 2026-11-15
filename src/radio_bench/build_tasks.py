@@ -43,6 +43,8 @@ TOOL_ARMS = frozenset({ARM_TOOLS, ARM_FULL, ARM_ORCHESTRATED})
 AGENT_IMAGE = "${RADIO_BENCH_AGENT_IMAGE:-localhost/radio-bench-agent-base:latest}"
 SIDECAR_IMAGE = "${RADIO_BENCH_SIDECAR_IMAGE:-localhost/radio-bench-mcp-sidecar:latest}"
 VERIFIER_IMAGE = "${RADIO_BENCH_VERIFIER_IMAGE:-localhost/radio-bench-verifier:latest}"
+AGENT_NETWORK_MODE = "pasta"
+VERIFIER_NETWORK_MODE = "none"
 
 MCP_SERVERS: list[dict[str, str]] = [
     {
@@ -104,6 +106,11 @@ class TaskSpec:
     cpus: int
     memory_mb: int
     input_calibrators_ms: Path | None = None
+    verifier_cpus: int | None = None
+
+    @property
+    def effective_verifier_cpus(self) -> int:
+        return self.verifier_cpus if self.verifier_cpus is not None else self.cpus
 
 
 def load_task_spec(spec_dir: Path) -> TaskSpec:
@@ -172,6 +179,7 @@ def load_task_spec(spec_dir: Path) -> TaskSpec:
         cpus=int(raw["cpus"]),
         memory_mb=int(raw["memory_mb"]),
         input_calibrators_ms=input_calibrators_ms,
+        verifier_cpus=int(raw["verifier_cpus"]) if "verifier_cpus" in raw else None,
     )
 
 
@@ -264,16 +272,31 @@ def _write_text_file(dst_file: Path, content: str, *, mode: int = 0o644) -> None
     os.chmod(dst_file, mode)
 
 
+def _build_runtime_env(omp_threads: str) -> dict[str, str]:
+    """Build TMPDIR + OpenMP/BLAS anti-thrashing environment dictionary."""
+    return {
+        "TMPDIR": "/var/tmp",
+        "OMP_NUM_THREADS": omp_threads,
+        "OMP_WAIT_POLICY": "PASSIVE",
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+    }
+
+
 def _build_task_toml_dict(spec: TaskSpec, arm: str) -> dict[str, Any]:
     """Build Harbor 0.25.0 task.toml dictionary for ``(spec, arm)``."""
     variant_id = f"{spec.task_id}__{arm}"
+    omp_threads = str(spec.cpus)
+    ver_cpus = spec.effective_verifier_cpus
+    ver_omp_threads = str(ver_cpus)
+
     env_cfg: dict[str, Any] = {
+        "docker_image": AGENT_IMAGE,
         "cpus": spec.cpus,
         "memory_mb": spec.memory_mb,
         "workdir": "/workspace",
-        "env": {
-            "TMPDIR": "/var/tmp",
-        },
+        "env": _build_runtime_env(omp_threads),
         "healthcheck": {
             "command": "test -f /workspace/.ready",
             "interval_sec": 2.0,
@@ -311,16 +334,13 @@ def _build_task_toml_dict(spec: TaskSpec, arm: str) -> dict[str, Any]:
             "environment_mode": "separate",
             "timeout_sec": spec.verifier_timeout_sec,
             "user": "root",
-            "env": {
-                "TMPDIR": "/var/tmp",
-            },
+            "env": _build_runtime_env(ver_omp_threads),
             "environment": {
-                "cpus": spec.cpus,
+                "docker_image": VERIFIER_IMAGE,
+                "cpus": ver_cpus,
                 "memory_mb": spec.memory_mb,
                 "workdir": "/workspace",
-                "env": {
-                    "TMPDIR": "/var/tmp",
-                },
+                "env": _build_runtime_env(ver_omp_threads),
             },
         },
     }
@@ -331,22 +351,26 @@ def _build_task_toml_dict(spec: TaskSpec, arm: str) -> dict[str, Any]:
 def _build_environment_compose(
     arm: str,
     *,
+    cpus: int,
     has_seed_workspace: bool,
     has_calibrators_ms: bool,
 ) -> dict[str, Any]:
     """Build environment/docker-compose.yaml for ``arm``."""
     has_skills = arm in SKILL_ARMS
     has_tools = arm in TOOL_ARMS
+    runtime_env = _build_runtime_env(str(cpus))
 
     main_volumes = ["./data:/seed_data:ro,z"]
     if has_skills:
         main_volumes.append("./skills:/skills:ro,z")
     if has_seed_workspace:
         main_volumes.append("./seed_workspace:/seed_workspace:ro,z")
-    main_volumes.append("workspace_vol:/workspace")
+    main_volumes.extend(["workspace_vol:/workspace", "agent_tmp:/var/tmp"])
 
     startup_lines = [
         "set -euo pipefail",
+        "mkdir -p /var/tmp/mplconfig",
+        "chmod 1777 /var/tmp /var/tmp/mplconfig",
         "rm -rf /workspace/input.ms /workspace/calibrators.ms /workspace/.ready /workspace/.ws_owned",
         "cp -a --no-preserve=ownership /seed_data/input.ms /workspace/input.ms",
     ]
@@ -403,14 +427,17 @@ def _build_environment_compose(
         ]
     )
 
-    services: dict[str, Any] = {
-        "main": {
-            "image": AGENT_IMAGE,
-            "environment": {"TMPDIR": "/var/tmp"},
-            "command": ["bash", "-lc", "\n".join(startup_lines)],
-            "volumes": main_volumes,
-        }
+    main_service: dict[str, Any] = {
+        "image": AGENT_IMAGE,
+        "network_mode": AGENT_NETWORK_MODE,
+        "environment": dict(runtime_env),
+        "command": ["bash", "-lc", "\n".join(startup_lines)],
+        "volumes": main_volumes,
     }
+    if has_tools:
+        main_service["extra_hosts"] = ["mcp-servers:127.0.0.1"]
+
+    services: dict[str, Any] = {"main": main_service}
 
     if has_tools:
         sidecar_cmd = "\n".join(
@@ -422,32 +449,50 @@ def _build_environment_compose(
                 "exec /opt/casa-venv/bin/python /usr/local/bin/serve-mcp-sidecar.py",
             ]
         )
+        sidecar_env = dict(runtime_env)
+        sidecar_env["RADIO_MCP_HOST"] = "127.0.0.1"
         services["mcp-servers"] = {
             "image": SIDECAR_IMAGE,
-            "environment": {"TMPDIR": "/var/tmp"},
+            "network_mode": "service:main",
+            "environment": sidecar_env,
             "command": ["bash", "-lc", sidecar_cmd],
-            "volumes": ["workspace_vol:/workspace"],
+            "volumes": ["workspace_vol:/workspace", "agent_tmp:/var/tmp"],
         }
 
     return {
         "services": services,
         "volumes": {
             "workspace_vol": {},
+            "agent_tmp": {},
         },
     }
 
 
-def _build_verifier_compose() -> dict[str, Any]:
+def _build_verifier_compose(*, verifier_cpus: int) -> dict[str, Any]:
     """Build isolated tests/docker-compose.yaml."""
+    ver_env = _build_runtime_env(str(verifier_cpus))
     return {
         "services": {
             "main": {
                 "image": VERIFIER_IMAGE,
-                "environment": {"TMPDIR": "/var/tmp"},
-                "command": ["sleep", "infinity"],
-                "volumes": [".:/tests:ro,z"],
+                "network_mode": VERIFIER_NETWORK_MODE,
+                "environment": dict(ver_env),
+                "command": [
+                    "bash",
+                    "-lc",
+                    "mkdir -p /var/tmp/mplconfig && chmod 1777 /var/tmp /var/tmp/mplconfig && exec sleep infinity",
+                ],
+                "volumes": [
+                    ".:/tests:ro,z",
+                    "verifier_ws:/workspace",
+                    "verifier_tmp:/var/tmp",
+                ],
             }
-        }
+        },
+        "volumes": {
+            "verifier_ws": {},
+            "verifier_tmp": {},
+        },
     }
 
 
@@ -566,6 +611,7 @@ def compile_variant(
     )
     env_compose = _build_environment_compose(
         arm,
+        cpus=spec.cpus,
         has_seed_workspace=has_seed_ws,
         has_calibrators_ms=spec.input_calibrators_ms is not None,
     )
@@ -582,6 +628,11 @@ def compile_variant(
     solve_sh = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
+        f'export OMP_NUM_THREADS="${{OMP_NUM_THREADS:-{spec.cpus}}}"\n'
+        'export OMP_WAIT_POLICY="${OMP_WAIT_POLICY:-PASSIVE}"\n'
+        'export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"\n'
+        'export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"\n'
+        'export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"\n'
         "cd /workspace\n"
         "/opt/casa-venv/bin/python /solution/solve.py\n"
     )
@@ -599,11 +650,16 @@ def compile_variant(
     test_sh = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
+        f'export OMP_NUM_THREADS="${{OMP_NUM_THREADS:-{spec.effective_verifier_cpus}}}"\n'
+        'export OMP_WAIT_POLICY="${OMP_WAIT_POLICY:-PASSIVE}"\n'
+        'export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"\n'
+        'export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"\n'
+        'export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"\n'
         "/opt/casa-venv/bin/python /tests/verify.py "
         "--workspace /workspace --tests-dir /tests --log-dir /logs/verifier\n"
     )
     _write_text_file(tests_dir / "test.sh", test_sh, mode=0o755)
-    verifier_compose = _build_verifier_compose()
+    verifier_compose = _build_verifier_compose(verifier_cpus=spec.effective_verifier_cpus)
     _write_text_file(
         tests_dir / "docker-compose.yaml",
         yaml.safe_dump(verifier_compose, sort_keys=False),
@@ -618,7 +674,7 @@ def build_all_tasks(
     skills_dir: Path = DEFAULT_SKILLS_DIR,
     output_dir: Path = DEFAULT_TASKS_DIR,
     skills_mode: str = "both",
-    include_orchestrated: bool = False,
+    include_orchestrated: bool = True,
 ) -> dict[str, Any]:
     """Compile all configured Harbor task directories and prune unselected variants."""
     _validate_exported_skills(skills_dir)
@@ -702,8 +758,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--include-orchestrated",
-        action="store_true",
-        help="Also emit 11_orchestrated on end-to-end tasks.",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Emit 11_orchestrated on end-to-end tasks (default: True).",
     )
     args = parser.parse_args(argv)
 

@@ -1456,3 +1456,144 @@ def test_wave4_parallel_hand_and_calibrator_overflagging_blocked(tmp_path: Path)
     assert rew_cf["bandpass_flatness_score"] == 0.0
     assert rew_cf["fluxscale_score"] == 0.0
     assert rew_cf["passed"] == 0
+
+
+def test_extract_cal_truth_suite_s_and_suite_r_ground_truth() -> None:
+    """Regression check for MF-1, MF-2, SF-4, SF-5 on Suite S and Suite R ground_truth.json."""
+    from radio_bench.grading.cal_metrics import _extract_cal_truth
+
+    for synth_tid in ("s1_calibrate", "s2_e2e_synth"):
+        gt_s = _load_gt(SYNTH_ROOT / synth_tid / "ground_truth.json")
+        ct_s = _extract_cal_truth(gt_s)
+        assert ct_s["is_suite_r"] is False
+        assert ct_s["expected_pcal_flux_jy"] == pytest.approx(2.150366)
+        assert ct_s["pcal_flux_rel_tol"] == pytest.approx(0.05)
+        assert ct_s["excludes_dead_in_retention"] is True
+        assert ct_s["weights"] == {
+            "retention_and_dead_ant": pytest.approx(0.20),
+            "bandpass_flatness": pytest.approx(0.25),
+            "fluxscale_accuracy": pytest.approx(0.25),
+            "target_fidelity": pytest.approx(0.30),
+        }
+
+    for r_tid in ("r1_3c391_calibrate", "r2_3c391_e2e"):
+        gt_r = _load_gt(R3C391_ROOT / r_tid / "ground_truth.json")
+        ct_r = _extract_cal_truth(gt_r)
+        assert ct_r["is_suite_r"] is True
+        assert ct_r["excludes_dead_in_retention"] is False
+        assert ct_r["expected_pcal_flux_jy"] == pytest.approx(2.3)
+        assert ct_r["pcal_flux_rel_tol"] == pytest.approx(0.08)
+        assert ct_r["weights"] == {
+            "retention_and_dead_ant": pytest.approx(0.20),
+            "bandpass_flatness": pytest.approx(0.25),
+            "fluxscale_accuracy": pytest.approx(0.25),
+            "target_fidelity": pytest.approx(0.30),
+        }
+
+    ct_fallback_s = _extract_cal_truth({"suite": "synth"})
+    assert ct_fallback_s["expected_pcal_flux_jy"] == pytest.approx(2.150366)
+    assert ct_fallback_s["excludes_dead_in_retention"] is True
+
+    ct_fallback_r = _extract_cal_truth({"suite": "R"})
+    assert ct_fallback_r["excludes_dead_in_retention"] is False
+
+
+def test_wave6_bandpass_flatness_sparse_rfi_channel_and_branch_cut(tmp_path: Path) -> None:
+    """Regression for Wave 6 E2E bandpass flatness:
+    1. Sparse surviving narrowband RFI cells (2-4 unflagged 110 Jy cells in 99%-flagged ch 29 & 31
+       inside otherwise clean 7.6 Jy rows, previously triggering a +360 deg np.unwrap jump ->
+       177.17 deg RMS and 420.62 deg/100MHz slope) plus a +-180 deg branch-cut global phase offset
+       on J1331+3030 still score bandpass_flatness_score == 1.0.
+    2. Scaled uncalibrated DATA (preserving true 14 ns delays with CORRECTED_DATA != DATA) still
+       scores bandpass_flatness_score == 0.0.
+    """
+    gt_s2 = _load_gt(SYNTH_ROOT / "s2_e2e_synth" / "ground_truth.json")
+
+    # 1. Calibrated MS with sparse surviving RFI cells in ch 29 & 31 + pi branch-cut rotation
+    ws_sparse = tmp_path / "ws_sparse_rfi"
+    ws_sparse.mkdir()
+    shutil.copytree(SYNTH_ROOT / "s1_image" / "input.ms", ws_sparse / "input.ms")
+
+    rng = np.random.default_rng(20261114)
+    tb = casatools.table()
+    tb.open(str(ws_sparse / "input.ms"), nomodify=False)
+    try:
+        fids = tb.getcol("FIELD_ID")
+        a1 = tb.getcol("ANTENNA1")
+        a2 = tb.getcol("ANTENNA2")
+        corr = tb.getcol("CORRECTED_DATA")
+        flg = tb.getcol("FLAG")
+        flgr = tb.getcol("FLAG_ROW")
+
+        j_live = np.flatnonzero((fids == 0) & (a1 != a2) & (a1 != 6) & (a2 != 6) & (~flgr))
+        # Rotate J1331+3030 calibrated visibilities onto +-180 deg branch cut with small 1 deg jitter
+        jitter_rad = np.deg2rad(rng.normal(0.0, 1.0, size=corr[:, :, j_live].shape))
+        corr[:, :, j_live] = corr[:, :, j_live] * np.exp(1j * (math.pi + jitter_rad))
+
+        # Unflag 2 rows in ch 29 (+158 deg) and 4 rows in ch 31 (-108 deg) inside clean rows
+        r29 = j_live[10:12]
+        r31 = j_live[12:16]
+        flg[0, 29, r29] = False
+        flg[3, 29, r29] = False
+        corr[0, 29, r29] = 113.0 * np.exp(1j * math.radians(158.06 - 180.0))
+        corr[3, 29, r29] = 113.0 * np.exp(1j * math.radians(158.06 - 180.0))
+
+        flg[0, 31, r31] = False
+        flg[3, 31, r31] = False
+        corr[0, 31, r31] = 95.0 * np.exp(1j * math.radians(-107.77 - 180.0))
+        corr[3, 31, r31] = 95.0 * np.exp(1j * math.radians(-107.77 - 180.0))
+
+        # Also leave 2 low-amplitude unflagged stray cells in ch 30 (<10% channel support)
+        r30 = j_live[16:18]
+        flg[0, 30, r30] = False
+        flg[3, 30, r30] = False
+        corr[0, 30, r30] = 7.6 * np.exp(1j * math.radians(145.0))
+        corr[3, 30, r30] = 7.6 * np.exp(1j * math.radians(-135.0))
+
+        tb.putcol("CORRECTED_DATA", corr)
+        tb.putcol("FLAG", flg)
+    finally:
+        tb.close()
+        tb.done()
+
+    rew_sp, met_sp = grade_calibrate(
+        ws_sparse,
+        gt_s2,
+        masks_npz_path=SYNTH_ROOT / "s2_e2e_synth" / "true_target_vis.npz",
+        task_id="s2_e2e_synth",
+        scratch_root=tmp_path,
+    )
+    assert met_sp["measured"]["j1331_phase_slope_deg_per_100mhz"] < 5.0
+    assert met_sp["measured"]["j1331_chan_phase_rms_deg"] < 8.0
+    assert rew_sp["bandpass_flatness_score"] == 1.0
+    assert rew_sp["reward"] == 1.0
+
+    # 2. Anti-hacking: scaled uncalibrated DATA (with true 14 ns delays intact) still gets 0.0
+    ws_uncal = tmp_path / "ws_uncal_scaled"
+    ws_uncal.mkdir()
+    shutil.copytree(SYNTH_ROOT / "s1_calibrate" / "input.ms", ws_uncal / "input.ms")
+    casatasks.clearcal(vis=str(ws_uncal / "input.ms"), addmodel=False)
+    tb = casatools.table()
+    tb.open(str(ws_uncal / "input.ms"), nomodify=False)
+    try:
+        raw = tb.getcol("DATA")
+        flg = tb.getcol("FLAG")
+        a1 = tb.getcol("ANTENNA1")
+        a2 = tb.getcol("ANTENNA2")
+        flg[:, :, (a1 == 6) | (a2 == 6)] = True
+        tb.putcol("FLAG", flg)
+        tb.putcol("CORRECTED_DATA", (5.93 * raw).astype(raw.dtype))
+    finally:
+        tb.close()
+        tb.done()
+
+    rew_unc, met_unc = grade_calibrate(
+        ws_uncal,
+        gt_s2,
+        masks_npz_path=SYNTH_ROOT / "s2_e2e_synth" / "true_target_vis.npz",
+        task_id="s2_e2e_synth",
+        scratch_root=tmp_path,
+    )
+    assert met_unc["measured"]["j1331_med_baseline_slope_deg_per_100mhz"] > 50.0
+    assert rew_unc["bandpass_flatness_score"] == 0.0
+    assert rew_unc["passed"] == 0

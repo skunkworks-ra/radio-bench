@@ -119,29 +119,48 @@ def _extract_cal_truth(ground_truth: dict[str, Any]) -> dict[str, Any]:
     top_tols = top_gt.get("tolerances") if isinstance(top_gt.get("tolerances"), dict) else {}
 
     dead_min = float(tols.get("dead_antenna_flagged_min", 0.99))
+    excl_dead_raw = None
+    for mapping in (tols, gt, top_gt):
+        if "target_retention_excludes_dead_antenna" in mapping:
+            excl_dead_raw = mapping["target_retention_excludes_dead_antenna"]
+            break
+    excludes_dead = bool((not is_suite_r) if excl_dead_raw is None else excl_dead_raw)
+
     if is_suite_r:
         ret_min = float(tols.get("target_unflagged_rows_min", 0.70))
         ret_max: float | None = float(tols.get("target_unflagged_rows_max", 0.90))
-        excludes_dead = bool(tols.get("target_retention_excludes_dead_antenna", True))
     else:
         ret_min = float(tols.get("min_clean_target_row_retention", 0.85))
         ret_max = None
-        excludes_dead = bool(tols.get("target_retention_excludes_dead_antenna", True))
 
-    expected_pcal_flux = float(
+    pcal_truth_raw = gt.get("phase_calibrator_truth") or top_gt.get("phase_calibrator_truth")
+    pcal_truth = pcal_truth_raw if isinstance(pcal_truth_raw, dict) else {}
+    pcal_flux_from_truth = pcal_truth.get(
+        "spw_mean_flux_jy",
+        pcal_truth.get("flux_at_ref_freq_jy"),
+    )
+    pcal_flux_candidate = gt.get(
+        "j1822_expected_flux_jy",
         gt.get(
-            "j1822_expected_flux_jy",
-            gt.get(
-                "expected_phase_calibrator_flux_jy",
-                2.296 if is_suite_r else 2.25,
-            ),
-        )
+            "expected_phase_calibrator_flux_jy",
+            pcal_flux_from_truth
+            if pcal_flux_from_truth is not None
+            else (2.296 if is_suite_r else 2.150366),
+        ),
+    )
+    expected_pcal_flux = float(pcal_flux_candidate)
+
+    pcal_rel_tol_candidate = tols.get(
+        "j1822_flux_rel_tol",
+        tols.get(
+            "max_fluxscale_rel_err",
+            pcal_truth.get("fluxscale_rel_tolerance", top_tols.get("max_fluxscale_rel_err")),
+        ),
     )
     pcal_rel_tol = float(
-        tols.get(
-            "j1822_flux_rel_tol",
-            tols.get("max_fluxscale_rel_err", 0.08 if is_suite_r else 0.05),
-        )
+        pcal_rel_tol_candidate
+        if pcal_rel_tol_candidate is not None
+        else (0.08 if is_suite_r else 0.05)
     )
 
     max_slope_deg_100mhz = float(tols.get("max_j1331_phase_slope_deg_per_100mhz", 5.0))
@@ -168,11 +187,17 @@ def _extract_cal_truth(ground_truth: dict[str, Any]) -> dict[str, Any]:
         )
     )
 
-    cal_weights_src = (
-        gt.get("calibrate_weights")
-        if isinstance(gt.get("calibrate_weights"), dict)
-        else (gt.get("weights") if isinstance(gt.get("weights"), dict) else {})
-    )
+    cal_weights_src: dict[str, Any] = {}
+    for cand_weights in (
+        gt.get("calibration_weights"),
+        gt.get("calibrate_weights"),
+        top_gt.get("calibration_weights"),
+        top_gt.get("calibrate_weights"),
+        gt.get("weights"),
+    ):
+        if isinstance(cand_weights, dict) and cand_weights:
+            cal_weights_src = cand_weights
+            break
     weights = {
         "retention_and_dead_ant": float(
             cal_weights_src.get("corrected_dead_ant_target_retention", 0.20)
@@ -334,7 +359,18 @@ def _measure_j1331_flatness(
             source_ms=ms_path.name,
         )
 
-    # Mask extreme amplitude-outlier rows (> 5x median row amplitude, e.g. unflagged 170 Jy RFI burst)
+    def _unwrap_centered_deg(spec_arr: np.ndarray) -> np.ndarray:
+        unit_spec = spec_arr / np.maximum(np.abs(spec_arr), 1e-12)
+        mean_phasor = complex(np.mean(unit_spec))
+        if abs(mean_phasor) > 1e-9:
+            ref_rot = np.conj(mean_phasor / abs(mean_phasor))
+            ang_rad = np.unwrap(np.angle(spec_arr * ref_rot))
+        else:
+            ang_rad = np.unwrap(np.angle(spec_arr))
+        deg = np.rad2deg(ang_rad)
+        return deg - float(np.mean(deg))
+
+    # Mask extreme amplitude-outlier rows and narrowband RFI cells (> 5x median amplitude)
     # and normalize each valid visibility to a unit phasor c / max(|c|, 1e-12) before summing over time.
     clean_flag = eff_flag.copy()
     for p_idx in pol_indices:
@@ -353,12 +389,30 @@ def _measure_j1331_flatness(
                 if np.any(outlier_mask) and int(np.sum(~outlier_mask)) >= max(2, valid_r.size // 2):
                     clean_flag[p_idx, :, valid_r[outlier_mask]] = True
 
+        rem_good = ~clean_flag[p_idx]
+        n_rem = int(np.sum(rem_good))
+        if n_rem >= 16:
+            med_vis_amp = float(np.median(np.abs(corr[p_idx][rem_good])))
+            if med_vis_amp > 1e-12:
+                vis_outlier = rem_good & (np.abs(corr[p_idx]) > (5.0 * med_vis_amp))
+                n_vis_out = int(np.sum(vis_outlier))
+                if 0 < n_vis_out <= (n_rem // 4):
+                    clean_flag[p_idx][vis_outlier] = True
+
     unit_corr = corr / np.maximum(np.abs(corr), 1e-12)
+
+    # Exclude persistent RFI channels that are >90% flagged relative to typical active channels
+    chan_counts = np.sum(~clean_flag[list(pol_indices), :, :], axis=(0, 2))
+    active_chan_counts = chan_counts[chan_counts > 0]
+    med_chan_count = float(np.median(active_chan_counts)) if active_chan_counts.size > 0 else 0.0
+    min_chan_support = max(2, int(0.10 * med_chan_count)) if med_chan_count >= 20.0 else 1
 
     # 1. Coherent unit-phasor channel spectrum across unflagged cross-hand rows
     ch_indices: list[int] = []
     vec_spec: list[complex] = []
     for ch in range(nchan):
+        if int(chan_counts[ch]) < min_chan_support:
+            continue
         vals: list[complex] = []
         for p_idx in pol_indices:
             good = ~clean_flag[p_idx, ch]
@@ -379,8 +433,7 @@ def _measure_j1331_flatness(
         )
 
     f_valid_hz = freqs_hz[ch_indices]
-    phs_coh_deg = np.rad2deg(np.unwrap(np.angle(np.array(vec_spec))))
-    phs_coh_deg = phs_coh_deg - float(np.mean(phs_coh_deg))
+    phs_coh_deg = _unwrap_centered_deg(np.array(vec_spec, dtype=np.complex128))
     slope_hz, _ = np.polyfit(f_valid_hz - float(np.mean(f_valid_hz)), phs_coh_deg, 1)
     coh_slope = abs(float(slope_hz) * 1.0e8)
     coh_rms = float(np.sqrt(np.mean(phs_coh_deg**2)))
@@ -394,7 +447,11 @@ def _measure_j1331_flatness(
         for pol in pol_indices:
             up = unit_corr[pol, :, :][:, bm]
             fp = clean_flag[pol, :, :][:, bm]
-            good_ch = np.sum(~fp, axis=1) > 0
+            ch_unflg_bl = np.sum(~fp, axis=1)
+            active_bl = ch_unflg_bl[ch_unflg_bl > 0]
+            med_bl_cnt = float(np.median(active_bl)) if active_bl.size > 0 else 0.0
+            min_bl_sup = max(2, int(0.10 * med_bl_cnt)) if med_bl_cnt >= 10.0 else 1
+            good_ch = ch_unflg_bl >= min_bl_sup
             if int(np.sum(good_ch)) < 16:
                 continue
             ch_sel = np.flatnonzero(good_ch)
@@ -404,8 +461,7 @@ def _measure_j1331_flatness(
             )
             if not np.all(np.isfinite(spec_bl)) or np.any(np.abs(spec_bl) <= 1e-12):
                 continue
-            ph_bl = np.rad2deg(np.unwrap(np.angle(spec_bl)))
-            ph_bl = ph_bl - float(np.mean(ph_bl))
+            ph_bl = _unwrap_centered_deg(spec_bl)
             fc = freqs_hz[ch_sel]
             sl_bl, _ = np.polyfit(fc - float(np.mean(fc)), ph_bl, 1)
             bl_slopes.append(abs(float(sl_bl) * 1.0e8))
@@ -1137,6 +1193,7 @@ def _measure_synth_coherent_fidelity(
 
 def _verifier_tclean_child_entry(payload_json_path: str) -> None:
     """Child-process entrypoint executing `mstransform` + `tclean` safely outside parent process."""
+    os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     import casatasks
     import casatools
 
@@ -1457,17 +1514,30 @@ def _run_verifier_tclean_recipe(
         child_env = os.environ.copy()
         child_env["TMPDIR"] = str(tclean_dir)
         child_env["MPLCONFIGDIR"] = str(mpl_dir)
-        child_env.setdefault("CASASITECONFIG", "/var/mnt/fast/radio-bench/casaconfig_local.py")
+        child_env["OMP_NUM_THREADS"] = os.environ.get("OMP_NUM_THREADS", "8").strip() or "8"
+        child_env["OMP_WAIT_POLICY"] = "PASSIVE"
+        child_env["OPENBLAS_NUM_THREADS"] = "1"
+        child_env["MKL_NUM_THREADS"] = "1"
+        child_env["NUMEXPR_NUM_THREADS"] = "1"
+        if not child_env.get("CASASITECONFIG", "").strip():
+            for cand_cfg in (
+                Path("/etc/casa/config.py"),
+                Path("/var/mnt/fast/radio-bench/casaconfig_local.py"),
+            ):
+                if cand_cfg.is_file():
+                    child_env["CASASITECONFIG"] = str(cand_cfg)
+                    break
         src_root = str(Path(__file__).resolve().parents[2])
         existing_py = child_env.get("PYTHONPATH", "").strip()
         child_env["PYTHONPATH"] = f"{src_root}:{existing_py}" if existing_py else src_root
 
-        timeout_sec = float(recipe.get("timeout_sec", 600.0))
+        timeout_sec = float(recipe.get("timeout_sec", 900.0))
         cmd = [
             sys.executable,
             "-c",
             (
-                "import sys; "
+                "import os, sys; "
+                "os.environ.setdefault('OMP_WAIT_POLICY', 'PASSIVE'); "
                 "from radio_bench.grading.cal_metrics import _verifier_tclean_child_entry; "
                 "_verifier_tclean_child_entry(sys.argv[1])"
             ),
@@ -1877,10 +1947,12 @@ def grade_calibrate(
             "pcal_flux_rel_tol": truth["pcal_flux_rel_tol"],
             "max_slope_deg_100mhz": truth["max_slope_deg_100mhz"],
             "max_chan_rms_deg": truth["max_chan_rms_deg"],
-            "max_coh_amp_err": truth["max_coh_amp_err"],
-            "max_coh_phs_deg": truth["max_coh_phs_deg"],
-            "min_pearson_r": truth["min_pearson_r"],
-            "verifier_tclean_dr_min": truth["verifier_tclean_dr_min"],
+            "max_coh_amp_err": None if truth["is_suite_r"] else truth["max_coh_amp_err"],
+            "max_coh_phs_deg": None if truth["is_suite_r"] else truth["max_coh_phs_deg"],
+            "min_pearson_r": None if truth["is_suite_r"] else truth["min_pearson_r"],
+            "verifier_tclean_dr_min": (
+                truth["verifier_tclean_dr_min"] if truth["is_suite_r"] else None
+            ),
         },
         "measured": {
             "dead_antenna_flagged_fraction": round(dead_ant_flagged_frac, 6)

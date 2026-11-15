@@ -14,6 +14,7 @@ from typing import Any
 
 def _configure_temp_env(workspace: Path) -> tuple[Path, bool]:
     """Configure non-/tmp scratch directories before importing CASA."""
+    os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     cur_tmp = os.environ.get("TMPDIR", "").strip()
     if not cur_tmp or cur_tmp == "/tmp" or cur_tmp.startswith("/tmp/"):
         fast_root = Path("/var/mnt/fast/radio-bench/tmp")
@@ -452,10 +453,21 @@ def _run_precal_stage(workspace: Path, scratch_dir: Path, info: dict[str, Any]) 
             flagbackup=False,
         )
         if not info["scan1_is_short_setup"]:
+            bp_spike_max = max(6.0 * float(info["bp_median_raw_amp_jy"]), 0.5)
+            flagdata(
+                vis=str(rfi_ms),
+                mode="clip",
+                field=info["bandpass_calibrator"],
+                datacolumn="DATA",
+                clipminmax=[0.0, bp_spike_max],
+                flagbackup=False,
+            )
             flagdata(
                 vis=str(rfi_ms),
                 mode="extend",
                 extendpols=True,
+                combinescans=True,
+                ntime="36000s",
                 growtime=80.0,
                 growfreq=80.0,
                 flagbackup=False,

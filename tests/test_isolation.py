@@ -7,11 +7,13 @@ import json
 import os
 import re
 import stat
+import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
+from harbor.agents.factory import AgentFactory
 from harbor.agents.installed.opencode import OpenCode
 from harbor.lint.models import COMPOSE_RULES, DEFAULT_RULES, LintRule
 from harbor.lint.task import lint_task
@@ -20,6 +22,8 @@ from harbor.models.job.config import JobConfig
 from harbor.models.task.config import TaskConfig
 
 from radio_bench.build_tasks import (
+    AGENT_IMAGE,
+    AGENT_NETWORK_MODE,
     ARM_FULL,
     ARM_NONE,
     ARM_ORCHESTRATED,
@@ -30,6 +34,8 @@ from radio_bench.build_tasks import (
     DEFAULT_TASKS_DIR,
     SKILL_ARMS,
     TOOL_ARMS,
+    VERIFIER_IMAGE,
+    VERIFIER_NETWORK_MODE,
     arms_for_spec,
     build_all_tasks,
     load_task_spec,
@@ -90,8 +96,13 @@ FORBIDDEN_INSTRUCTION_TOKENS: tuple[str, ...] = (
 )
 
 
+def _tasks_root() -> Path:
+    override = os.environ.get("RADIO_BENCH_TASKS_DIR", "").strip()
+    return Path(override) if override else DEFAULT_TASKS_DIR
+
+
 def _compiled_task_dirs() -> list[Path]:
-    return sorted(p for p in DEFAULT_TASKS_DIR.iterdir() if p.is_dir())
+    return sorted(p for p in _tasks_root().iterdir() if p.is_dir())
 
 
 def test_compiled_task_matrix_counts() -> None:
@@ -190,25 +201,70 @@ def test_build_tasks_prunes_unselected_arms_on_scratch(tmp_path: Path) -> None:
 
 
 def test_arm_skill_and_mcp_isolation() -> None:
-    """Verify strict orthogonal separation of skills, MCP sidecars, and TMPDIR across 52 tasks."""
+    """Verify orthogonal separation of skills, MCP sidecars, TMPDIR, OpenMP, and native volumes across 52 tasks."""
+    specs = {tid: load_task_spec(DEFAULT_SPECS_DIR / tid) for tid in ALL_BASE_TASKS}
     for task_dir in _compiled_task_dirs():
         base_task, arm = task_dir.name.split("__", 1)
+        spec = specs[base_task]
+        expected_omp = str(spec.cpus)
+        expected_ver_omp = str(spec.effective_verifier_cpus)
+
         raw_toml = tomllib.loads((task_dir / "task.toml").read_text(encoding="utf-8"))
         cfg = TaskConfig.model_validate(raw_toml)
         env_compose = yaml.safe_load(
             (task_dir / "environment" / "docker-compose.yaml").read_text(encoding="utf-8")
         )
+        ver_compose = yaml.safe_load(
+            (task_dir / "tests" / "docker-compose.yaml").read_text(encoding="utf-8")
+        )
         services = env_compose["services"]
         main_volumes = services["main"]["volumes"]
+        main_env = services["main"]["environment"]
+        main_cmd = " ".join(services["main"]["command"])
 
         assert raw_toml["artifacts"] == ["/workspace"]
         assert cfg.agent.user == "analyst"
-        assert cfg.environment.env.get("TMPDIR") == "/var/tmp"
-        assert cfg.verifier.env.get("TMPDIR") == "/var/tmp"
+        assert cfg.environment.docker_image == AGENT_IMAGE
+        assert cfg.environment.cpus == spec.cpus
         assert cfg.verifier.environment_mode == "separate"
         assert cfg.verifier.environment is not None
-        assert cfg.verifier.environment.env.get("TMPDIR") == "/var/tmp"
+        assert cfg.verifier.environment.docker_image == VERIFIER_IMAGE
+        assert cfg.verifier.environment.cpus == spec.effective_verifier_cpus
         assert cfg.verifier.environment.healthcheck is None
+
+        for env_map, omp_val in (
+            (cfg.environment.env, expected_omp),
+            (cfg.verifier.env, expected_ver_omp),
+            (cfg.verifier.environment.env, expected_ver_omp),
+            (main_env, expected_omp),
+            (ver_compose["services"]["main"]["environment"], expected_ver_omp),
+        ):
+            assert env_map.get("TMPDIR") == "/var/tmp"
+            assert env_map.get("OMP_NUM_THREADS") == omp_val
+            assert env_map.get("OMP_WAIT_POLICY") == "PASSIVE"
+            assert env_map.get("OPENBLAS_NUM_THREADS") == "1"
+            assert env_map.get("MKL_NUM_THREADS") == "1"
+            assert env_map.get("NUMEXPR_NUM_THREADS") == "1"
+
+        assert "workspace_vol:/workspace" in main_volumes
+        assert "agent_tmp:/var/tmp" in main_volumes
+        assert "workspace_vol" in env_compose["volumes"]
+        assert "agent_tmp" in env_compose["volumes"]
+        assert "chmod 1777 /var/tmp" in main_cmd
+
+        assert AGENT_NETWORK_MODE == "pasta"
+        assert VERIFIER_NETWORK_MODE == "none"
+        assert env_compose["services"]["main"]["network_mode"] == "pasta"
+        assert "networks" not in env_compose
+        assert ver_compose["services"]["main"]["network_mode"] == "none"
+        assert "networks" not in ver_compose
+
+        ver_volumes = ver_compose["services"]["main"]["volumes"]
+        assert "verifier_ws:/workspace" in ver_volumes
+        assert "verifier_tmp:/var/tmp" in ver_volumes
+        assert "verifier_ws" in ver_compose["volumes"]
+        assert "verifier_tmp" in ver_compose["volumes"]
+
         assert raw_toml["metadata"]["base_task"] == base_task
         assert raw_toml["metadata"]["arm"] == arm
         assert raw_toml["metadata"]["radio_analyst_sha"] == RADIO_ANALYST_SHA
@@ -240,12 +296,23 @@ def test_arm_skill_and_mcp_isolation() -> None:
 
         if arm in TOOL_ARMS:
             assert "mcp-servers" in services, f"{task_dir.name} missing mcp-servers service"
+            assert "mcp-servers:127.0.0.1" in services["main"]["extra_hosts"]
+            assert services["mcp-servers"]["network_mode"] == "service:main"
+            sidecar_env = services["mcp-servers"]["environment"]
+            assert sidecar_env["RADIO_MCP_HOST"] == "127.0.0.1"
+            assert sidecar_env.get("OMP_NUM_THREADS") == expected_omp
+            assert sidecar_env.get("OMP_WAIT_POLICY") == "PASSIVE"
+            assert sidecar_env.get("OPENBLAS_NUM_THREADS") == "1"
+            assert sidecar_env.get("MKL_NUM_THREADS") == "1"
+            assert sidecar_env.get("NUMEXPR_NUM_THREADS") == "1"
+            assert "agent_tmp:/var/tmp" in services["mcp-servers"]["volumes"]
             mcp_names = [s.name for s in cfg.environment.mcp_servers]
             assert mcp_names == ["ms-inspect", "ms-modify", "ms-create"]
             assert all(s.transport == "streamable-http" for s in cfg.environment.mcp_servers)
         else:
             assert arm in {ARM_NONE, ARM_SKILLS_RAW, ARM_SKILLS_CASA}
             assert "mcp-servers" not in services, f"{task_dir.name} leaked mcp-servers service"
+            assert "extra_hosts" not in services["main"]
             assert cfg.environment.mcp_servers == []
 
 
@@ -464,6 +531,8 @@ def test_harbor_lint_clean_across_all_52_tasks(monkeypatch: pytest.MonkeyPatch) 
     cfg_dir = ensure_docker_compose_plugin()
     assert cfg_dir is not None, "docker-compose CLI plugin could not be configured"
     monkeypatch.setenv("DOCKER_CONFIG", str(cfg_dir))
+    env_bin = str(Path(sys.executable).resolve().parent)
+    monkeypatch.setenv("PATH", f"{env_bin}:{os.environ.get('PATH', '')}")
 
     non_compose_rules = (DEFAULT_RULES | {LintRule.ROOT_AGENT}) - COMPOSE_RULES
     full_rules = DEFAULT_RULES | {LintRule.ROOT_AGENT}
@@ -472,14 +541,15 @@ def test_harbor_lint_clean_across_all_52_tasks(monkeypatch: pytest.MonkeyPatch) 
         findings = lint_task(task_dir, selected_rules=non_compose_rules)
         assert findings == [], f"Lint findings in {task_dir.name}: {findings}"
 
+    tasks_root = _tasks_root()
     representative = [
-        DEFAULT_TASKS_DIR / f"s1_inspect__{ARM_NONE}",
-        DEFAULT_TASKS_DIR / f"s1_inspect__{ARM_SKILLS_RAW}",
-        DEFAULT_TASKS_DIR / f"s1_inspect__{ARM_SKILLS_CASA}",
-        DEFAULT_TASKS_DIR / f"s1_inspect__{ARM_TOOLS}",
-        DEFAULT_TASKS_DIR / f"s1_inspect__{ARM_FULL}",
-        DEFAULT_TASKS_DIR / f"s1_calibrate__{ARM_TOOLS}",
-        DEFAULT_TASKS_DIR / f"s2_e2e_synth__{ARM_ORCHESTRATED}",
+        tasks_root / f"s1_inspect__{ARM_NONE}",
+        tasks_root / f"s1_inspect__{ARM_SKILLS_RAW}",
+        tasks_root / f"s1_inspect__{ARM_SKILLS_CASA}",
+        tasks_root / f"s1_inspect__{ARM_TOOLS}",
+        tasks_root / f"s1_inspect__{ARM_FULL}",
+        tasks_root / f"s1_calibrate__{ARM_TOOLS}",
+        tasks_root / f"s2_e2e_synth__{ARM_ORCHESTRATED}",
     ]
     for task_dir in representative:
         findings = lint_task(task_dir, selected_rules=full_rules)
@@ -490,11 +560,11 @@ def test_harbor_lint_clean_across_all_52_tasks(monkeypatch: pytest.MonkeyPatch) 
     ("filename", "expected_tasks", "expected_attempts", "expected_agents", "max_concurrency"),
     [
         ("oracle_synth.yaml", 5, 1, 1, 4),
-        ("oracle_3c391.yaml", 5, 1, 1, 2),
+        ("oracle_3c391.yaml", 5, 1, 1, 1),
         ("suite_s_ablation.yaml", 20, 5, 4, 4),
         ("suite_s_e2e_ablation.yaml", 6, 3, 4, 4),
-        ("suite_r_ablation.yaml", 20, 5, 4, 2),
-        ("suite_r_e2e_ablation.yaml", 6, 3, 4, 2),
+        ("suite_r_ablation.yaml", 20, 5, 4, 1),
+        ("suite_r_e2e_ablation.yaml", 6, 3, 4, 1),
     ],
 )
 def test_job_yaml_configs_and_opencode_nrp_provider(
@@ -508,6 +578,7 @@ def test_job_yaml_configs_and_opencode_nrp_provider(
 ) -> None:
     """Verify all 6 Harbor job YAML configs, n_attempts split, and OpenCode nrp/* provider config."""
     monkeypatch.setenv("NRP_API_KEY", "dummy-test-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 
     job_path = JOBS_DIR / filename
     assert job_path.is_file()
@@ -537,19 +608,24 @@ def test_job_yaml_configs_and_opencode_nrp_provider(
             ("opencode", "nrp/glm-5"),
         ]
         for a in cfg.agents:
+            AgentFactory.run_preflight(a)
             assert a.kwargs.get("disable_web_search") is True
             if a.name == "opencode":
                 assert "reasoning_effort" not in a.kwargs
                 assert "config" not in a.kwargs
-                assert a.kwargs.get("base_url") == "https://ellm.nrp-nautilus.io/v1"
-                assert a.kwargs.get("model_api_key_name") == "NRP_API_KEY"
-                assert a.kwargs.get("model_api_format") == "openai_chat_completions"
+                assert "model_api_key_name" not in a.kwargs
+                assert a.base_url == "https://ellm.nrp-nautilus.io/v1"
+                assert a.model_api_key_name == "NRP_API_KEY"
+                assert a.model_api_format == "openai_chat_completions"
+                assert a.kwargs.get("version") == "1.19.5"
 
-                oc = OpenCode(
+                created = AgentFactory.create_agent_from_config(
+                    a,
                     logs_dir=tmp_path / f"oc_{a.model_name.replace('/', '_')}",
-                    model_name=a.model_name,
-                    **a.kwargs,
                 )
+                assert isinstance(created, OpenCode)
+                oc = created
+                assert oc.version() == "1.19.5"
                 assert "dummy-test-key" in oc.model_connection.env.values()
                 reg_cmd = oc._build_register_config_command()
                 assert reg_cmd is not None
@@ -574,3 +650,78 @@ def test_job_yaml_configs_and_opencode_nrp_provider(
                 assert api_key_ref.startswith("{env:") and api_key_ref.endswith("}")
                 forwarded_var = api_key_ref[len("{env:") : -1]
                 assert oc.model_connection.env.get(forwarded_var) == "dummy-test-key"
+
+
+def test_openmp_anti_thrashing_in_specs_containerfile_solvers_and_verifier_tclean(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify 3C391 CPU/timeout budgets, Containerfile ENV, solve.py, and verifier tclean OpenMP env."""
+    import subprocess
+    from typing import Any
+
+    import radio_bench.grading.cal_metrics as cm
+
+    for tid in (
+        "r1_3c391_inspect",
+        "r1_3c391_precal",
+        "r1_3c391_calibrate",
+        "r1_3c391_image",
+        "r2_3c391_e2e",
+    ):
+        spec = load_task_spec(DEFAULT_SPECS_DIR / tid)
+        assert spec.cpus == 8
+        assert spec.effective_verifier_cpus == 8
+        if tid in {"r1_3c391_calibrate", "r2_3c391_e2e"}:
+            assert spec.verifier_timeout_sec == 1200.0
+
+    for cf_name in ("agent-base.Containerfile", "verifier.Containerfile"):
+        cf_text = (REPO_ROOT / "images" / cf_name).read_text(encoding="utf-8")
+        for token in (
+            "OMP_WAIT_POLICY=PASSIVE",
+            "OPENBLAS_NUM_THREADS=1",
+            "MKL_NUM_THREADS=1",
+            "NUMEXPR_NUM_THREADS=1",
+        ):
+            assert token in cf_text
+
+    for tid in ALL_BASE_TASKS:
+        solve_text = (DEFAULT_SPECS_DIR / tid / "solve.py").read_text(encoding="utf-8")
+        assert 'os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")' in solve_text
+
+    captured: dict[str, Any] = {}
+
+    def _fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        captured["timeout"] = kwargs["timeout"]
+        req_data = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+        Path(req_data["out_json"]).write_text(
+            json.dumps(
+                {
+                    "verifier_tclean_peak_jy": 0.12,
+                    "verifier_tclean_offsource_rms_jy": 0.0004,
+                    "verifier_tclean_dynamic_range": 300.0,
+                    "verifier_tclean_physical_valid": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    dummy_ms = tmp_path / "dummy.ms"
+    dummy_ms.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    res = cm._run_verifier_tclean_recipe(dummy_ms, {}, scratch)
+    assert res["verifier_tclean_returncode"] == 0
+    assert captured["timeout"] == 900.0
+    assert "os.environ.setdefault('OMP_WAIT_POLICY', 'PASSIVE')" in captured["cmd"][2]
+    assert captured["env"]["OMP_NUM_THREADS"] == "8"
+    assert captured["env"]["OMP_WAIT_POLICY"] == "PASSIVE"
+    assert captured["env"]["OPENBLAS_NUM_THREADS"] == "1"
+    assert captured["env"]["MKL_NUM_THREADS"] == "1"
+    assert captured["env"]["NUMEXPR_NUM_THREADS"] == "1"

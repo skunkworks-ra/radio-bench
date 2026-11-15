@@ -205,16 +205,22 @@ def _extract_stage_metric_specs(
                     ("j1331_chan_phase_rms_deg",),
                 )
             )
-        if "retention_min" in truth:
-            rmax = truth.get("retention_max", 1.0)
+        if truth.get("retention_min") is not None:
+            rmin = truth["retention_min"]
+            rmax = truth.get("retention_max")
+            ret_target = (
+                f">= {_fmt_num(rmin, 2)}"
+                if rmax is None
+                else f"[{_fmt_num(rmin, 2)}, {_fmt_num(rmax, 2)}]"
+            )
             specs.append(
                 (
                     "target_row_retention",
-                    f"[{_fmt_num(truth['retention_min'], 2)}, {_fmt_num(rmax, 2)}]",
+                    ret_target,
                     ("target_row_retention",),
                 )
             )
-        if "verifier_tclean_dr_min" in truth and truth["verifier_tclean_dr_min"] is not None:
+        if truth.get("verifier_tclean_dr_min") is not None:
             specs.append(
                 (
                     "verifier_tclean_dynamic_range",
@@ -222,7 +228,7 @@ def _extract_stage_metric_specs(
                     ("verifier_tclean_dynamic_range",),
                 )
             )
-        if "max_coh_amp_err" in truth and truth["max_coh_amp_err"] is not None:
+        if truth.get("max_coh_amp_err") is not None:
             specs.append(
                 (
                     "coherent_amp_rel_err",
@@ -232,12 +238,8 @@ def _extract_stage_metric_specs(
             )
         coh_phs_key = (
             "max_coh_phs_deg"
-            if ("max_coh_phs_deg" in truth and truth["max_coh_phs_deg"] is not None)
-            else (
-                "coherent_phase_deg"
-                if ("coherent_phase_deg" in truth and truth["coherent_phase_deg"] is not None)
-                else None
-            )
+            if truth.get("max_coh_phs_deg") is not None
+            else ("coherent_phase_deg" if truth.get("coherent_phase_deg") is not None else None)
         )
         if coh_phs_key is not None:
             specs.append(

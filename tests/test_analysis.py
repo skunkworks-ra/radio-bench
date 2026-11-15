@@ -2033,3 +2033,55 @@ def test_wave5_taxonomy_diagnostics_and_scientific_overlays(tmp_path: Path) -> N
     fb_names = {Path(p).name for p in rep_fb["plot_files"]}
     assert "offsource_residual_hist.png" in fb_names
     assert "caltable_amp_phase_overlay.png" not in fb_names
+
+
+def test_wave6_pre_oracle_diagnostics_and_cli_no_runpy_warning() -> None:
+    """Verify lazy CLI import (zero runpy warning) and Suite S vs Suite R calibrate truth specs."""
+    import subprocess
+    import sys
+
+    from radio_bench.analysis.diagnostics import _extract_stage_metric_specs
+
+    proc = subprocess.run(
+        [sys.executable, "-W", "error", "-m", "radio_bench.analysis.cli", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, f"cli --help failed with -W error: {proc.stderr}"
+
+    specs_s = dict(
+        (lbl, tgt)
+        for lbl, tgt, _path in _extract_stage_metric_specs(
+            "calibrate",
+            {
+                "retention_min": 0.85,
+                "retention_max": None,
+                "verifier_tclean_dr_min": None,
+                "max_coh_amp_err": 0.08,
+                "max_coh_phs_deg": 10.0,
+            },
+        )
+    )
+    assert specs_s["target_row_retention"] == ">= 0.85"
+    assert "verifier_tclean_dynamic_range" not in specs_s
+    assert specs_s["coherent_amp_rel_err"] == "<= 0.080"
+    assert specs_s["coherent_phase_deg"] == "<= 10.00 deg"
+
+    specs_r = dict(
+        (lbl, tgt)
+        for lbl, tgt, _path in _extract_stage_metric_specs(
+            "calibrate",
+            {
+                "retention_min": 0.70,
+                "retention_max": 0.90,
+                "verifier_tclean_dr_min": 180.0,
+                "max_coh_amp_err": None,
+                "max_coh_phs_deg": None,
+            },
+        )
+    )
+    assert specs_r["target_row_retention"] == "[0.70, 0.90]"
+    assert specs_r["verifier_tclean_dynamic_range"] == ">= 180.0"
+    assert "coherent_amp_rel_err" not in specs_r
+    assert "coherent_phase_deg" not in specs_r

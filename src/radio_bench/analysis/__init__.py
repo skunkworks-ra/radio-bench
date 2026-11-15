@@ -1,6 +1,7 @@
 """Post-run analysis, list-price token accounting, 2x2 factorial stats, and failure taxonomy."""
 
-from radio_bench.analysis.cli import main, run_analysis_pipeline
+from typing import TYPE_CHECKING, Any
+
 from radio_bench.analysis.collect import (
     CANONICAL_ARMS,
     collect_single_trial,
@@ -88,3 +89,15 @@ __all__ = [
     "write_diagnostic_reports",
     "write_trials_outputs",
 ]
+
+
+if TYPE_CHECKING:
+    from radio_bench.analysis.cli import main, run_analysis_pipeline
+
+
+def __getattr__(name: str) -> Any:
+    if name in ("main", "run_analysis_pipeline"):
+        from radio_bench.analysis import cli as _cli
+
+        return getattr(_cli, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

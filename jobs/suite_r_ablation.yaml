@@ -1,7 +1,7 @@
 job_name: suite_r_ablation
 jobs_dir: /var/mnt/fast/radio_bench_runs
 n_attempts: 5
-n_concurrent_trials: 2
+n_concurrent_trials: 1
 retry:
   max_retries: 2
   min_wait_sec: 5.0
@@ -21,17 +21,19 @@ agents:
     disable_web_search: true
 - name: opencode
   model_name: nrp/kimi
+  base_url: https://ellm.nrp-nautilus.io/v1
+  model_api_key_name: NRP_API_KEY
+  model_api_format: openai_chat_completions
   kwargs:
-    base_url: https://ellm.nrp-nautilus.io/v1
-    model_api_key_name: NRP_API_KEY
-    model_api_format: openai_chat_completions
+    version: 1.19.5
     disable_web_search: true
 - name: opencode
   model_name: nrp/glm-5
+  base_url: https://ellm.nrp-nautilus.io/v1
+  model_api_key_name: NRP_API_KEY
+  model_api_format: openai_chat_completions
   kwargs:
-    base_url: https://ellm.nrp-nautilus.io/v1
-    model_api_key_name: NRP_API_KEY
-    model_api_format: openai_chat_completions
+    version: 1.19.5
     disable_web_search: true
 tasks:
 - path: /var/mnt/fast/radio-bench/tasks/r1_3c391_inspect__00_none

@@ -1,6 +1,11 @@
 # Isolated post-run scientific verifier image with CASA 6.7.6.14 + radio_bench.grading.
 FROM localhost/radio-bench-casa-base:latest
 
+ENV OMP_WAIT_POLICY=PASSIVE \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1
+
 RUN uv pip install --no-cache --python /opt/casa-venv/bin/python \
         "httpx>=0.27" \
         "tomli-w>=1.0"

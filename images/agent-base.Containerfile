@@ -9,6 +9,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CASASITECONFIG=/etc/casa/config.py \
     TMPDIR=/var/tmp \
     MPLCONFIGDIR=/var/tmp/mplconfig \
+    OMP_WAIT_POLICY=PASSIVE \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 \
     PATH="/opt/casa-venv/bin:/usr/local/bin:/usr/bin:/bin"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -45,7 +49,7 @@ COPY casa-data /opt/casa-data
 ENV PATH="/opt/casa-venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 RUN printf 'measurespath = "/opt/casa-data"\ndatapath = ["/opt/casa-data"]\ndata_auto_update = False\nmeasures_auto_update = False\n' > /etc/casa/config.py \
-    && printf 'export PATH="/opt/casa-venv/bin:$PATH"\nexport CASASITECONFIG="/etc/casa/config.py"\nexport TMPDIR="/var/tmp"\nexport MPLCONFIGDIR="/var/tmp/mplconfig"\n' > /etc/profile.d/casa-venv.sh \
+    && printf 'export PATH="/opt/casa-venv/bin:$PATH"\nexport CASASITECONFIG="/etc/casa/config.py"\nexport TMPDIR="/var/tmp"\nexport MPLCONFIGDIR="/var/tmp/mplconfig"\nexport OMP_WAIT_POLICY="${OMP_WAIT_POLICY:-PASSIVE}"\nexport OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"\nexport MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"\nexport NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"\n' > /etc/profile.d/casa-venv.sh \
     && chmod 0644 /etc/profile.d/casa-venv.sh \
     && ln -sfn /opt/casa-venv/bin/python /usr/local/bin/python \
     && ln -sfn /opt/casa-venv/bin/python3 /usr/local/bin/python3 \

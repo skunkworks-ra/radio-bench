@@ -16,6 +16,7 @@ STAGE = "image"
 
 
 def _configure_temp_env() -> Path:
+    os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     cur_tmp = os.environ.get("TMPDIR", "").strip()
     if not cur_tmp or cur_tmp == "/tmp" or cur_tmp.startswith("/tmp/"):
         fast_tmp = Path("/var/mnt/fast/radio-bench/tmp")
