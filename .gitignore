@@ -11,6 +11,8 @@ exported_skills/
 # Markdown notes and task prompt specs live in the separate Vault repository
 *.md
 !/README.md
+!/AGENTS.md
+!/design_docs/DESIGN.md
 
 # Python packaging and bytecode
 __pycache__/
