@@ -32,6 +32,8 @@ def run_analysis_pipeline(
     resolved_jobs = [Path(p) for p in job_dirs]
     if not resolved_jobs:
         raise ValueError("At least one Harbor job directory is required.")
+    for jp in resolved_jobs:
+        reject_slash_tmp(jp, label="job_dir")
 
     if output_dir is not None:
         target_out = Path(output_dir)

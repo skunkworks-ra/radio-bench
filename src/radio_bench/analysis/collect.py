@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import json
 import math
@@ -14,11 +15,62 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from harbor.models.trial.paths import TrialPaths
 
-from radio_bench.analysis.pricing import compute_trial_pricing, normalize_model_key
+try:
+    from harbor.models.trial.paths import TrialPaths
+except ImportError:
+
+    class TrialPaths:  # type: ignore[no-redef]
+        """Minimal Harbor `0.25.0`-compatible `TrialPaths` fallback for isolated containers."""
+
+        def __init__(self, trial_dir: Path) -> None:
+            self.trial_dir = Path(trial_dir)
+
+        @property
+        def config_path(self) -> Path:
+            return self.trial_dir / "config.json"
+
+        @property
+        def result_path(self) -> Path:
+            return self.trial_dir / "result.json"
+
+        @property
+        def verifier_dir(self) -> Path:
+            return self.trial_dir / "verifier"
+
+        @property
+        def agent_dir(self) -> Path:
+            return self.trial_dir / "agent"
+
+        @property
+        def steps_dir(self) -> Path:
+            return self.trial_dir / "steps"
+
+        @property
+        def reward_json_path(self) -> Path:
+            return self.verifier_dir / "reward.json"
+
+        @property
+        def reward_text_path(self) -> Path:
+            return self.verifier_dir / "reward.txt"
+
+        @property
+        def exception_message_path(self) -> Path:
+            return self.trial_dir / "exception.txt"
+
+
+from radio_bench.analysis._trace import classify_mcp_server, safe_nonneg_int
+from radio_bench.analysis.pricing import (
+    TrialExecutionAnalysis,
+    analyze_trial_execution,
+    build_trial_pricing_from_execution,
+    normalize_model_key,
+)
 from radio_bench.analysis.taxonomy import classify_failure
+from radio_bench.config import reject_slash_tmp
 from radio_bench.grading import PASS_REWARD_MIN
+
+_classify_mcp_server = classify_mcp_server
 
 CANONICAL_ARMS: tuple[str, ...] = (
     "00_none",
@@ -42,89 +94,6 @@ BASE_TASK_META: dict[str, tuple[str, str]] = {
     "r2_3c391_e2e": ("3c391", "e2e"),
 }
 
-# Exact 61 MCP tools across radio-analyst at pinned commit 00a11ea.
-MS_INSPECT_TOOLS: frozenset[str] = frozenset(
-    {
-        "ms_antenna_flag_fraction",
-        "ms_antenna_list",
-        "ms_baseline_lengths",
-        "ms_calsol_plot",
-        "ms_calsol_stats",
-        "ms_calsol_stats_detail",
-        "ms_casa_task_lookup",
-        "ms_casa_task_spec",
-        "ms_casa_tool_spec",
-        "ms_corrected_stats",
-        "ms_correlator_config",
-        "ms_elevation_vs_time",
-        "ms_field_list",
-        "ms_flag_preflight",
-        "ms_flag_summary",
-        "ms_gaincal_snr_predict",
-        "ms_image_stats",
-        "ms_observation_info",
-        "ms_online_flag_stats",
-        "ms_parallactic_angle_vs_time",
-        "ms_phase_cal_lookup",
-        "ms_plot_caltable_library",
-        "ms_pol_cal_conditions",
-        "ms_radiometer_estimate",
-        "ms_refant",
-        "ms_residual_stats",
-        "ms_rfi_channel_stats",
-        "ms_scan_intent_summary",
-        "ms_scan_list",
-        "ms_shadowing_report",
-        "ms_spectral_window_list",
-        "ms_spw_amp_severity",
-        "ms_verify_caltables",
-        "ms_verify_import",
-        "ms_verify_model",
-        "ms_verify_priorcals",
-        "ms_vis_amp_time_stats",
-        "ms_workflow_status",
-    }
-)
-
-MS_MODIFY_TOOLS: frozenset[str] = frozenset(
-    {
-        "ms_apply_initial_rflag",
-        "ms_apply_preflag",
-        "ms_apply_rflag",
-        "ms_applycal",
-        "ms_bandpass",
-        "ms_casa_task",
-        "ms_casa_tool",
-        "ms_flag_caltable",
-        "ms_flag_data",
-        "ms_fluxscale",
-        "ms_gaincal",
-        "ms_generate_priorcals",
-        "ms_initial_bandpass",
-        "ms_polcal",
-        "ms_postcal_flag",
-        "ms_set_intents",
-        "ms_setjy",
-        "ms_setjy_polcal",
-        "ms_tclean",
-    }
-)
-
-MS_CREATE_TOOLS: frozenset[str] = frozenset(
-    {
-        "ms_import_asdm",
-        "ms_reduction_log",
-        "ms_report",
-        "ms_sdm_summary",
-    }
-)
-
-ALL_KNOWN_MCP_TOOLS: frozenset[str] = MS_INSPECT_TOOLS | MS_MODIFY_TOOLS | MS_CREATE_TOOLS
-
-_BASH_TOOL_NAMES: frozenset[str] = frozenset(
-    {"bash", "shell", "sh", "execute_bash", "run_command", "terminal", "cmd"}
-)
-
 _SKIP_SCAN_DIR_NAMES: frozenset[str] = frozenset(
     {
         "analysis",
@@ -136,41 +105,6 @@ _SKIP_SCAN_DIR_NAMES: frozenset[str] = frozenset(
         "steps",
         "__pycache__",
     }
-)
-
-_NONZERO_EXIT_RE = re.compile(
-    r"(?:\[exit_code\]|exit\s+code|exit\s+status|returncode)\s*[:=]?\s*(-?[1-9]\d*)\b",
-    re.IGNORECASE,
-)
-_RUN_STEP_RC_RE = re.compile(r"\bstatus=failed\b|\brc=(-?[1-9]\d*)\b")
-
-_PROTOCOL_ERR_PHRASES: tuple[str, ...] = (
-    "unknown tool",
-    "unavailable tool",
-    "invalid tool",
-    "tool not found",
-    "no such tool",
-    "is not a valid tool",
-    "unrecognized tool",
-    "mcp error",
-    "streamablehttp",
-    "connection refused",
-    "failed to connect to mcp",
-    "inputvalidationerror",
-    "validation error for",
-    "missing required argument",
-    "unexpected keyword argument",
-    '"error_type": "validation_error"',
-    '"error_type":"validation_error"',
-    '"error_type": "invalid_input"',
-    '"error_type":"invalid_input"',
-)
-
-_CASA_SEVERE_PHRASES: tuple[str, ...] = (
-    "severe\t",
-    "severe ",
-    "RuntimeError:",
-    "Traceback (most recent call last):",
 )
 
 CSV_BASE_COLUMNS: tuple[str, ...] = (
@@ -185,6 +119,7 @@ CSV_BASE_COLUMNS: tuple[str, ...] = (
     "arm",
     "agent_name",
     "model_name",
+    "thinking_level",
     "attempt_idx",
     "reward",
     "passed",
@@ -195,6 +130,7 @@ CSV_BASE_COLUMNS: tuple[str, ...] = (
     "agent_wall_sec",
     "verifier_wall_sec",
     "n_turns",
+    "retry_turn_count",
     "mcp_calls_total",
     "mcp_calls_inspect",
     "mcp_calls_modify",
@@ -208,6 +144,8 @@ CSV_BASE_COLUMNS: tuple[str, ...] = (
     "cache_read_tokens",
     "cache_write_tokens",
     "output_tokens",
+    "reasoning_tokens",
+    "reply_output_tokens",
     "total_tokens",
     "peak_turn_tokens",
     "haiku_cliff_triggered",
@@ -216,8 +154,13 @@ CSV_BASE_COLUMNS: tuple[str, ...] = (
     "cache_write_usd",
     "cache_read_usd",
     "output_usd",
+    "first_pass_usd",
+    "retry_usd",
     "total_usd",
     "pricing_source",
+    "trace_events_expected",
+    "trace_events_observed",
+    "trace_completeness_ok",
 )
 
 
@@ -349,15 +292,7 @@ def _match_canonical_or_truncated_arm(token: str) -> str | None:
 def parse_task_variant_with_pack(
     task_name: str, metrics_stage: str | None = None
 ) -> tuple[str, str | None, str, str, str, bool]:
-    """Parse `task_name` into `(base_task, pack_id, arm, suite, stage, is_e2e)`.
-
-    Supports:
-    - `<task_id>__<arm>` (single-pack)
-    - `<task_id>__<arm>__<trial_hash>` (Harbor trial name for single-pack)
-    - `<task_id>__<pack_id>__<arm>` (multi-pack)
-    - `<task_id>__<pack_id>__<arm>__<trial_hash>` (Harbor trial name for multi-pack)
-    - `<task_id>__<pack_id>__<trial_hash>` (Harbor 32-char truncated multi-pack trial_dir.name)
-    """
+    """Parse `task_name` into `(base_task, pack_id, arm, suite, stage, is_e2e)`."""
     clean = task_name.strip().rstrip("/")
     if "/" in clean:
         clean = clean.rsplit("/", 1)[-1]
@@ -389,8 +324,6 @@ def parse_task_variant_with_pack(
                 pack_id = None
                 arm = matched_p1
             else:
-                # Harbor 32-char truncation (`<task_id>__<pack_id>__<7hex_uuid>` where `__<arm>`
-                # was truncated before appending `__<uuid>`): never treat a trial hash as `arm`.
                 base_task = parts[0]
                 pack_id = parts[1]
                 arm = "00_none"
@@ -483,6 +416,106 @@ def parse_task_variant(
     return base_task, arm, suite, stage, is_e2e
 
 
+def _format_thinking_budget(val: Any) -> str | None:
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        if not math.isfinite(float(val)):
+            return None
+        v_int = int(round(float(val)))
+        return "off" if v_int <= 0 else f"budget_{v_int}"
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return None
+        try:
+            v_int = int(s)
+            return "off" if v_int <= 0 else f"budget_{v_int}"
+        except ValueError:
+            return s
+    return None
+
+
+def extract_thinking_level(
+    config_dict: dict[str, Any] | None,
+    result_dict: dict[str, Any] | None,
+    trajectory_dict: dict[str, Any] | None = None,
+) -> str:
+    """Deterministically extract `thinking_level` across `config.json`, `result.json`, and ATIF."""
+    agent_cfgs: list[dict[str, Any]] = []
+    if isinstance(config_dict, dict) and isinstance(config_dict.get("agent"), dict):
+        agent_cfgs.append(config_dict["agent"])
+    if isinstance(result_dict, dict):
+        rcfg = result_dict.get("config")
+        if isinstance(rcfg, dict) and isinstance(rcfg.get("agent"), dict):
+            agent_cfgs.append(rcfg["agent"])
+
+    # 1. kwargs.reasoning_effort
+    for acfg in agent_cfgs:
+        kw = acfg.get("kwargs")
+        if isinstance(kw, dict):
+            re_val = kw.get("reasoning_effort")
+            if isinstance(re_val, str) and re_val.strip():
+                return re_val.strip()
+
+    # 2. kwargs.variant
+    for acfg in agent_cfgs:
+        kw = acfg.get("kwargs")
+        if isinstance(kw, dict):
+            var_val = kw.get("variant")
+            if isinstance(var_val, str) and var_val.strip():
+                return var_val.strip()
+
+    # 3. kwargs.max_thinking_tokens
+    for acfg in agent_cfgs:
+        kw = acfg.get("kwargs")
+        if isinstance(kw, dict) and "max_thinking_tokens" in kw:
+            fmt = _format_thinking_budget(kw.get("max_thinking_tokens"))
+            if fmt is not None:
+                return fmt
+
+    # 4. env.CLAUDE_CODE_EFFORT_LEVEL
+    for acfg in agent_cfgs:
+        env = acfg.get("env")
+        if isinstance(env, dict):
+            eff_lvl = env.get("CLAUDE_CODE_EFFORT_LEVEL")
+            if isinstance(eff_lvl, str) and eff_lvl.strip():
+                return eff_lvl.strip()
+
+    # 5. env.MAX_THINKING_TOKENS
+    for acfg in agent_cfgs:
+        env = acfg.get("env")
+        if isinstance(env, dict) and "MAX_THINKING_TOKENS" in env:
+            fmt = _format_thinking_budget(env.get("MAX_THINKING_TOKENS"))
+            if fmt is not None:
+                return fmt
+
+    # 6. env.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING == "1"
+    for acfg in agent_cfgs:
+        env = acfg.get("env")
+        if isinstance(env, dict):
+            dis = env.get("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING")
+            if str(dis or "").strip().lower() in {"1", "true"}:
+                return "off"
+
+    # 7. First agent step reasoning_effort
+    if isinstance(trajectory_dict, dict) and isinstance(trajectory_dict.get("steps"), list):
+        for step in trajectory_dict["steps"]:
+            if not isinstance(step, dict) or step.get("source") != "agent":
+                continue
+            st_re = step.get("reasoning_effort")
+            if isinstance(st_re, str) and st_re.strip():
+                return st_re.strip()
+            st_ex = step.get("extra")
+            if isinstance(st_ex, dict):
+                ex_re = st_ex.get("reasoning_effort")
+                if isinstance(ex_re, str) and ex_re.strip():
+                    return ex_re.strip()
+            break
+
+    return "default"
+
+
 def _parse_iso_dt(val: Any) -> datetime | None:
     if not isinstance(val, str) or not val.strip():
         return None
@@ -541,354 +574,48 @@ def _extract_durations(result_dict: dict[str, Any] | None) -> tuple[float, float
     )
 
 
-def _matches_mcp_tool(cand: str, tool: str) -> bool:
-    return cand == tool or cand.endswith((f"_{tool}", f"-{tool}", f"/{tool}", f".{tool}"))
-
-
-def _classify_mcp_server(function_name: str) -> str | None:
-    """Return `'ms-inspect'`, `'ms-modify'`, `'ms-create'`, `'mcp-other'`, or `None`."""
-    raw = function_name.strip()
-    if not raw:
-        return None
-    low = raw.lower()
-
-    if "ms-inspect" in low or "ms_inspect" in low:
-        return "ms-inspect"
-    if "ms-modify" in low or "ms_modify" in low:
-        return "ms-modify"
-    if "ms-create" in low or "ms_create" in low:
-        return "ms-create"
-
-    candidates = [low]
-    for sep in ("__", ":", ".", "/"):
-        if sep in low:
-            candidates.append(low.rsplit(sep, 1)[-1])
-    if low.startswith("mcp_"):
-        candidates.append(low[4:])
-
-    for cand in candidates:
-        if cand in MS_INSPECT_TOOLS:
-            return "ms-inspect"
-        if cand in MS_MODIFY_TOOLS:
-            return "ms-modify"
-        if cand in MS_CREATE_TOOLS:
-            return "ms-create"
-        for tool in MS_INSPECT_TOOLS:
-            if _matches_mcp_tool(cand, tool):
-                return "ms-inspect"
-        for tool in MS_MODIFY_TOOLS:
-            if _matches_mcp_tool(cand, tool):
-                return "ms-modify"
-        for tool in MS_CREATE_TOOLS:
-            if _matches_mcp_tool(cand, tool):
-                return "ms-create"
-
-    if low.startswith("mcp__") or low.startswith("mcp_") or low.startswith("ms_"):
-        return "mcp-other"
-    return None
-
-
-def _stringify_obs_content(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
-            elif isinstance(item, str):
-                parts.append(item)
-        return "\n".join(parts)
-    if content is None:
-        return ""
-    return str(content)
-
-
-def _extract_exit_code(
-    tc_extra: dict[str, Any], obs_extra: dict[str, Any], obs_text: str
-) -> int | None:
-    for container in (obs_extra, tc_extra):
-        for k in ("exit_code", "exitCode", "returncode"):
-            v = container.get(k)
-            if isinstance(v, int) and not isinstance(v, bool):
-                return v
-        meta = container.get("tool_result_metadata")
-        if isinstance(meta, dict):
-            tur = meta.get("tool_use_result")
-            if isinstance(tur, dict):
-                for k in ("exitCode", "exit_code", "returncode"):
-                    v = tur.get(k)
-                    if isinstance(v, int) and not isinstance(v, bool):
-                        return v
-
-    m = _NONZERO_EXIT_RE.search(obs_text)
-    if m:
-        try:
-            return int(m.group(1))
-        except ValueError:
-            pass
-    m2 = _RUN_STEP_RC_RE.search(obs_text)
-    if m2:
-        if m2.group(1):
-            try:
-                return int(m2.group(1))
-            except ValueError:
-                return 1
-        return 1
-    return None
-
-
-def _is_tool_error(tc_extra: dict[str, Any], obs_extra: dict[str, Any], obs_text: str) -> bool:
-    for container in (tc_extra, obs_extra):
-        for k in ("is_error", "tool_use_is_error", "tool_result_is_error"):
-            if container.get(k) is True:
-                return True
-        meta = container.get("tool_result_metadata")
-        if isinstance(meta, dict) and meta.get("is_error") is True:
-            return True
-
-    low = obs_text.lower()
-    if "[error] tool reported failure" in low:
-        return True
-    if '"iserror": true' in low or '"iserror":true' in low:
-        return True
-    if ('"status": "error"' in low or '"status":"error"' in low) and '"error_type"' in low:
-        return True
-    return any(phrase in low for phrase in _PROTOCOL_ERR_PHRASES)
-
-
-def _is_protocol_error(fn_name: str, mcp_srv: str | None, obs_text: str, arm: str) -> bool:
-    low_fn = fn_name.strip().lower()
-    low_obs = obs_text.lower()
-
-    if low_fn == "invalid":
-        return True
-    if mcp_srv is not None and arm in {"00_none", "01_skills_raw", "01_skills_casa"}:
-        return True
-    if mcp_srv == "mcp-other" and low_fn.startswith("ms_") and low_fn not in ALL_KNOWN_MCP_TOOLS:
-        return True
-    return any(phrase in low_obs for phrase in _PROTOCOL_ERR_PHRASES)
-
-
-def _parse_opencode_tool_events(opencode_txt_path: Path | None) -> dict[str, dict[str, Any]]:
-    """Parse `agent/opencode.txt` JSONL `tool_use` events indexed by `part.callID` / `part.id`."""
-    events_by_id: dict[str, dict[str, Any]] = {}
-    if opencode_txt_path is None or not opencode_txt_path.is_file():
-        return events_by_id
-
-    try:
-        lines = opencode_txt_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return events_by_id
-
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(ev, dict) or ev.get("type") != "tool_use":
-            continue
-        part = ev.get("part")
-        if not isinstance(part, dict):
-            continue
-        cid = str(part.get("callID") or part.get("id") or "").strip()
-        if not cid:
-            continue
-        state = part.get("state") if isinstance(part.get("state"), dict) else {}
-        meta = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
-        raw_exit = meta.get("exit")
-        if raw_exit is None:
-            raw_exit = meta.get("exitCode", meta.get("exit_code"))
-        exit_code = (
-            int(raw_exit) if isinstance(raw_exit, int) and not isinstance(raw_exit, bool) else None
-        )
-        raw_err = state.get("error")
-        if raw_err is None or raw_err is False:
-            err_str = ""
-        elif isinstance(raw_err, (dict, list)):
-            err_str = json.dumps(raw_err)
-        else:
-            err_str = str(raw_err).strip()
-
-        status_str = str(state.get("status") or "").strip().lower()
-        out_str = _stringify_obs_content(state.get("output"))
-
-        prev = events_by_id.get(cid)
-        events_by_id[cid] = {
-            "tool": str(part.get("tool") or (prev["tool"] if prev else "")),
-            "status": status_str or (prev["status"] if prev else ""),
-            "error": err_str or (prev["error"] if prev else ""),
-            "exit": exit_code if exit_code is not None else (prev["exit"] if prev else None),
-            "output": out_str or (prev["output"] if prev else ""),
-        }
-    return events_by_id
-
-
 def extract_trajectory_telemetry(
     traj_dict: dict[str, Any] | None,
     arm: str = "00_none",
     *,
     opencode_txt_path: Path | None = None,
+    trial_dir: Path | None = None,
+    opencode_db_path: Path | None = None,
 ) -> dict[str, int]:
-    """Extract turn count, MCP server call counts, bash calls, and error counts from ATIF JSON."""
-    counts = {
-        "n_turns": 0,
-        "mcp_calls_total": 0,
-        "mcp_calls_inspect": 0,
-        "mcp_calls_modify": 0,
-        "mcp_calls_create": 0,
-        "bash_calls": 0,
-        "bash_nonzero_exits": 0,
-        "tool_errors": 0,
-        "protocol_errors": 0,
-        "severe_casa_errors": 0,
-    }
-    if not isinstance(traj_dict, dict):
-        return counts
-
-    has_opencode_txt = opencode_txt_path is not None and opencode_txt_path.is_file()
-    oc_events = _parse_opencode_tool_events(opencode_txt_path) if has_opencode_txt else {}
-
-    def _walk_traj(t_obj: dict[str, Any], parent_agent: str = "") -> None:
-        agent_blk = t_obj.get("agent")
-        t_agent = (
-            str(agent_blk.get("name") or "").strip().lower() if isinstance(agent_blk, dict) else ""
-        ) or parent_agent
-        is_opencode = t_agent == "opencode"
-
-        steps = t_obj.get("steps")
-        if isinstance(steps, list):
-            n_steps = len(steps)
-            for step_pos, step in enumerate(steps):
-                if not isinstance(step, dict) or step.get("source") != "agent":
-                    continue
-                counts["n_turns"] += 1
-                has_subsequent_steps = step_pos < n_steps - 1
-
-                obs_by_call_id: dict[str, dict[str, Any]] = {}
-                unkeyed_obs: list[dict[str, Any]] = []
-                obs_obj = step.get("observation")
-                if isinstance(obs_obj, dict) and isinstance(obs_obj.get("results"), list):
-                    for res_item in obs_obj["results"]:
-                        if not isinstance(res_item, dict):
-                            continue
-                        scid = res_item.get("source_call_id")
-                        if isinstance(scid, str) and scid:
-                            obs_by_call_id[scid] = res_item
-                        else:
-                            unkeyed_obs.append(res_item)
-
-                tool_calls = step.get("tool_calls")
-                if isinstance(tool_calls, list):
-                    for idx, tc in enumerate(tool_calls):
-                        if not isinstance(tc, dict):
-                            continue
-                        fn_name = str(tc.get("function_name") or "")
-                        call_id = str(tc.get("tool_call_id") or "")
-                        tc_extra = tc.get("extra") if isinstance(tc.get("extra"), dict) else {}
-
-                        obs_item = obs_by_call_id.get(call_id) if call_id else None
-                        if obs_item is None and not call_id and idx < len(unkeyed_obs):
-                            obs_item = unkeyed_obs[idx]
-                        obs_extra = (
-                            obs_item.get("extra")
-                            if isinstance(obs_item, dict)
-                            and isinstance(obs_item.get("extra"), dict)
-                            else {}
-                        )
-                        obs_text = (
-                            _stringify_obs_content(obs_item.get("content"))
-                            if isinstance(obs_item, dict)
-                            else ""
-                        )
-
-                        oc_ev = oc_events.get(call_id) if call_id else None
-                        eff_fn_name = fn_name or (str(oc_ev["tool"]) if oc_ev else "")
-                        text_parts = [p for p in (obs_text,) if p]
-                        if oc_ev is not None:
-                            if oc_ev["output"] and oc_ev["output"] != obs_text:
-                                text_parts.append(str(oc_ev["output"]))
-                            if oc_ev["error"]:
-                                text_parts.append(str(oc_ev["error"]))
-                        combined_obs_text = "\n".join(text_parts)
-
-                        oc_failed = bool(
-                            oc_ev is not None
-                            and (oc_ev["status"] == "error" or bool(oc_ev["error"]))
-                        )
-                        missing_oc_obs_err = bool(
-                            is_opencode
-                            and not has_opencode_txt
-                            and bool(call_id)
-                            and obs_item is None
-                            and has_subsequent_steps
-                        )
-
-                        mcp_srv = _classify_mcp_server(eff_fn_name)
-                        if mcp_srv is not None:
-                            counts["mcp_calls_total"] += 1
-                            if mcp_srv == "ms-inspect":
-                                counts["mcp_calls_inspect"] += 1
-                            elif mcp_srv == "ms-modify":
-                                counts["mcp_calls_modify"] += 1
-                            elif mcp_srv == "ms-create":
-                                counts["mcp_calls_create"] += 1
-
-                        low_fn = eff_fn_name.strip().lower()
-                        is_bash = low_fn in _BASH_TOOL_NAMES
-                        if is_bash:
-                            counts["bash_calls"] += 1
-                            ec = _extract_exit_code(tc_extra, obs_extra, combined_obs_text)
-                            if ec is None and oc_ev is not None and oc_ev["exit"] is not None:
-                                ec = int(oc_ev["exit"])
-                            if (
-                                (ec is not None and ec != 0)
-                                or oc_failed
-                                or missing_oc_obs_err
-                                or _is_tool_error(tc_extra, obs_extra, combined_obs_text)
-                            ):
-                                counts["bash_nonzero_exits"] += 1
-
-                        if any(
-                            p.lower() in combined_obs_text.lower() for p in _CASA_SEVERE_PHRASES
-                        ):
-                            counts["severe_casa_errors"] += 1
-
-                        is_proto = _is_protocol_error(eff_fn_name, mcp_srv, combined_obs_text, arm)
-                        if is_proto:
-                            counts["protocol_errors"] += 1
-
-                        if (
-                            is_proto
-                            or oc_failed
-                            or missing_oc_obs_err
-                            or _is_tool_error(tc_extra, obs_extra, combined_obs_text)
-                        ):
-                            counts["tool_errors"] += 1
-
-        sub_trajs = t_obj.get("subagent_trajectories")
-        if isinstance(sub_trajs, list):
-            for sub in sub_trajs:
-                if isinstance(sub, dict):
-                    _walk_traj(sub, t_agent)
-
-    _walk_traj(traj_dict)
-    return counts
+    """Extract turn count, MCP server call counts, bash calls, and error counts from ATIF/SQLite."""
+    exec_analysis = analyze_trial_execution(
+        traj_dict,
+        arm=arm,
+        trial_dir=trial_dir,
+        opencode_txt_path=opencode_txt_path,
+        opencode_db_path=opencode_db_path,
+    )
+    return dict(exec_analysis.telemetry)
 
 
-def _locate_trial_files(tp: TrialPaths) -> tuple[Path, Path, Path, Path | None]:
-    """Return `(reward_json, metrics_json, trajectory_json, opencode_txt)` supporting `steps/`."""
+def _locate_trial_files(
+    tp: TrialPaths,
+) -> tuple[Path, Path, Path, Path | None, Path | None, Path | None, Path]:
+    """Return `(reward_p, metrics_p, traj_p, oc_txt_p, oc_db_p, claude_txt_p, eff_agent_dir)`."""
     reward_p = tp.reward_json_path
     metrics_p = tp.verifier_dir / "metrics.json"
     traj_p = tp.agent_dir / "trajectory.json"
+    eff_agent_dir = tp.agent_dir
     oc_p: Path | None = (
         tp.agent_dir / "opencode.txt" if (tp.agent_dir / "opencode.txt").is_file() else None
     )
+    oc_db_cand = tp.agent_dir / "opencode" / "xdg-data" / "opencode" / "opencode.db"
+    oc_db_p: Path | None = oc_db_cand if oc_db_cand.is_file() else None
+    cc_txt_cand = tp.agent_dir / "claude-code.txt"
+    cc_txt_p: Path | None = cc_txt_cand if cc_txt_cand.is_file() else None
 
-    if (not reward_p.is_file() or not traj_p.is_file() or oc_p is None) and tp.steps_dir.is_dir():
+    if (
+        not reward_p.is_file()
+        or not traj_p.is_file()
+        or oc_p is None
+        or oc_db_p is None
+        or cc_txt_p is None
+    ) and tp.steps_dir.is_dir():
         try:
             step_dirs = sorted(p for p in tp.steps_dir.iterdir() if p.is_dir())
         except OSError:
@@ -901,10 +628,363 @@ def _locate_trial_files(tp: TrialPaths) -> tuple[Path, Path, Path, Path | None]:
                 metrics_p = last_step / "verifier" / "metrics.json"
             if not traj_p.is_file() and (last_step / "agent" / "trajectory.json").is_file():
                 traj_p = last_step / "agent" / "trajectory.json"
+                eff_agent_dir = last_step / "agent"
             if oc_p is None and (last_step / "agent" / "opencode.txt").is_file():
                 oc_p = last_step / "agent" / "opencode.txt"
+            step_db = last_step / "agent" / "opencode" / "xdg-data" / "opencode" / "opencode.db"
+            if oc_db_p is None and step_db.is_file():
+                oc_db_p = step_db
+            step_cc = last_step / "agent" / "claude-code.txt"
+            if cc_txt_p is None and step_cc.is_file():
+                cc_txt_p = step_cc
 
-    return reward_p, metrics_p, traj_p, oc_p
+    return reward_p, metrics_p, traj_p, oc_p, oc_db_p, cc_txt_p, eff_agent_dir
+
+
+def _agent_result_has_activity(result_dict: dict[str, Any] | None) -> bool:
+    if not isinstance(result_dict, dict):
+        return False
+    candidates: list[dict[str, Any]] = []
+    if isinstance(result_dict.get("agent_result"), dict):
+        candidates.append(result_dict["agent_result"])
+    if isinstance(result_dict.get("step_results"), list):
+        for sr in result_dict["step_results"]:
+            if isinstance(sr, dict) and isinstance(sr.get("agent_result"), dict):
+                candidates.append(sr["agent_result"])
+    for ar in candidates:
+        if (
+            safe_nonneg_int(ar.get("n_input_tokens")) > 0
+            or safe_nonneg_int(ar.get("n_output_tokens")) > 0
+            or (isinstance(ar.get("cost_usd"), (int, float)) and float(ar["cost_usd"]) > 0.0)
+        ):
+            return True
+    return False
+
+
+def _scan_claude_jsonl_expected_events(agent_dir: Path) -> tuple[int, int, bool] | None:
+    """Scan `<agent_dir>/sessions/projects/**/*.jsonl` -> `(n_turns, n_tools, had_corrupt_line)`."""
+    proj_root = agent_dir / "sessions" / "projects"
+    if not proj_root.is_dir():
+        return None
+    try:
+        jsonl_files = sorted(proj_root.rglob("*.jsonl"))
+    except OSError:
+        return None
+    if not jsonl_files:
+        return None
+
+    seen_uuids: set[str] = set()
+    msg_ids: set[str] = set()
+    tool_ids: set[str] = set()
+    corrupt_line = False
+    anon_counter = 0
+
+    for jf in jsonl_files:
+        try:
+            lines = jf.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            corrupt_line = True
+            continue
+        for raw_line in lines:
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            try:
+                ev = json.loads(stripped)
+            except json.JSONDecodeError:
+                corrupt_line = True
+                continue
+            if not isinstance(ev, dict):
+                continue
+            uuid = ev.get("uuid")
+            if isinstance(uuid, str) and uuid:
+                if uuid in seen_uuids:
+                    continue
+                seen_uuids.add(uuid)
+            if ev.get("type") != "assistant":
+                continue
+            msg = ev.get("message")
+            if not isinstance(msg, dict):
+                continue
+            mid = msg.get("id")
+            if isinstance(mid, str) and mid.strip():
+                msg_ids.add(mid.strip())
+            else:
+                anon_counter += 1
+                msg_ids.add(f"_anon_{anon_counter}")
+            content = msg.get("content")
+            if isinstance(content, list):
+                for blk in content:
+                    if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                        cid = str(blk.get("id") or blk.get("tool_use_id") or "").strip()
+                        if cid:
+                            tool_ids.add(cid)
+
+    return len(msg_ids), len(tool_ids), corrupt_line
+
+
+def _scan_claude_stream_txt(claude_txt_path: Path) -> dict[str, Any] | None:
+    if not claude_txt_path.is_file():
+        return None
+    try:
+        lines = claude_txt_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    msg_ids: set[str] = set()
+    tool_ids: set[str] = set()
+    saw_result = False
+    num_turns: int | None = None
+    corrupt_json = False
+    anon_idx = 0
+
+    for raw_line in lines:
+        s = raw_line.strip()
+        if not s or not s.startswith("{"):
+            continue
+        try:
+            ev = json.loads(s)
+        except json.JSONDecodeError:
+            corrupt_json = True
+            continue
+        if not isinstance(ev, dict):
+            continue
+        etype = ev.get("type")
+        if etype == "assistant":
+            msg = ev.get("message")
+            if isinstance(msg, dict):
+                mid = msg.get("id")
+                if isinstance(mid, str) and mid.strip():
+                    msg_ids.add(mid.strip())
+                else:
+                    anon_idx += 1
+                    msg_ids.add(f"_stream_anon_{anon_idx}")
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for blk in content:
+                        if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                            cid = str(blk.get("id") or blk.get("tool_use_id") or "").strip()
+                            if cid:
+                                tool_ids.add(cid)
+        elif etype == "result":
+            saw_result = True
+            if isinstance(ev.get("num_turns"), int) and not isinstance(ev.get("num_turns"), bool):
+                num_turns = int(ev["num_turns"])
+
+    return {
+        "n_assistant_msgs": len(msg_ids),
+        "n_tool_uses": len(tool_ids),
+        "saw_result": saw_result,
+        "num_turns": num_turns,
+        "corrupt_json": corrupt_json,
+    }
+
+
+def _scan_opencode_stdout_events(opencode_txt_path: Path) -> dict[str, Any] | None:
+    if not opencode_txt_path.is_file():
+        return None
+    try:
+        lines = opencode_txt_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    n_starts = 0
+    n_finishes = 0
+    tool_ids: set[str] = set()
+    corrupt_json = False
+    anon_tool = 0
+
+    for raw_line in lines:
+        s = raw_line.strip()
+        if not s or not s.startswith("{"):
+            continue
+        try:
+            ev = json.loads(s)
+        except json.JSONDecodeError:
+            corrupt_json = True
+            continue
+        if not isinstance(ev, dict):
+            continue
+        etype = str(ev.get("type") or "").strip().lower()
+        if etype in ("step_start", "step-start"):
+            n_starts += 1
+        elif etype in ("step_finish", "step-finish"):
+            n_finishes += 1
+        elif etype in ("tool_use", "tool"):
+            part = ev.get("part") if isinstance(ev.get("part"), dict) else {}
+            cid = str(part.get("callID") or part.get("id") or "").strip()
+            if cid:
+                tool_ids.add(cid)
+            else:
+                anon_tool += 1
+                tool_ids.add(f"_oc_anon_{anon_tool}")
+
+    return {
+        "n_starts": n_starts,
+        "n_finishes": n_finishes,
+        "n_tools": len(tool_ids),
+        "corrupt_json": corrupt_json,
+    }
+
+
+def reconcile_trace_completeness(
+    *,
+    agent_name: str,
+    model_name: str,
+    agent_dir: Path,
+    traj_path: Path,
+    trajectory_dict: dict[str, Any] | None,
+    result_dict: dict[str, Any] | None,
+    exec_analysis: TrialExecutionAnalysis,
+    opencode_txt_path: Path | None = None,
+    claude_txt_path: Path | None = None,
+) -> tuple[int, int, bool]:
+    """Reconcile ATIF + recovered subagent trace counts against harness-native disk records."""
+    ag_low = agent_name.strip().lower()
+    if ag_low == "oracle" or model_name.strip().lower() == "oracle":
+        return 0, 0, True
+
+    traj_corrupt_on_disk = False
+    if traj_path.is_file() and trajectory_dict is None:
+        traj_corrupt_on_disk = True
+
+    ar_active = _agent_result_has_activity(result_dict)
+
+    # Check internal ATIF FinalMetrics step truncation if trajectory_dict is present
+    fm_step_shortfall = 0
+    if isinstance(trajectory_dict, dict) and isinstance(trajectory_dict.get("final_metrics"), dict):
+        fm = trajectory_dict["final_metrics"]
+        if fm.get("total_steps") is not None:
+            fm_steps = safe_nonneg_int(fm.get("total_steps"))
+            actual_steps = len(trajectory_dict.get("steps") or [])
+            if fm_steps > actual_steps:
+                fm_step_shortfall = fm_steps - actual_steps
+
+    # 1. OpenCode harness reconciliation
+    if ag_low == "opencode":
+        observed = (
+            exec_analysis.atif_agent_turns
+            + exec_analysis.atif_tool_calls
+            + exec_analysis.recovered_child_turns
+            + exec_analysis.recovered_child_tool_calls
+        )
+        if exec_analysis.opencode_db is not None:
+            expected = (
+                exec_analysis.opencode_db.total_step_finish_events
+                + exec_analysis.opencode_db.total_tool_events
+            )
+            has_root_in_db = any(len(s.turns) > 0 for s in exec_analysis.opencode_db.root_sessions)
+            root_traj_missing = has_root_in_db and trajectory_dict is None
+            ok = (
+                (not traj_corrupt_on_disk)
+                and (not root_traj_missing)
+                and (not exec_analysis.opencode_db.has_unfinished_step)
+                and fm_step_shortfall == 0
+                and observed == expected
+                and expected > 0
+            )
+            return expected, observed, ok
+
+        if opencode_txt_path is not None and opencode_txt_path.is_file():
+            oc_scan = _scan_opencode_stdout_events(opencode_txt_path)
+            if oc_scan is not None:
+                n_st = int(oc_scan["n_starts"])
+                n_fn = int(oc_scan["n_finishes"])
+                n_tl = int(oc_scan["n_tools"])
+                corrupt_txt = bool(oc_scan["corrupt_json"])
+                if n_st > 0 or n_fn > 0:
+                    expected = max(n_st, n_fn) + n_tl
+                    ok = (
+                        (not traj_corrupt_on_disk)
+                        and (trajectory_dict is not None)
+                        and (not corrupt_txt)
+                        and (n_st <= n_fn)
+                        and fm_step_shortfall == 0
+                        and observed == expected
+                        and expected > 0
+                    )
+                    return expected, observed, ok
+                if n_tl > 0:
+                    expected = exec_analysis.atif_agent_turns + n_tl
+                    ok = (
+                        (not traj_corrupt_on_disk)
+                        and (trajectory_dict is not None)
+                        and (not corrupt_txt)
+                        and fm_step_shortfall == 0
+                        and observed == expected
+                    )
+                    return expected, observed, ok
+
+    # 2. ClaudeCode harness reconciliation
+    if ag_low == "claude-code":
+        observed = exec_analysis.atif_agent_turns + exec_analysis.atif_tool_calls
+        cc_jsonl = _scan_claude_jsonl_expected_events(agent_dir)
+        cc_stream = (
+            _scan_claude_stream_txt(claude_txt_path) if claude_txt_path is not None else None
+        )
+        stream_corrupt = bool(cc_stream and cc_stream["corrupt_json"])
+        stream_missing_result = bool(
+            cc_stream and cc_stream["n_assistant_msgs"] > 0 and not cc_stream["saw_result"]
+        )
+
+        if cc_jsonl is not None:
+            exp_turns, exp_tools, jsonl_corrupt = cc_jsonl
+            expected = exp_turns + exp_tools
+            ok = (
+                (not traj_corrupt_on_disk)
+                and (trajectory_dict is not None)
+                and (not jsonl_corrupt)
+                and (not stream_corrupt)
+                and (not stream_missing_result)
+                and fm_step_shortfall == 0
+                and observed == expected
+                and expected > 0
+            )
+            return expected, observed, ok
+
+        if cc_stream is not None and (cc_stream["n_assistant_msgs"] > 0 or cc_stream["saw_result"]):
+            if cc_stream["n_assistant_msgs"] > 0:
+                expected = int(cc_stream["n_assistant_msgs"]) + int(cc_stream["n_tool_uses"])
+                ok = (
+                    (not traj_corrupt_on_disk)
+                    and (trajectory_dict is not None)
+                    and (not stream_corrupt)
+                    and bool(cc_stream["saw_result"])
+                    and fm_step_shortfall == 0
+                    and observed == expected
+                )
+                return expected, observed, ok
+            if cc_stream["num_turns"] is not None:
+                exp_t = int(cc_stream["num_turns"])
+                expected = exp_t + exec_analysis.atif_tool_calls
+                ok = (
+                    (not traj_corrupt_on_disk)
+                    and (trajectory_dict is not None)
+                    and (not stream_corrupt)
+                    and fm_step_shortfall == 0
+                    and exec_analysis.atif_agent_turns == exp_t
+                )
+                return expected, observed, ok
+
+    # 3. Generic ATIF / fallback reconciliation
+    observed_generic = (
+        exec_analysis.atif_agent_turns
+        + exec_analysis.atif_tool_calls
+        + exec_analysis.recovered_child_turns
+        + exec_analysis.recovered_child_tool_calls
+    )
+    if traj_corrupt_on_disk:
+        return max(1, observed_generic), observed_generic, False
+    if trajectory_dict is None:
+        if ar_active:
+            return 1, 0, False
+        has_exc = isinstance(result_dict, dict) and result_dict.get("exception_info") is not None
+        return 0, 0, (not has_exc)
+    if fm_step_shortfall > 0:
+        return observed_generic + fm_step_shortfall, observed_generic, False
+    if ar_active and observed_generic == 0:
+        return 1, 0, False
+    return observed_generic, observed_generic, True
 
 
 def _resolve_task_name(
@@ -1001,13 +1081,11 @@ def _extract_exception(
             return etype, emsg
 
     if tp.exception_message_path.is_file():
-        try:
+        with contextlib.suppress(OSError):
             txt = tp.exception_message_path.read_text(encoding="utf-8").strip()
             if txt:
                 first_line = txt.splitlines()[0][:300]
                 return "TrialException", first_line
-        except OSError:
-            pass
     return None, None
 
 
@@ -1016,7 +1094,7 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
     tp = TrialPaths(trial_dir)
     result_dict = _read_json_dict(tp.result_path)
     config_dict = _read_json_dict(tp.config_path)
-    reward_p, metrics_p, traj_p, oc_p = _locate_trial_files(tp)
+    reward_p, metrics_p, traj_p, oc_p, oc_db_p, cc_txt_p, eff_agent_dir = _locate_trial_files(tp)
 
     reward_dict = _read_json_dict(reward_p)
     if reward_dict is None and isinstance(result_dict, dict):
@@ -1053,7 +1131,7 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         if isinstance(task_path_raw, str) and task_path_raw.strip():
             task_toml = Path(task_path_raw) / "task.toml"
             if task_toml.is_file():
-                try:
+                with contextlib.suppress(OSError, ValueError):
                     t_meta = tomllib.loads(task_toml.read_text(encoding="utf-8")).get("metadata")
                     if isinstance(t_meta, dict):
                         if pack_id is None and isinstance(t_meta.get("pack_id"), str):
@@ -1079,8 +1157,6 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
                                 if isinstance(t_meta.get("stage"), str) and t_meta["stage"].strip():
                                     stage = t_meta["stage"].strip()
                                     is_e2e = stage == "e2e"
-                except (OSError, ValueError):
-                    pass
     if (
         suite == "unknown"
         and isinstance(metrics_dict, dict)
@@ -1103,6 +1179,7 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
     )
 
     agent_name, model_name = _resolve_agent_and_model(result_dict, config_dict, trajectory_dict)
+    thinking_level = extract_thinking_level(config_dict, result_dict, trajectory_dict)
     exception_type, exception_message = _extract_exception(tp, result_dict)
     agent_wall_sec, verifier_wall_sec, total_wall_sec = _extract_durations(result_dict)
 
@@ -1130,12 +1207,33 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
             if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)):
                 subscores[str(k)] = round(float(v), 6)
 
-    telemetry = extract_trajectory_telemetry(trajectory_dict, arm=arm, opencode_txt_path=oc_p)
-    pricing = compute_trial_pricing(
+    exec_analysis = analyze_trial_execution(
+        trajectory_dict,
+        model_name=model_name,
+        agent_name=agent_name,
+        arm=arm,
+        trial_dir=trial_dir,
+        opencode_txt_path=oc_p,
+        opencode_db_path=oc_db_p,
+    )
+    telemetry = exec_analysis.telemetry
+    pricing = build_trial_pricing_from_execution(
+        exec_analysis,
         model_name=model_name,
         agent_name=agent_name,
         trajectory_dict=trajectory_dict,
         trial_result_dict=result_dict,
+    )
+    trace_expected, trace_observed, trace_ok = reconcile_trace_completeness(
+        agent_name=agent_name,
+        model_name=model_name,
+        agent_dir=eff_agent_dir,
+        traj_path=traj_p,
+        trajectory_dict=trajectory_dict,
+        result_dict=result_dict,
+        exec_analysis=exec_analysis,
+        opencode_txt_path=oc_p,
+        claude_txt_path=cc_txt_p,
     )
 
     failure_mode = classify_failure(
@@ -1158,12 +1256,15 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
     measured_block: dict[str, Any] = {}
     measurements_block: dict[str, Any] = {}
     rubric_meta_block: dict[str, Any] = {}
+    diff_summary_block: dict[str, Any] = {}
     triggered_tags_list: list[str] = []
     if isinstance(metrics_dict, dict):
         if isinstance(metrics_dict.get("measurements"), dict):
             measurements_block = sanitize_json_tree(metrics_dict["measurements"])
         if isinstance(metrics_dict.get("rubric_meta"), dict):
             rubric_meta_block = sanitize_json_tree(metrics_dict["rubric_meta"])
+        if isinstance(metrics_dict.get("diff_summary"), dict) and metrics_dict["diff_summary"]:
+            diff_summary_block = sanitize_json_tree(metrics_dict["diff_summary"])
         if isinstance(metrics_dict.get("triggered_failure_tags"), list):
             triggered_tags_list = [str(x) for x in metrics_dict["triggered_failure_tags"] if x]
 
@@ -1205,6 +1306,7 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         "arm": arm,
         "agent_name": agent_name,
         "model_name": model_name,
+        "thinking_level": thinking_level,
         "attempt_idx": 0,
         "reward": raw_reward,
         "passed": int(passed),
@@ -1224,6 +1326,10 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         "tool_errors": telemetry["tool_errors"],
         "protocol_errors": telemetry["protocol_errors"],
         **pricing.to_dict(),
+        "trace_events_expected": trace_expected,
+        "trace_events_observed": trace_observed,
+        "trace_completeness_ok": trace_ok,
+        "role_breakdown": exec_analysis.role_breakdown,
         "subscores": subscores,
         "truth": truth_block,
         "measured": measured_block,
@@ -1232,6 +1338,8 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         trial_out["measurements"] = measurements_block
     if rubric_meta_block:
         trial_out["rubric_meta"] = rubric_meta_block
+    if diff_summary_block:
+        trial_out["diff_summary"] = diff_summary_block
     if triggered_tags_list:
         trial_out["triggered_failure_tags"] = triggered_tags_list
 
@@ -1282,10 +1390,12 @@ def _extract_scalar_measured_map(rec: dict[str, Any]) -> dict[str, Any]:
 
 def write_trials_outputs(records: list[dict[str, Any]], output_dir: Path) -> tuple[Path, Path]:
     """Atomically write `<output_dir>/trials.jsonl` and `<output_dir>/trials.csv` (`allow_nan=False`)."""
+    out_p = Path(output_dir)
+    reject_slash_tmp(out_p, label="output_dir")
     records = [sanitize_json_tree(r) for r in records]
-    output_dir.mkdir(parents=True, exist_ok=True)
-    jsonl_path = output_dir / "trials.jsonl"
-    csv_path = output_dir / "trials.csv"
+    out_p.mkdir(parents=True, exist_ok=True)
+    jsonl_path = out_p / "trials.jsonl"
+    csv_path = out_p / "trials.csv"
 
     jsonl_lines = [json.dumps(rec, allow_nan=False, sort_keys=False) for rec in records]
     _atomic_write_text(jsonl_path, ("\n".join(jsonl_lines) + "\n") if jsonl_lines else "")
@@ -1411,9 +1521,10 @@ def _deduplicate_regraded_trials(
 
     surviving = [entries[idx] for idx in range(n) if idx not in superseded_indices]
 
-    # 2. Deduplicate identical trial_name across job directories (keep newest / regrade).
+    # 2. Deduplicate identical trial_name across job directories (include pack_id & thinking_level).
     by_trial_key: dict[
-        tuple[str, str, str, str, str, str, str], tuple[int, dict[str, Any], dict[str, Any]]
+        tuple[str, str, str, str, str, str, str, str],
+        tuple[int, dict[str, Any], dict[str, Any]],
     ] = {}
     for ord_idx, rec, prov in surviving:
         t_name = str(rec.get("trial_name") or "")
@@ -1424,6 +1535,7 @@ def _deduplicate_regraded_trials(
             str(rec.get("arm")),
             str(rec.get("agent_name")),
             str(rec.get("model_name")),
+            str(rec.get("thinking_level") or "default"),
             t_name,
         )
         existing = by_trial_key.get(key)
@@ -1445,9 +1557,12 @@ def collect_trials(
     output_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Collect all Harbor trials from `job_dirs`, deduplicate regrades, and assign `attempt_idx`."""
+    if output_dir is not None:
+        reject_slash_tmp(Path(output_dir), label="output_dir")
     job_order_map: dict[Path, int] = {}
     for idx, raw_j in enumerate(job_dirs):
         p = Path(raw_j)
+        reject_slash_tmp(p, label="job_dir")
         try:
             job_order_map[p.resolve()] = idx
         except OSError:
@@ -1467,7 +1582,7 @@ def collect_trials(
 
     records = _deduplicate_regraded_trials(entries)
 
-    grouped: dict[tuple[str, str, str, str, str, str], list[dict[str, Any]]] = {}
+    grouped: dict[tuple[str, str, str, str, str, str, str], list[dict[str, Any]]] = {}
     for rec in records:
         key = (
             str(rec["suite"]),
@@ -1476,6 +1591,7 @@ def collect_trials(
             str(rec["arm"]),
             str(rec["agent_name"]),
             str(rec["model_name"]),
+            str(rec.get("thinking_level") or "default"),
         )
         grouped.setdefault(key, []).append(rec)
 

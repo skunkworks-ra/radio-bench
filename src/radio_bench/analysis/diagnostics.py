@@ -13,7 +13,9 @@ import numpy as np
 
 from radio_bench.analysis.collect import CANONICAL_ARMS, sanitize_json_tree
 from radio_bench.analysis.taxonomy import ALL_OUTCOME_LABELS
+from radio_bench.config import reject_slash_tmp
 from radio_bench.grading import PASS_REWARD_MIN
+from radio_bench.grading.extractors.common import has_active_table_lock
 
 _INSPECT_SCALAR_CAL_FIELDS: frozenset[str] = frozenset(
     {
@@ -709,10 +711,20 @@ def render_summary_markdown(
             p3_str = "n/a"
             p5_str = "n/a"
             cr_str = "n/a"
+        s_tl = str(pobj.get("small_thinking_level") or "default").strip() or "default"
+        f_tl = str(pobj.get("frontier_thinking_level") or "default").strip() or "default"
+        s_disp = (
+            str(pobj["small_model"]) if s_tl == "default" else f"{pobj['small_model']} ({s_tl})"
+        )
+        f_disp = (
+            str(pobj["frontier_model"])
+            if f_tl == "default"
+            else f"{pobj['frontier_model']} ({f_tl})"
+        )
         row_vals = [
             f"`{pkey}`",
-            f"`{pobj['small_model']} @ {pobj['small_arm']}`",
-            f"`{pobj['frontier_model']} @ {pobj['frontier_arm']}`",
+            f"`{s_disp} @ {pobj['small_arm']}`",
+            f"`{f_disp} @ {pobj['frontier_arm']}`",
             est_str,
             ci_str,
             p1_str,
@@ -771,20 +783,67 @@ def render_summary_markdown(
         lines.append("No taxonomy records.")
     lines.append("")
 
+    # 7. Cohort-Stratified Cost-Quality Pareto Frontier
+    lines.extend(["## 7. Cohort-Stratified Cost-Quality Pareto Frontier", ""])
+    pareto_block = factorial_summary.get("pareto", {})
+    if isinstance(pareto_block, dict) and pareto_block:
+        par_hdr = [
+            "Cohort",
+            "Common Tasks",
+            "Cell",
+            "Mean USD (Task-Eq)",
+            "Reward (Task-Eq)",
+            "Pareto (Reward)",
+            "Boot Prob (Reward)",
+            "Cost/Pass USD",
+            "Pass@1 (Task-Eq)",
+            "Pareto (Pass)",
+            "Boot Prob (Pass)",
+        ]
+        any_pareto_rows = False
+        table_lines: list[str] = [
+            "| " + " | ".join(_md_cell(h) for h in par_hdr) + " |",
+            "| " + " | ".join(["---"] * len(par_hdr)) + " |",
+        ]
+        for cohort_key in ("all_5_arms", "e2e_6_arms"):
+            c_info = pareto_block.get(cohort_key)
+            if not isinstance(c_info, dict) or c_info.get("status") != "ok":
+                continue
+            n_common = str(c_info.get("n_common_tasks", 0))
+            for c_row in c_info.get("cells") or []:
+                if not isinstance(c_row, dict):
+                    continue
+                any_pareto_rows = True
+                cpp_v = c_row.get("cost_per_passing_run_usd_task_equal")
+                cpp_str = f"${_fmt_num(cpp_v, 4)}" if cpp_v is not None else "n/a"
+                row_vals = [
+                    f"`{cohort_key}`",
+                    n_common,
+                    f"`{c_row.get('cell_id')}`",
+                    f"${_fmt_num(c_row.get('mean_usd_task_equal'), 4)}",
+                    _fmt_num(c_row.get("reward_task_equal_mean"), 4),
+                    str(c_row.get("pareto_reward_status")),
+                    _fmt_num(c_row.get("pareto_reward_boot_prob"), 4),
+                    cpp_str,
+                    _fmt_num(c_row.get("pass_at_1_task_equal"), 4),
+                    str(c_row.get("pareto_pass_status")),
+                    _fmt_num(c_row.get("pareto_pass_boot_prob"), 4),
+                ]
+                table_lines.append("| " + " | ".join(_md_cell(v) for v in row_vals) + " |")
+        if any_pareto_rows:
+            lines.extend(table_lines)
+        else:
+            lines.append("No eligible LLM Pareto frontier cells.")
+    else:
+        lines.append("No eligible LLM Pareto frontier cells.")
+    lines.append("")
+
     md_text = "\n".join(lines)
     return md_text.replace("\u2014", "--").replace("\u2013", "--")
 
 
 def _table_has_active_lock(table_dir: Path) -> bool:
-    lock_p = table_dir / "table.lock"
-    if not lock_p.is_file():
-        return False
-    try:
-        from radio_bench.grading.precal_metrics import has_active_table_lock
-
-        return bool(has_active_table_lock(table_dir))
-    except Exception:
-        return True
+    return bool(has_active_table_lock(table_dir))
 
 
 def _discover_workspace_casa_tables(workspace_dir: Path, max_depth: int = 2) -> list[Path]:
@@ -1065,6 +1124,7 @@ def generate_diagnostic_plots(
     plots_dir: Path,
 ) -> list[str]:
     """Generate optional diagnostic PNGs strictly inside `plots_dir` when `--plots` is requested."""
+    reject_slash_tmp(Path(plots_dir), label="plots_dir")
     import matplotlib
 
     matplotlib.use("Agg")
@@ -1100,31 +1160,155 @@ def generate_diagnostic_plots(
     _atomic_savefig(fig, p1_path, plt)
     written.append(str(p1_path))
 
-    # Plot 2: Mean USD cost vs Mean Reward across (model, arm) cells.
+    # Plot 2: Mean USD cost vs Mean Reward across paired 5-arm cells + Pareto staircase.
     fig2, ax2 = plt.subplots(figsize=(7.5, 4.5), dpi=140)
+    by_mt = factorial_summary.get("by_model_thinking", {})
     by_model = factorial_summary.get("by_model", {})
-    for model_name, m_data in by_model.items():
-        m_cells = m_data.get("cells", {})
-        xs = [
-            float(m_cells[a].get("mean_usd_task_equal", m_cells[a]["mean_usd"]))
-            for a in arms
-            if a in m_cells
+    pareto_5 = (factorial_summary.get("pareto") or {}).get("all_5_arms")
+    has_legend_items = False
+    p2_title = "Cost vs Reward Across Model x Arm Cells"
+
+    p5_cells = (
+        [c for c in (pareto_5.get("cells") or []) if isinstance(c, dict)]
+        if isinstance(pareto_5, dict) and pareto_5.get("status") == "ok"
+        else []
+    )
+    if p5_cells:
+        n_common_t = int(pareto_5.get("n_common_tasks") or 0)
+        p2_title = f"Cost vs Reward Across 5-Arm Paired Cells (n={n_common_t} common tasks)"
+        p5_packs = {str(c.get("pack_id") or "ra_00a11ea") for c in p5_cells}
+        multi_p5_packs = len(p5_packs) > 1
+        series_groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for c in p5_cells:
+            gk = (
+                str(c.get("pack_id") or "ra_00a11ea"),
+                str(c.get("model_name") or ""),
+                str(c.get("thinking_level") or "default"),
+            )
+            series_groups.setdefault(gk, []).append(c)
+
+        arm_rank = {a: idx for idx, a in enumerate(arms)}
+        for (pk, m_name, t_lvl), c_list in sorted(series_groups.items()):
+            c_ordered = sorted(c_list, key=lambda d: arm_rank.get(str(d.get("arm")), 999))
+            base_lbl = f"{pk}:{m_name}" if multi_p5_packs else m_name
+            series_lbl = base_lbl if t_lvl == "default" else f"{base_lbl} ({t_lvl})"
+            xs = [float(d["mean_usd_task_equal"]) for d in c_ordered]
+            ys = [float(d["reward_task_equal_mean"]) for d in c_ordered]
+            a_lbls = [str(d["arm"]) for d in c_ordered]
+            if xs:
+                has_legend_items = True
+                ax2.scatter(xs, ys, s=45, label=series_lbl)
+                for xv, yv, al in zip(xs, ys, a_lbls, strict=True):
+                    ax2.annotate(
+                        al, (xv, yv), fontsize=7, xytext=(3, 3), textcoords="offset points"
+                    )
+    elif isinstance(by_mt, dict) and by_mt:
+        mt_packs = {
+            str(v.get("pack_id") or "ra_00a11ea") for v in by_mt.values() if isinstance(v, dict)
+        }
+        multi_mt_packs = len(mt_packs) > 1
+        for _mt_key, mt_data in by_mt.items():
+            if not isinstance(mt_data, dict):
+                continue
+            m_name = str(mt_data.get("model_name") or "")
+            if m_name.strip().lower() == "oracle":
+                continue
+            pk = str(mt_data.get("pack_id") or "ra_00a11ea")
+            t_lvl = str(mt_data.get("thinking_level") or "default")
+            base_lbl = f"{pk}:{m_name}" if multi_mt_packs else m_name
+            series_lbl = base_lbl if t_lvl == "default" else f"{base_lbl} ({t_lvl})"
+            m_cells = mt_data.get("cells", {})
+            xs = [
+                float(m_cells[a].get("mean_usd_task_equal", m_cells[a]["mean_usd"]))
+                for a in arms
+                if a in m_cells and a != "oracle"
+            ]
+            ys = [
+                float(m_cells[a].get("reward_task_equal_mean", m_cells[a]["reward_mean"]))
+                for a in arms
+                if a in m_cells and a != "oracle"
+            ]
+            a_lbls = [a for a in arms if a in m_cells and a != "oracle"]
+            if xs:
+                has_legend_items = True
+                ax2.scatter(xs, ys, s=45, label=series_lbl)
+                for xv, yv, al in zip(xs, ys, a_lbls, strict=True):
+                    ax2.annotate(
+                        al, (xv, yv), fontsize=7, xytext=(3, 3), textcoords="offset points"
+                    )
+    else:
+        for model_name, m_data in by_model.items():
+            if str(model_name).strip().lower() == "oracle":
+                continue
+            m_cells = m_data.get("cells", {})
+            xs = [
+                float(m_cells[a].get("mean_usd_task_equal", m_cells[a]["mean_usd"]))
+                for a in arms
+                if a in m_cells and a != "oracle"
+            ]
+            ys = [
+                float(m_cells[a].get("reward_task_equal_mean", m_cells[a]["reward_mean"]))
+                for a in arms
+                if a in m_cells and a != "oracle"
+            ]
+            a_lbls = [a for a in arms if a in m_cells and a != "oracle"]
+            if xs:
+                has_legend_items = True
+                ax2.scatter(xs, ys, s=45, label=model_name)
+                for xv, yv, al in zip(xs, ys, a_lbls, strict=True):
+                    ax2.annotate(
+                        al, (xv, yv), fontsize=7, xytext=(3, 3), textcoords="offset points"
+                    )
+
+    if p5_cells:
+        frontier_pts = [
+            (
+                float(c["mean_usd_task_equal"]),
+                float(c["reward_task_equal_mean"]),
+            )
+            for c in p5_cells
+            if bool(c.get("is_pareto_reward"))
         ]
-        ys = [
-            float(m_cells[a].get("reward_task_equal_mean", m_cells[a]["reward_mean"]))
-            for a in arms
-            if a in m_cells
-        ]
-        a_lbls = [a for a in arms if a in m_cells]
-        if xs:
-            ax2.scatter(xs, ys, s=45, label=model_name)
-            for xv, yv, al in zip(xs, ys, a_lbls, strict=True):
-                ax2.annotate(al, (xv, yv), fontsize=7, xytext=(3, 3), textcoords="offset points")
+        frontier_pts.sort(key=lambda pt: (pt[0], pt[1]))
+        if frontier_pts:
+            fx = [pt[0] for pt in frontier_pts]
+            fy = [pt[1] for pt in frontier_pts]
+            has_legend_items = True
+            if len(frontier_pts) >= 2:
+                ax2.step(
+                    fx,
+                    fy,
+                    where="post",
+                    linestyle="--",
+                    linewidth=1.5,
+                    color="black",
+                    alpha=0.75,
+                    label=f"Pareto Frontier (5-arm, n={pareto_5.get('n_common_tasks', 0)})",
+                )
+                ax2.scatter(
+                    fx,
+                    fy,
+                    s=80,
+                    facecolors="none",
+                    edgecolors="black",
+                    linewidths=1.2,
+                )
+            else:
+                ax2.scatter(
+                    fx,
+                    fy,
+                    s=80,
+                    facecolors="none",
+                    edgecolors="black",
+                    linewidths=1.2,
+                    label=f"Pareto Frontier (5-arm, n={pareto_5.get('n_common_tasks', 0)})",
+                )
+
     ax2.set_xlabel("Task-Equal Mean List-Price Cost per Trial (USD)")
     ax2.set_ylabel("Task-Equal Mean Composite Reward")
     ax2.set_ylim(-0.02, 1.05)
-    ax2.set_title("Cost vs Reward Across Model x Arm Cells")
-    if by_model:
+    ax2.set_title(p2_title)
+    if has_legend_items:
         ax2.legend(loc="best", fontsize=8)
     ax2.grid(alpha=0.3)
     fig2.tight_layout()
@@ -1239,7 +1423,11 @@ def write_diagnostic_reports(
     plots: bool = False,
 ) -> dict[str, Any]:
     """Write `summary.json`, `summary.md`, and (only if `plots=True`) PNGs in `output_dir/plots`."""
-    output_dir.mkdir(parents=True, exist_ok=True)
+    out_p = Path(output_dir)
+    reject_slash_tmp(out_p, label="output_dir")
+    for jp in job_dirs:
+        reject_slash_tmp(Path(jp), label="job_dir")
+    out_p.mkdir(parents=True, exist_ok=True)
     job_dir_strs = [str(p) for p in job_dirs]
     truth_vs_measured = build_truth_vs_measured_table(records)
 
@@ -1249,13 +1437,13 @@ def write_diagnostic_reports(
             records=records,
             factorial_summary=factorial_summary,
             taxonomy_summary=taxonomy_summary,
-            plots_dir=output_dir / "plots",
+            plots_dir=out_p / "plots",
         )
 
     summary_payload = sanitize_json_tree(
         {
             "job_dirs": job_dir_strs,
-            "output_dir": str(output_dir),
+            "output_dir": str(out_p),
             "n_trials": len(records),
             "truth_vs_measured": truth_vs_measured,
             "factorial": factorial_summary,
@@ -1264,8 +1452,8 @@ def write_diagnostic_reports(
         }
     )
 
-    summary_json_path = output_dir / "summary.json"
-    summary_md_path = output_dir / "summary.md"
+    summary_json_path = out_p / "summary.json"
+    summary_md_path = out_p / "summary.md"
 
     json_text = json.dumps(summary_payload, indent=2, allow_nan=False) + "\n"
     json_text = json_text.replace("\u2014", "--").replace("\u2013", "--")

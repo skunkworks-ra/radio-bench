@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 
+from radio_bench.config import reject_slash_tmp
 from radio_bench.grading.extractors import extract_workspace, resolve_scratch_root
 from radio_bench.grading.rubric import RubricEvaluationResult, evaluate_rubric
 from radio_bench.grading.schema import (
@@ -217,12 +218,17 @@ def run_verification(
     rubric: RubricSpec | None = None,
     ground_truth: dict[str, Any] | None = None,
     ref_arrays_dir: Path | None = None,
+    ref_checkpoint_dir: Path | None = None,
     scratch_root: Path | None = None,
     compute_raw_hash: bool = True,
 ) -> tuple[dict[str, float | int], dict[str, Any]]:
     """Execute `extract_workspace` + `evaluate_rubric` and optionally write `/logs/verifier/*`."""
     ws = Path(workspace_dir).resolve()
     td = Path(tests_dir).resolve()
+    reject_slash_tmp(ws, label="workspace")
+    reject_slash_tmp(td, label="tests_dir")
+    if log_dir is not None:
+        reject_slash_tmp(Path(log_dir), label="log_dir")
 
     if extract_config is None:
         ec_path = td / "extract_config.json"
@@ -264,6 +270,33 @@ def run_verification(
         eval_result=eval_res,
         ground_truth=ground_truth,
     )
+
+    eff_ref_ckpt = (
+        Path(ref_checkpoint_dir).resolve()
+        if ref_checkpoint_dir is not None
+        else (td / "ref_checkpoint")
+    )
+    if eff_ref_ckpt.is_dir():
+        has_ckpt_entries = False
+        with contextlib.suppress(OSError):
+            has_ckpt_entries = any(True for _ in eff_ref_ckpt.iterdir())
+        if has_ckpt_entries:
+            try:
+                from radio_bench.analysis.diff import diff_workspaces
+
+                metrics_dict["diff_summary"] = diff_workspaces(
+                    ws,
+                    eff_ref_ckpt,
+                    stage=str(metrics_dict.get("stage") or ""),
+                    base_task=rubric.task_id,
+                    extract_config=extract_config,
+                    scratch_root=resolved_scratch,
+                )
+            except Exception as diff_exc:
+                metrics_dict["diff_summary"] = {
+                    "status": "diff_error",
+                    "error": f"{type(diff_exc).__name__}: {diff_exc}",
+                }
 
     if log_dir is not None:
         write_verifier_outputs(Path(log_dir), eval_res.reward_dict, metrics_dict)
@@ -324,6 +357,9 @@ def main(argv: list[str] | None = None) -> int:
     workspace_dir = args.workspace.resolve()
     tests_dir = args.tests_dir.resolve()
     log_dir = args.log_dir.resolve()
+    reject_slash_tmp(workspace_dir, label="workspace")
+    reject_slash_tmp(tests_dir, label="tests_dir")
+    reject_slash_tmp(log_dir, label="log_dir")
 
     scratch_dir: Path | None = None
     prev_cwd: Path | None = None

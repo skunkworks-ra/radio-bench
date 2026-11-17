@@ -156,6 +156,41 @@ def _resolve_relative_caller_paths(
     return resolved
 
 
+def _resolve_diff_caller_paths(
+    extra_args: Sequence[str],
+    caller_cwd: Path,
+) -> list[str]:
+    """Resolve relative `--agent-dir`, `--ref-dir`, `--job-dir`, and `--output` paths against `caller_cwd`."""
+    path_flags = {"--agent-dir", "--ref-dir", "--job-dir", "--output"}
+    resolved: list[str] = []
+    expect_path = False
+    for arg in extra_args:
+        if expect_path:
+            expect_path = False
+            if not arg.startswith("-"):
+                cand = Path(os.path.expanduser(arg))
+                resolved.append(str(cand if cand.is_absolute() else (caller_cwd / cand).resolve()))
+            else:
+                resolved.append(arg)
+            continue
+        if arg in path_flags:
+            resolved.append(arg)
+            expect_path = True
+            continue
+        matched_eq = False
+        for pf in path_flags:
+            if arg.startswith(f"{pf}="):
+                val = arg[len(pf) + 1 :]
+                cand = Path(os.path.expanduser(val))
+                abs_s = str(cand if cand.is_absolute() else (caller_cwd / cand).resolve())
+                resolved.append(f"{pf}={abs_s}")
+                matched_eq = True
+                break
+        if not matched_eq:
+            resolved.append(arg)
+    return resolved
+
+
 def _normalize_pytest_args(extra_args: Sequence[str], cfg: BenchConfig) -> list[str]:
     normalized: list[str] = []
     has_target = False
@@ -235,6 +270,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     subparsers.add_parser("render-jobs", help="Render Harbor 0.25.0 job YAML files.")
     subparsers.add_parser("harbor-lint", help="Run harbor lint across compiled task directories.")
     subparsers.add_parser("analyze", help="Analyze one or more Harbor job or trial directories.")
+    subparsers.add_parser(
+        "diff-run",
+        help="Compare an agent workspace, trial, or Harbor job against a reference checkpoint.",
+    )
 
     oracle_parser = subparsers.add_parser(
         "run-oracle",
@@ -326,6 +365,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         norm_extra = _resolve_relative_caller_paths(extra, caller_cwd)
         return _run_child(
             [sys.executable, "-B", "-m", "radio_bench.analysis.cli", *norm_extra],
+            cfg=cfg,
+            env=env,
+        )
+    if cmd == "diff-run":
+        norm_extra = _resolve_diff_caller_paths(extra, caller_cwd)
+        return _run_child(
+            [sys.executable, "-B", "-m", "radio_bench.analysis.diff", *norm_extra],
             cfg=cfg,
             env=env,
         )
