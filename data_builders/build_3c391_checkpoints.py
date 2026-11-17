@@ -1,9 +1,8 @@
 """Deterministic builder for Suite R golden 3C391 checkpoints and ground-truth JSONs.
 
-Extracts the untouched archival tarball
-`/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms.tgz` strictly read-only
+Extracts the untouched archival tarball `3c391_ctm_mosaic_10s_spw0.ms.tgz` strictly read-only
 (falling back to copying `.ms` + resetting scratch/flags/STATE/HISTORY if only `.ms` exists) and
-generates under `/mnt/fast/radio_bench_data/checkpoints/3c391/`:
+generates under `<data_dir>/checkpoints/3c391/`:
   - `raw/input.ms` (clean uncalibrated MS with zero scratch columns or prior-run history)
   - `post_precal/input.ms`, `post_precal/calibrators.ms`, `post_precal/precal_masks.npz`
   - `post_calibrate/input.ms`, `post_calibrate/caltables/{G0,K,B,G,fluxscale}.cal`
@@ -22,53 +21,122 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-FAST_BENCH_ROOT = Path("/mnt/fast/radio-bench")
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+if str(_REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / "src"))
 
+import importlib  # noqa: E402
 
-def _ensure_non_tmp_env(var_name: str, fallback: Path) -> None:
-    raw_val = os.environ.get(var_name, "").strip()
-    is_under_tmp = False
-    if raw_val:
-        if raw_val.startswith("/tmp"):
-            is_under_tmp = True
-        else:
-            with contextlib.suppress(OSError):
-                is_under_tmp = Path(raw_val).resolve().is_relative_to(Path("/tmp").resolve())
-    if not raw_val or is_under_tmp:
-        os.environ[var_name] = str(fallback)
-    Path(os.environ[var_name]).mkdir(parents=True, exist_ok=True)
-
-
-_ensure_non_tmp_env("TMPDIR", FAST_BENCH_ROOT / "tmp")
-_ensure_non_tmp_env("MPLCONFIGDIR", FAST_BENCH_ROOT / "mplconfig")
-os.environ.setdefault("CASASITECONFIG", str(FAST_BENCH_ROOT / "casaconfig_local.py"))
-if not os.access(os.environ.get("HOME", "/"), os.W_OK):
-    os.environ["HOME"] = str(FAST_BENCH_ROOT / "tmp")
-
-import casatasks  # noqa: E402
-import casatools  # noqa: E402
 import numpy as np  # noqa: E402
 
-DEFAULT_SOURCE_MS = Path("/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms")
-DEFAULT_SOURCE_TGZ = Path("/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms.tgz")
-DEFAULT_OUT_DIR = Path("/mnt/fast/radio_bench_data/checkpoints/3c391")
+from data_builders.sim_common import configure_builder_casa_env  # noqa: E402
+from radio_bench.config import (  # noqa: E402
+    BenchConfig,
+    add_config_cli_args,
+    config_from_cli_args,
+    load_bench_config,
+)
+
+
+class _LazyCasaProxy:
+    """Defer importing casatools/casatasks until runtime env and CASASITECONFIG are prepared."""
+
+    def __init__(self, module_name: str) -> None:
+        self._module_name = module_name
+        self._mod: Any = None
+
+    def __getattr__(self, attr: str) -> Any:
+        if self._mod is None:
+            configure_builder_casa_env()
+            self._mod = importlib.import_module(self._module_name)
+        return getattr(self._mod, attr)
+
+
+casatasks: Any = _LazyCasaProxy("casatasks")
+casatools: Any = _LazyCasaProxy("casatools")
+
+
+def resolve_default_3c391_paths(cfg: BenchConfig | None = None) -> tuple[Path, Path]:
+    """Locate default archival 3C391 `.ms` and `.ms.tgz` paths without host hardcoding."""
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    env_ms = os.environ.get("RADIO_BENCH_3C391_MS", "").strip()
+    env_tgz = os.environ.get("RADIO_BENCH_3C391_TGZ", "").strip()
+    if env_ms or env_tgz:
+        ms_p = Path(env_ms) if env_ms else Path(env_tgz).with_suffix("")
+        tgz_p = Path(env_tgz) if env_tgz else Path(f"{ms_p}.tgz")
+        return ms_p, tgz_p
+
+    search_dirs = (
+        resolved_cfg.casaguides_dir,
+        resolved_cfg.casaguides_dir / "vla_3c391_adv",
+        resolved_cfg.data_dir / "datasets" / "3c391_fresh",
+        resolved_cfg.data_dir.parent / "datasets" / "3c391_fresh",
+    )
+    for base in search_dirs:
+        cand_ms = base / "3c391_ctm_mosaic_10s_spw0.ms"
+        cand_tgz = base / "3c391_ctm_mosaic_10s_spw0.ms.tgz"
+        if cand_ms.exists() or cand_tgz.exists():
+            return cand_ms, cand_tgz
+
+    fallback_base = resolved_cfg.casaguides_dir
+    return (
+        fallback_base / "3c391_ctm_mosaic_10s_spw0.ms",
+        fallback_base / "3c391_ctm_mosaic_10s_spw0.ms.tgz",
+    )
+
+
+def build_forbidden_history_substrings(cfg: BenchConfig | None = None) -> tuple[str, ...]:
+    """Build forbidden MS HISTORY substrings dynamically from runtime host roots."""
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    dynamic_roots: list[str] = []
+    for root in (resolved_cfg.work_dir.parent, resolved_cfg.data_dir, Path.home()):
+        s = str(root).rstrip("/")
+        if s and s != "/":
+            dynamic_roots.append(f"{s}/")
+    ordered = [
+        "Perley-Butler",
+        "phase_cal.cl",
+        "!ea13",
+        *dynamic_roots,
+        "cal.K",
+        "cal.B",
+        "3c391_run",
+        "3c391_fresh",
+    ]
+    return tuple(dict.fromkeys(ordered))
+
+
 RAW_SCRATCH_COLUMNS = ("CORRECTED_DATA", "MODEL_DATA", "IMAGING_WEIGHT")
 ARCHIVAL_HISTORY_ROWS = 14
-FORBIDDEN_HISTORY_SUBSTRINGS = (
-    "Perley-Butler",
-    "phase_cal.cl",
-    "!ea13",
-    "/mnt/fast/",
-    "cal.K",
-    "cal.B",
-    "3c391_run",
-    "3c391_fresh",
-)
+
+
+def __getattr__(name: str) -> Any:
+    if name in {
+        "BENCH_CFG",
+        "DEFAULT_SOURCE_MS",
+        "DEFAULT_SOURCE_TGZ",
+        "DEFAULT_OUT_DIR",
+        "FORBIDDEN_HISTORY_SUBSTRINGS",
+    }:
+        cfg = load_bench_config()
+        if name == "BENCH_CFG":
+            return cfg
+        if name == "DEFAULT_OUT_DIR":
+            return cfg.data_dir / "checkpoints" / "3c391"
+        if name == "FORBIDDEN_HISTORY_SUBSTRINGS":
+            return build_forbidden_history_substrings(cfg)
+        ms_p, tgz_p = resolve_default_3c391_paths(cfg)
+        return ms_p if name == "DEFAULT_SOURCE_MS" else tgz_p
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 FLUX_CAL_FIELD = "J1331+3030"
 PHASE_CAL_FIELD = "J1822-0938"
@@ -246,7 +314,7 @@ def assert_no_history_leaks(ms_path: Path) -> None:
                 if col in hist_cols:
                     vals = tb_hist.getcol(col)
                     texts.extend(str(x) for x in np.ravel(vals))
-    for bad in FORBIDDEN_HISTORY_SUBSTRINGS:
+    for bad in build_forbidden_history_substrings():
         leaked = [t for t in texts if bad in t]
         if leaked:
             raise RuntimeError(
@@ -723,7 +791,7 @@ def build_post_precal_checkpoint(
         datacolumn="all",
     )
 
-    # Purge leaked builder HISTORY rows (!ea13, Perley-Butler, /mnt/fast/...)
+    # Purge leaked builder HISTORY rows (!ea13, Perley-Butler, host scratch paths)
     sanitize_ms_history(post_precal_ms, keep_rows=ARCHIVAL_HISTORY_ROWS)
     sanitize_ms_history(calibrators_ms, keep_rows=0)
 
@@ -1607,10 +1675,17 @@ def write_ground_truth_files(
 
 
 def refresh_existing_3c391_checkpoints(
-    source_ms: Path = DEFAULT_SOURCE_MS,
-    out_dir: Path = DEFAULT_OUT_DIR,
+    source_ms: Path | None = None,
+    out_dir: Path | None = None,
+    *,
+    cfg: BenchConfig | None = None,
 ) -> dict[str, Any]:
     """Sanitize existing MS HISTORY tables in place, rebuild reference_image, and rewrite JSONs."""
+    resolved_cfg = configure_builder_casa_env(cfg)
+    if source_ms is None:
+        source_ms, _ = resolve_default_3c391_paths(resolved_cfg)
+    if out_dir is None:
+        out_dir = resolved_cfg.data_dir / "checkpoints" / "3c391"
     make_tree_writable(out_dir)
 
     raw_ms = out_dir / "raw" / "input.ms"
@@ -1641,7 +1716,7 @@ def refresh_existing_3c391_checkpoints(
     archive = resolve_source_archive(source_ms)
     staged_source = archive if archive is not None else source_ms
 
-    work_dir = FAST_BENCH_ROOT / "tmp" / f"refresh_3c391_{os.getpid()}"
+    work_dir = resolved_cfg.tmp_dir / f"refresh_3c391_{os.getpid()}"
     reset_dir(work_dir)
     prev_cwd = Path.cwd()
     t_total0 = time.perf_counter()
@@ -1700,10 +1775,17 @@ def refresh_existing_3c391_checkpoints(
 
 
 def build_all_3c391_checkpoints(
-    source_ms: Path = DEFAULT_SOURCE_MS,
-    out_dir: Path = DEFAULT_OUT_DIR,
+    source_ms: Path | None = None,
+    out_dir: Path | None = None,
+    *,
+    cfg: BenchConfig | None = None,
 ) -> dict[str, Any]:
     """Run full deterministic 3C391 checkpoint build and return summary metrics."""
+    resolved_cfg = configure_builder_casa_env(cfg)
+    if source_ms is None:
+        source_ms, _ = resolve_default_3c391_paths(resolved_cfg)
+    if out_dir is None:
+        out_dir = resolved_cfg.data_dir / "checkpoints" / "3c391"
     archive = resolve_source_archive(source_ms)
     if archive is None and not source_ms.exists():
         raise FileNotFoundError(f"Source archive/MS not found: {source_ms}")
@@ -1778,21 +1860,28 @@ def build_all_3c391_checkpoints(
     return json.loads((out_dir / "ground_truth.json").read_text(encoding="utf-8"))
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Build golden 3C391 Suite R checkpoints.")
-    parser.add_argument("--source-ms", type=Path, default=DEFAULT_SOURCE_MS)
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    add_config_cli_args(parser)
+    parser.add_argument("--source-ms", type=Path, default=None)
+    parser.add_argument("--source-tgz", type=Path, default=None)
+    parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument(
         "--refresh-imaging-only",
         action="store_true",
         help="Sanitize existing MS HISTORY tables, rebuild reference_image, and rewrite JSONs.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    cfg = config_from_cli_args(args)
+    default_ms, _ = resolve_default_3c391_paths(cfg)
+    eff_source = args.source_tgz or args.source_ms or default_ms
 
     if args.refresh_imaging_only:
-        summary = refresh_existing_3c391_checkpoints(source_ms=args.source_ms, out_dir=args.out_dir)
+        summary = refresh_existing_3c391_checkpoints(
+            source_ms=eff_source, out_dir=args.out_dir, cfg=cfg
+        )
     else:
-        summary = build_all_3c391_checkpoints(source_ms=args.source_ms, out_dir=args.out_dir)
+        summary = build_all_3c391_checkpoints(source_ms=eff_source, out_dir=args.out_dir, cfg=cfg)
 
     print(
         json.dumps(

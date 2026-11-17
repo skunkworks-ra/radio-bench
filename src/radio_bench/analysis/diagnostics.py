@@ -722,7 +722,9 @@ def _discover_workspace_casa_tables(workspace_dir: Path, max_depth: int = 2) -> 
 
 
 def _import_casatools() -> Any | None:
-    cfg = Path("/mnt/fast/radio-bench/casaconfig_local.py")
+    from radio_bench.config import load_bench_config
+
+    cfg = load_bench_config().casaconfig_path
     if cfg.is_file():
         os.environ.setdefault("CASASITECONFIG", str(cfg))
     try:
@@ -778,6 +780,8 @@ def _collect_caltable_profiles(
                 if opened:
                     with contextlib.suppress(Exception):
                         tb.close()
+                with contextlib.suppress(Exception):
+                    tb.done()
 
             if raw_p.shape != raw_f.shape or raw_p.ndim < 2 or raw_p.shape[-1] != ant1.size:
                 continue
@@ -842,6 +846,8 @@ def _read_casa_image_plane(
         if opened:
             with contextlib.suppress(Exception):
                 ia.close()
+        with contextlib.suppress(Exception):
+            ia.done()
 
 
 def _collect_residual_pixel_samples_mjy(records: list[dict[str, Any]]) -> dict[str, np.ndarray]:

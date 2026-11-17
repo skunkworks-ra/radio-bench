@@ -11,29 +11,30 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-# Configure CASA and scratch paths inside /mnt/fast/radio-bench before importing casatools.
-FAST_BENCH_ROOT = Path("/mnt/fast/radio-bench")
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+if str(REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from radio_bench.config import is_under_slash_tmp, load_bench_config, write_casaconfig_local  # noqa: E402
+
+BENCH_CFG = load_bench_config()
 
 
 def _ensure_non_tmp_env(var_name: str, fallback: Path) -> None:
     raw_val = os.environ.get(var_name, "").strip()
-    is_under_tmp = False
-    if raw_val:
-        if raw_val.startswith("/tmp"):
-            is_under_tmp = True
-        else:
-            with contextlib.suppress(OSError):
-                is_under_tmp = Path(raw_val).resolve().is_relative_to(Path("/tmp").resolve())
-    if not raw_val or is_under_tmp:
+    if not raw_val or is_under_slash_tmp(raw_val):
         os.environ[var_name] = str(fallback)
     Path(os.environ[var_name]).mkdir(parents=True, exist_ok=True)
 
 
-_ensure_non_tmp_env("TMPDIR", FAST_BENCH_ROOT / "tmp")
-_ensure_non_tmp_env("MPLCONFIGDIR", FAST_BENCH_ROOT / "mplconfig")
-os.environ.setdefault("CASASITECONFIG", str(FAST_BENCH_ROOT / "casaconfig_local.py"))
+_ensure_non_tmp_env("TMPDIR", BENCH_CFG.tmp_dir)
+_ensure_non_tmp_env("MPLCONFIGDIR", BENCH_CFG.mplconfig_dir)
+write_casaconfig_local(BENCH_CFG)
+os.environ.setdefault("CASASITECONFIG", str(BENCH_CFG.casaconfig_path))
 if not os.access(os.environ.get("HOME", "/"), os.W_OK):
-    os.environ["HOME"] = str(FAST_BENCH_ROOT / "tmp")
+    os.environ["HOME"] = str(BENCH_CFG.tmp_dir)
 
 import astropy.units as u  # noqa: E402
 import casatasks  # noqa: E402
@@ -42,10 +43,10 @@ import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 from astropy.coordinates import SkyCoord  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
+from data_builders.build_3c391_checkpoints import (  # noqa: E402
+    build_forbidden_history_substrings,
+    resolve_default_3c391_paths,
+)
 from data_builders.sim_common import (  # noqa: E402
     DEAD_ANTENNA_ID as SYNTH_DEAD_ANTENNA_ID,
 )
@@ -69,10 +70,9 @@ from data_builders.sim_common import (  # noqa: E402
     load_vla_d_subset,
 )
 
-PRISTINE_3C391_MS = Path("/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms")
-PRISTINE_3C391_TGZ = Path("/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms.tgz")
-SYNTH_ROOT = Path("/mnt/fast/radio_bench_data/synth")
-CHECKPOINTS_3C391_ROOT = Path("/mnt/fast/radio_bench_data/checkpoints/3c391")
+PRISTINE_3C391_MS, PRISTINE_3C391_TGZ = resolve_default_3c391_paths(BENCH_CFG)
+SYNTH_ROOT = BENCH_CFG.data_dir / "synth"
+CHECKPOINTS_3C391_ROOT = BENCH_CFG.data_dir / "checkpoints" / "3c391"
 
 SUITE_S_TASKS = (
     "s1_inspect",
@@ -99,15 +99,7 @@ SUITE_R_MS_PATHS = (
     CHECKPOINTS_3C391_ROOT / "post_calibrate" / "input.ms",
 )
 
-FORBIDDEN_HISTORY_SUBSTRINGS = (
-    "Perley-Butler",
-    "phase_cal.cl",
-    "!ea13",
-    "/mnt/fast/",
-    "cal.K",
-    "cal.B",
-    "3c391_run",
-)
+FORBIDDEN_HISTORY_SUBSTRINGS = build_forbidden_history_substrings(BENCH_CFG)
 
 VLA_J1331_CATALOG = SkyCoord("13h31m08.288s", "+30d30m32.959s", frame="icrs")
 VLA_J1822_CATALOG = SkyCoord("18h22m28.704s", "-09d38m56.835s", frame="icrs")
@@ -273,7 +265,7 @@ class TestSimCommonUnit:
 
         saved_tmpdir = os.environ["TMPDIR"]
         monkeypatch.setenv("TMPDIR", "/tmp/should_never_be_used")
-        _ensure_non_tmp_env("TMPDIR", FAST_BENCH_ROOT / "tmp")
+        _ensure_non_tmp_env("TMPDIR", BENCH_CFG.tmp_dir)
         assert not os.environ["TMPDIR"].startswith("/tmp")
         monkeypatch.setenv("TMPDIR", saved_tmpdir)
 
@@ -311,9 +303,11 @@ class TestSimCommonUnit:
 
 
 class TestPristine3C391Source:
-    """Read-only non-modification checks on external `/mnt/fast/datasets/3c391_fresh/`."""
+    """Read-only non-modification checks on external archival 3C391 dataset."""
 
     def test_pristine_3c391_source_integrity(self) -> None:
+        if not PRISTINE_3C391_TGZ.is_file() and not PRISTINE_3C391_MS.is_dir():
+            pytest.skip(f"External 3C391 archival dataset not staged at {PRISTINE_3C391_MS}")
         assert PRISTINE_3C391_TGZ.is_file(), f"Missing 3C391 archival tarball: {PRISTINE_3C391_TGZ}"
         assert PRISTINE_3C391_TGZ.stat().st_size > 0, f"Empty tarball: {PRISTINE_3C391_TGZ}"
 

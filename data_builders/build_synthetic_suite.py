@@ -12,24 +12,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-_cur_tmpdir = os.environ.get("TMPDIR", "").strip()
-if not _cur_tmpdir or _cur_tmpdir == "/tmp" or _cur_tmpdir.startswith("/tmp/"):
-    os.environ["TMPDIR"] = "/mnt/fast/radio-bench/tmp"
-
-_cur_mpldir = os.environ.get("MPLCONFIGDIR", "").strip()
-if not _cur_mpldir or _cur_mpldir == "/tmp" or _cur_mpldir.startswith("/tmp/"):
-    os.environ["MPLCONFIGDIR"] = "/mnt/fast/radio-bench/mplconfig"
-
-os.environ.setdefault("CASASITECONFIG", "/mnt/fast/radio-bench/casaconfig_local.py")
-
-Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
-Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
-
-import numpy as np  # noqa: E402
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+if str(REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+
+import numpy as np  # noqa: E402
 
 from data_builders.sim_common import (  # noqa: E402
     DEAD_ANTENNA_ID,
@@ -69,16 +58,30 @@ from data_builders.sim_common import (  # noqa: E402
     assign_scan_intents,
     clear_ms_history,
     compute_theoretical_mosaic_sigma_jy,
+    configure_builder_casa_env,
     create_base_noiseless_ms,
     fixed_scan_intents,
     verify_ms_unlocked,
 )
+from radio_bench.config import (  # noqa: E402
+    BenchConfig,
+    add_config_cli_args,
+    config_from_cli_args,
+    load_bench_config,
+)
 
-DEFAULT_OUT_DIR = Path("/mnt/fast/radio_bench_data/synth")
-DEFAULT_SCRATCH_ROOT = Path("/mnt/fast/radio-bench/tmp")
 SYNTH_SEED = 20261113
 SIGMA_VIS_JY = 0.0527
 PT_SOURCE_SIGMA_MULT = 10.0
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"DEFAULT_OUT_DIR", "DEFAULT_SCRATCH_ROOT"}:
+        cfg = load_bench_config()
+        if name == "DEFAULT_OUT_DIR":
+            return cfg.data_dir / "synth"
+        return cfg.tmp_dir
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _reject_tmp_path(path: Path, label: str) -> Path:
@@ -1254,13 +1257,18 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def build_synthetic_suite(
-    out_dir: Path = DEFAULT_OUT_DIR,
-    scratch_root: Path = DEFAULT_SCRATCH_ROOT,
+    out_dir: Path | None = None,
+    scratch_root: Path | None = None,
+    *,
+    cfg: BenchConfig | None = None,
 ) -> dict[str, Any]:
     """Deterministically build and CASA-verify all 5 Suite S datasets."""
     t_start = time.perf_counter()
-    out_dir = _reject_tmp_path(out_dir, "out_dir")
-    scratch_root = _reject_tmp_path(scratch_root, "scratch_root")
+    resolved_cfg = configure_builder_casa_env(cfg)
+    raw_out_dir = out_dir if out_dir is not None else (resolved_cfg.data_dir / "synth")
+    raw_scratch_root = scratch_root if scratch_root is not None else resolved_cfg.tmp_dir
+    out_dir = _reject_tmp_path(raw_out_dir, "out_dir")
+    scratch_root = _reject_tmp_path(raw_scratch_root, "scratch_root")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     scratch_dir = scratch_root / "build_synth_work"
@@ -1588,22 +1596,28 @@ def build_synthetic_suite(
     }
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Build and verify Suite S synthetic MS datasets.")
+    add_config_cli_args(parser)
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=DEFAULT_OUT_DIR,
-        help="Output root for Suite S tasks (default: /mnt/fast/radio_bench_data/synth)",
+        default=None,
+        help="Output root for Suite S tasks (default: <data_dir>/synth)",
     )
     parser.add_argument(
         "--scratch-root",
         type=Path,
-        default=DEFAULT_SCRATCH_ROOT,
+        default=None,
         help="Scratch root directory (never /tmp)",
     )
-    args = parser.parse_args()
-    summary = build_synthetic_suite(out_dir=args.out_dir, scratch_root=args.scratch_root)
+    args = parser.parse_args(argv)
+    cfg = config_from_cli_args(args)
+    summary = build_synthetic_suite(
+        out_dir=args.out_dir,
+        scratch_root=args.scratch_root,
+        cfg=cfg,
+    )
     print(json.dumps(summary, indent=2))
 
 

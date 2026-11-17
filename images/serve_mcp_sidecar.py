@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Supervisor launching ms-inspect (8000), ms-modify (8001), and ms-create (8002) over HTTP."""
+"""Supervisor launching ms-inspect, ms-modify, and ms-create FastMCP servers over HTTP."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ import signal
 import subprocess
 import time
 
-SERVERS: list[tuple[str, str]] = [
-    ("ms-inspect", "8000"),
-    ("ms-modify", "8001"),
-    ("ms-create", "8002"),
+DEFAULT_SERVERS: list[tuple[str, str, str]] = [
+    ("ms-inspect", "RADIO_MCP_PORT_MS_INSPECT", "8000"),
+    ("ms-modify", "RADIO_MCP_PORT_MS_MODIFY", "8001"),
+    ("ms-create", "RADIO_MCP_PORT_MS_CREATE", "8002"),
 ]
 
 
@@ -34,7 +34,8 @@ def main() -> int:
     signal.signal(signal.SIGINT, _terminate_all)
 
     try:
-        for binary, port in SERVERS:
+        for binary, port_env, default_port in DEFAULT_SERVERS:
+            port = os.environ.get(port_env, default_port).strip() or default_port
             env = dict(os.environ)
             env["RADIO_MCP_TRANSPORT"] = "http"
             env["RADIO_MCP_HOST"] = host

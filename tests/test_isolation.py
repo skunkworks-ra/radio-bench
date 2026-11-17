@@ -40,6 +40,7 @@ from radio_bench.build_tasks import (
     build_all_tasks,
     load_task_spec,
 )
+from radio_bench.config import load_bench_config
 from radio_bench.export_skills import (
     CASA_FORBIDDEN_SUBSTRINGS,
     DEFAULT_EXPORT_DIR,
@@ -48,10 +49,10 @@ from radio_bench.export_skills import (
     RAW_TRANSLATION_NOTE,
 )
 from radio_bench.podman_env import ensure_docker_compose_plugin
+from radio_bench.render_jobs import render_preset_job
 
-REPO_ROOT = Path("/home/pjaganna/Software/radio-bench")
-VAULT_SPECS_ROOT = Path("/home/pjaganna/Documents/Crypt/20-Projects/radio-bench/task_specs")
-JOBS_DIR = REPO_ROOT / "jobs"
+BENCH_CFG = load_bench_config()
+REPO_ROOT = BENCH_CFG.repo_root
 
 STAGE_TASKS = (
     "s1_inspect",
@@ -502,15 +503,16 @@ def test_zero_verifier_leakage_permissions_symlinks_and_calibrators_ms() -> None
 
 
 def test_vault_instruction_symlinks_cross_arm_identity_and_no_playbook_leakage() -> None:
-    """Verify task_specs/*/instruction.md symlinks to Vault, matches all arms, and has zero Skills=1 leaks."""
+    """Verify task_specs/*/instruction.md resolves cleanly, matches all arms, and has zero Skills=1 leaks."""
     for base_task in ALL_BASE_TASKS:
         spec_inst = DEFAULT_SPECS_DIR / base_task / "instruction.md"
-        expected_vault_path = VAULT_SPECS_ROOT / base_task / "instruction.md"
+        assert spec_inst.exists(), f"Missing instruction.md at {spec_inst}"
+        resolved_inst = spec_inst.resolve(strict=True)
+        assert resolved_inst.is_file()
+        if spec_inst.is_symlink():
+            assert resolved_inst != spec_inst
 
-        assert spec_inst.is_symlink(), f"{spec_inst} must be a symlink to Vault"
-        assert spec_inst.resolve(strict=True) == expected_vault_path.resolve(strict=True)
-
-        canonical_text = expected_vault_path.read_text(encoding="utf-8")
+        canonical_text = resolved_inst.read_text(encoding="utf-8")
         assert canonical_text.strip()
         assert EM_OR_EN_DASH_RE.search(canonical_text) is None
         for forbidden in FORBIDDEN_INSTRUCTION_TOKENS:
@@ -580,14 +582,15 @@ def test_job_yaml_configs_and_opencode_nrp_provider(
     monkeypatch.setenv("NRP_API_KEY", "dummy-test-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-anthropic-key")
 
-    job_path = JOBS_DIR / filename
+    preset_name = filename.removesuffix(".yaml")
+    job_path = render_preset_job(preset_name, output_dir=tmp_path / "rendered_jobs", cfg=BENCH_CFG)
     assert job_path.is_file()
     raw_text = job_path.read_text(encoding="utf-8")
     assert EM_OR_EN_DASH_RE.search(raw_text) is None
     assert "00_vanilla" not in raw_text
 
     cfg = JobConfig.model_validate(yaml.safe_load(raw_text))
-    assert cfg.jobs_dir == Path("/mnt/fast/radio_bench_runs")
+    assert cfg.jobs_dir == BENCH_CFG.runs_dir
     assert cfg.environment.type == EnvironmentType.PODMAN
     assert cfg.environment.delete is True
     assert cfg.n_attempts == expected_attempts

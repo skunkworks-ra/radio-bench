@@ -8,16 +8,34 @@ from typing import Any
 import numpy as np
 
 from radio_bench.analysis.collect import CANONICAL_ARMS, sanitize_json_tree
+from radio_bench.analysis.pricing import normalize_model_key
+from radio_bench.config import ModelsConfig, load_models_config
 
 DEFAULT_N_BOOT = 10_000
 DEFAULT_BOOT_SEED = 20260413
 WILSON_Z_95 = 1.959963984540054
 
-# Canonical (pair_id, small_model, frontier_model) definitions per SPEC.md Section 0.5 & 5.2.
-PARITY_MODEL_PAIRS: tuple[tuple[str, str, str], ...] = (
-    ("anthropic_haiku_vs_sonnet", "anthropic/claude-haiku-4-5", "anthropic/claude-sonnet-4-6"),
-    ("nrp_kimi_vs_glm5", "nrp/kimi", "nrp/glm-5"),
-)
+
+def resolve_parity_model_pairs(
+    models_cfg: ModelsConfig | None = None,
+) -> tuple[tuple[str, str, str], ...]:
+    """Load `(pair_id, small_canonical_model, frontier_canonical_model)` from ModelsConfig."""
+    cfg = models_cfg if models_cfg is not None else load_models_config()
+    pairs: list[tuple[str, str, str]] = []
+    for pair in cfg.parity_pairs:
+        small_raw = cfg.resolve_model_name(pair.small.model)
+        front_raw = cfg.resolve_model_name(pair.frontier.model)
+        small_m = normalize_model_key(small_raw, models_cfg=cfg)
+        front_m = normalize_model_key(front_raw, models_cfg=cfg)
+        pairs.append((pair.pair_id, small_m, front_m))
+    return tuple(pairs)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "PARITY_MODEL_PAIRS":
+        return resolve_parity_model_pairs()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # Linear contrast specifications: (name, formula_str, arm_weights, e2e_only).
 CONTRAST_SPECS: tuple[tuple[str, str, dict[str, float], bool], ...] = (
@@ -138,10 +156,14 @@ def summarize_arm_cells(
         k_pass = int(np.sum(passed_arr))
         w_low, w_high = wilson_ci(k_pass, n)
 
-        # Unit-level grouping (base_task, model_name) for task-equal metrics and pass@k.
-        by_unit: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        # Unit-level grouping (base_task, pack_id, model_name) for task-equal metrics and pass@k.
+        by_unit: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         for r in arm_recs:
-            ukey = (str(r.get("base_task")), str(r.get("model_name")))
+            ukey = (
+                str(r.get("base_task")),
+                str(r.get("pack_id") or "ra_00a11ea"),
+                str(r.get("model_name")),
+            )
             by_unit.setdefault(ukey, []).append(r)
 
         unit_reward_means = [
@@ -279,13 +301,17 @@ def _bootstrap_paired_linear_contrast(
     )
     req_arms = sorted(arm_weights.keys())
 
-    # Group into (base_task, model_name) -> arm -> list of (reward, passed).
-    unit_arm_vals: dict[tuple[str, str], dict[str, list[tuple[float, float]]]] = {}
+    # Group into (base_task, pack_id, model_name) -> arm -> list of (reward, passed).
+    unit_arm_vals: dict[tuple[str, str, str], dict[str, list[tuple[float, float]]]] = {}
     for r in filtered:
         arm = str(r.get("arm"))
         if arm not in arm_weights:
             continue
-        ukey = (str(r.get("base_task")), str(r.get("model_name")))
+        ukey = (
+            str(r.get("base_task")),
+            str(r.get("pack_id") or "ra_00a11ea"),
+            str(r.get("model_name")),
+        )
         unit_arm_vals.setdefault(ukey, {}).setdefault(arm, []).append(
             (_finite_float(r.get("reward")), 1.0 if bool(r.get("passed")) else 0.0)
         )
@@ -313,7 +339,7 @@ def _bootstrap_paired_linear_contrast(
             "pass_at_1_ci_high": None,
         }
 
-    # Exact paired point estimate over complete (base_task, model_name) units.
+    # Exact paired point estimate over complete (base_task, pack_id, model_name) units.
     arm_reward_means: dict[str, float] = {}
     arm_pass_means: dict[str, float] = {}
     for arm in req_arms:
@@ -329,7 +355,7 @@ def _bootstrap_paired_linear_contrast(
 
     # Group complete units by base_task cluster for true two-stage cluster + attempt bootstrap.
     tasks_sorted = sorted({u[0] for u in complete_units})
-    units_by_task: dict[str, list[tuple[str, str]]] = {t: [] for t in tasks_sorted}
+    units_by_task: dict[str, list[tuple[str, str, str]]] = {t: [] for t in tasks_sorted}
     for u in complete_units:
         units_by_task[u[0]].append(u)
 
@@ -437,17 +463,17 @@ def compute_stratum_contrasts(
 
 
 def _paired_pass_at_k(
-    paired_tasks: list[str],
-    small_by_task: dict[str, list[dict[str, Any]]],
-    front_by_task: dict[str, list[dict[str, Any]]],
+    paired_units: list[tuple[str, str]],
+    small_by_unit: dict[tuple[str, str], list[dict[str, Any]]],
+    front_by_unit: dict[tuple[str, str], list[dict[str, Any]]],
     k: int,
 ) -> tuple[float | None, float | None, float | None]:
     s_vals: list[float] = []
     f_vals: list[float] = []
     gaps: list[float] = []
-    for t in paired_tasks:
-        s_recs = small_by_task[t]
-        f_recs = front_by_task[t]
+    for u in paired_units:
+        s_recs = small_by_unit[u]
+        f_recs = front_by_unit[u]
         vs = pass_at_k_unbiased(len(s_recs), sum(1 for x in s_recs if bool(x.get("passed"))), k)
         vf = pass_at_k_unbiased(len(f_recs), sum(1 for x in f_recs if bool(x.get("passed"))), k)
         if vs is not None:
@@ -475,7 +501,7 @@ def _compute_single_parity(
     n_boot: int,
     seed: int,
 ) -> dict[str, Any]:
-    """Compare `small_model @ small_arm` against `frontier_model @ frontier_arm` on paired tasks."""
+    """Compare `small_model @ small_arm` against `frontier_model @ frontier_arm` on paired `(base_task, pack_id)` units."""
     filtered = (
         [r for r in records if bool(r.get("is_e2e")) or str(r.get("stage")) == "e2e"]
         if e2e_only
@@ -492,16 +518,18 @@ def _compute_single_parity(
         if str(r.get("model_name")) == frontier_model and str(r.get("arm")) == frontier_arm
     ]
 
-    small_by_task: dict[str, list[dict[str, Any]]] = {}
+    small_by_unit: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for r in small_recs:
-        small_by_task.setdefault(str(r.get("base_task")), []).append(r)
+        ukey = (str(r.get("base_task")), str(r.get("pack_id") or "ra_00a11ea"))
+        small_by_unit.setdefault(ukey, []).append(r)
 
-    front_by_task: dict[str, list[dict[str, Any]]] = {}
+    front_by_unit: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for r in front_recs:
-        front_by_task.setdefault(str(r.get("base_task")), []).append(r)
+        ukey = (str(r.get("base_task")), str(r.get("pack_id") or "ra_00a11ea"))
+        front_by_unit.setdefault(ukey, []).append(r)
 
-    paired_tasks = sorted(set(small_by_task) & set(front_by_task))
-    if not paired_tasks:
+    paired_units = sorted(set(small_by_unit) & set(front_by_unit))
+    if not paired_units:
         return {
             "pair_id": pair_id,
             "small_model": small_model,
@@ -549,60 +577,60 @@ def _compute_single_parity(
             "wall_time_ratio": None,
         }
 
-    # Strict paired-task-equal means (1:1 per task across paired_tasks).
+    # Strict paired-unit-equal means (1:1 per `(base_task, pack_id)` unit).
     s_task_r = [
-        float(np.mean([_finite_float(x.get("reward")) for x in small_by_task[t]]))
-        for t in paired_tasks
+        float(np.mean([_finite_float(x.get("reward")) for x in small_by_unit[u]]))
+        for u in paired_units
     ]
     f_task_r = [
-        float(np.mean([_finite_float(x.get("reward")) for x in front_by_task[t]]))
-        for t in paired_tasks
+        float(np.mean([_finite_float(x.get("reward")) for x in front_by_unit[u]]))
+        for u in paired_units
     ]
     s_task_p = [
-        float(np.mean([1.0 if bool(x.get("passed")) else 0.0 for x in small_by_task[t]]))
-        for t in paired_tasks
+        float(np.mean([1.0 if bool(x.get("passed")) else 0.0 for x in small_by_unit[u]]))
+        for u in paired_units
     ]
     f_task_p = [
-        float(np.mean([1.0 if bool(x.get("passed")) else 0.0 for x in front_by_task[t]]))
-        for t in paired_tasks
+        float(np.mean([1.0 if bool(x.get("passed")) else 0.0 for x in front_by_unit[u]]))
+        for u in paired_units
     ]
     s_task_usd = [
-        float(np.mean([_finite_float(x.get("total_usd")) for x in small_by_task[t]]))
-        for t in paired_tasks
+        float(np.mean([_finite_float(x.get("total_usd")) for x in small_by_unit[u]]))
+        for u in paired_units
     ]
     f_task_usd = [
-        float(np.mean([_finite_float(x.get("total_usd")) for x in front_by_task[t]]))
-        for t in paired_tasks
+        float(np.mean([_finite_float(x.get("total_usd")) for x in front_by_unit[u]]))
+        for u in paired_units
     ]
     s_task_tok = [
-        float(np.mean([_finite_float(x.get("total_tokens")) for x in small_by_task[t]]))
-        for t in paired_tasks
+        float(np.mean([_finite_float(x.get("total_tokens")) for x in small_by_unit[u]]))
+        for u in paired_units
     ]
     f_task_tok = [
-        float(np.mean([_finite_float(x.get("total_tokens")) for x in front_by_task[t]]))
-        for t in paired_tasks
+        float(np.mean([_finite_float(x.get("total_tokens")) for x in front_by_unit[u]]))
+        for u in paired_units
     ]
     s_task_wall = [
         float(
             np.mean(
                 [
                     _finite_float(x.get("total_wall_sec", x.get("wall_sec")))
-                    for x in small_by_task[t]
+                    for x in small_by_unit[u]
                 ]
             )
         )
-        for t in paired_tasks
+        for u in paired_units
     ]
     f_task_wall = [
         float(
             np.mean(
                 [
                     _finite_float(x.get("total_wall_sec", x.get("wall_sec")))
-                    for x in front_by_task[t]
+                    for x in front_by_unit[u]
                 ]
             )
         )
-        for t in paired_tasks
+        for u in paired_units
     ]
 
     s_rmean = float(np.mean(s_task_r))
@@ -612,8 +640,8 @@ def _compute_single_parity(
     f_pmean = float(np.mean(f_task_p))
     pass_diff = s_pmean - f_pmean
 
-    s_p3, f_p3, p3_gap = _paired_pass_at_k(paired_tasks, small_by_task, front_by_task, 3)
-    s_p5, f_p5, p5_gap = _paired_pass_at_k(paired_tasks, small_by_task, front_by_task, 5)
+    s_p3, f_p3, p3_gap = _paired_pass_at_k(paired_units, small_by_unit, front_by_unit, 3)
+    s_p5, f_p5, p5_gap = _paired_pass_at_k(paired_units, small_by_unit, front_by_unit, 5)
 
     s_usd = float(np.mean(s_task_usd))
     f_usd = float(np.mean(f_task_usd))
@@ -635,7 +663,12 @@ def _compute_single_parity(
     f_wall = float(np.mean(f_task_wall))
     wall_ratio = round(s_wall / f_wall, 8) if f_wall > 0.0 else None
 
-    k_tasks = len(paired_tasks)
+    tasks_sorted = sorted({u[0] for u in paired_units})
+    units_by_task: dict[str, list[tuple[str, str]]] = {t: [] for t in tasks_sorted}
+    for u in paired_units:
+        units_by_task[u[0]].append(u)
+
+    k_tasks = len(tasks_sorted)
     if n_boot <= 0:
         ci_low, ci_high = delta_parity, delta_parity
         p1_ci = [round(pass_diff, 10), round(pass_diff, 10)]
@@ -650,50 +683,55 @@ def _compute_single_parity(
         flat_c = c_idx.ravel()
         slot_r_diff = np.zeros(flat_c.size, dtype=np.float64)
         slot_p_diff = np.zeros(flat_c.size, dtype=np.float64)
+        task_unit_counts = np.zeros(k_tasks, dtype=np.float64)
 
         # Independent stage-2 attempt resamples for every slot j = 0..k_tasks-1.
-        for k_idx, t in enumerate(paired_tasks):
+        for k_idx, task_id in enumerate(tasks_sorted):
+            t_units = units_by_task[task_id]
+            task_unit_counts[k_idx] = float(len(t_units))
             pos = np.flatnonzero(flat_c == k_idx)
             m_slots = int(pos.size)
             if m_slots == 0:
                 continue
 
-            s_r_vec = np.array(
-                [_finite_float(x.get("reward")) for x in small_by_task[t]], dtype=np.float64
-            )
-            s_p_vec = np.array(
-                [1.0 if bool(x.get("passed")) else 0.0 for x in small_by_task[t]],
-                dtype=np.float64,
-            )
-            f_r_vec = np.array(
-                [_finite_float(x.get("reward")) for x in front_by_task[t]], dtype=np.float64
-            )
-            f_p_vec = np.array(
-                [1.0 if bool(x.get("passed")) else 0.0 for x in front_by_task[t]],
-                dtype=np.float64,
-            )
+            for u in t_units:
+                s_r_vec = np.array(
+                    [_finite_float(x.get("reward")) for x in small_by_unit[u]], dtype=np.float64
+                )
+                s_p_vec = np.array(
+                    [1.0 if bool(x.get("passed")) else 0.0 for x in small_by_unit[u]],
+                    dtype=np.float64,
+                )
+                f_r_vec = np.array(
+                    [_finite_float(x.get("reward")) for x in front_by_unit[u]], dtype=np.float64
+                )
+                f_p_vec = np.array(
+                    [1.0 if bool(x.get("passed")) else 0.0 for x in front_by_unit[u]],
+                    dtype=np.float64,
+                )
 
-            if len(s_r_vec) == 1:
-                s_r_b = s_r_vec[0]
-                s_p_b = s_p_vec[0]
-            else:
-                s_att = rng.integers(0, len(s_r_vec), size=(m_slots, len(s_r_vec)))
-                s_r_b = s_r_vec[s_att].mean(axis=1)
-                s_p_b = s_p_vec[s_att].mean(axis=1)
+                if len(s_r_vec) == 1:
+                    s_r_b = s_r_vec[0]
+                    s_p_b = s_p_vec[0]
+                else:
+                    s_att = rng.integers(0, len(s_r_vec), size=(m_slots, len(s_r_vec)))
+                    s_r_b = s_r_vec[s_att].mean(axis=1)
+                    s_p_b = s_p_vec[s_att].mean(axis=1)
 
-            if len(f_r_vec) == 1:
-                f_r_b = f_r_vec[0]
-                f_p_b = f_p_vec[0]
-            else:
-                f_att = rng.integers(0, len(f_r_vec), size=(m_slots, len(f_r_vec)))
-                f_r_b = f_r_vec[f_att].mean(axis=1)
-                f_p_b = f_p_vec[f_att].mean(axis=1)
+                if len(f_r_vec) == 1:
+                    f_r_b = f_r_vec[0]
+                    f_p_b = f_p_vec[0]
+                else:
+                    f_att = rng.integers(0, len(f_r_vec), size=(m_slots, len(f_r_vec)))
+                    f_r_b = f_r_vec[f_att].mean(axis=1)
+                    f_p_b = f_p_vec[f_att].mean(axis=1)
 
-            slot_r_diff[pos] = s_r_b - f_r_b
-            slot_p_diff[pos] = s_p_b - f_p_b
+                slot_r_diff[pos] += s_r_b - f_r_b
+                slot_p_diff[pos] += s_p_b - f_p_b
 
-        boot_delta = slot_r_diff.reshape(n_boot, k_tasks).mean(axis=1)
-        boot_p_delta = slot_p_diff.reshape(n_boot, k_tasks).mean(axis=1)
+        sampled_counts = task_unit_counts[c_idx].sum(axis=1)
+        boot_delta = slot_r_diff.reshape(n_boot, k_tasks).sum(axis=1) / sampled_counts
+        boot_p_delta = slot_p_diff.reshape(n_boot, k_tasks).sum(axis=1) / sampled_counts
         r_lo, r_hi = np.percentile(boot_delta, [2.5, 97.5])
         p_lo, p_hi = np.percentile(boot_p_delta, [2.5, 97.5])
         ci_low, ci_high = float(r_lo), float(r_hi)
@@ -753,32 +791,43 @@ def compute_parity_summary(
     *,
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_BOOT_SEED,
+    models_cfg: ModelsConfig | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Compute Small + Full Stack vs Frontier Bare parity contrasts across model families."""
+    cfg = models_cfg if models_cfg is not None else load_models_config()
     out: dict[str, dict[str, Any]] = {}
-    for idx, (pair_id, small_m, front_m) in enumerate(PARITY_MODEL_PAIRS):
-        out[f"{pair_id}__11_full_vs_00_none"] = _compute_single_parity(
+    for idx, pair in enumerate(cfg.parity_pairs):
+        small_raw = cfg.resolve_model_name(pair.small.model)
+        front_raw = cfg.resolve_model_name(pair.frontier.model)
+        small_m = normalize_model_key(small_raw, models_cfg=cfg)
+        front_m = normalize_model_key(front_raw, models_cfg=cfg)
+        small_arm = pair.small.arm
+        front_arm = pair.frontier.arm
+        primary_e2e_only = small_arm == "11_orchestrated" or front_arm == "11_orchestrated"
+
+        out[f"{pair.pair_id}__{small_arm}_vs_{front_arm}"] = _compute_single_parity(
             records,
-            pair_id=pair_id,
+            pair_id=pair.pair_id,
             small_model=small_m,
-            small_arm="11_full",
+            small_arm=small_arm,
             frontier_model=front_m,
-            frontier_arm="00_none",
-            e2e_only=False,
+            frontier_arm=front_arm,
+            e2e_only=primary_e2e_only,
             n_boot=n_boot,
             seed=seed + 50_000 + idx * 997,
         )
-        out[f"{pair_id}__11_orchestrated_vs_00_none"] = _compute_single_parity(
-            records,
-            pair_id=pair_id,
-            small_model=small_m,
-            small_arm="11_orchestrated",
-            frontier_model=front_m,
-            frontier_arm="00_none",
-            e2e_only=True,
-            n_boot=n_boot,
-            seed=seed + 60_000 + idx * 997,
-        )
+        if small_arm == "11_full":
+            out[f"{pair.pair_id}__11_orchestrated_vs_{front_arm}"] = _compute_single_parity(
+                records,
+                pair_id=pair.pair_id,
+                small_model=small_m,
+                small_arm="11_orchestrated",
+                frontier_model=front_m,
+                frontier_arm=front_arm,
+                e2e_only=True,
+                n_boot=n_boot,
+                seed=seed + 60_000 + idx * 997,
+            )
     return out
 
 
@@ -787,15 +836,19 @@ def analyze_factorial(
     *,
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_BOOT_SEED,
+    models_cfg: ModelsConfig | None = None,
 ) -> dict[str, Any]:
     """Run complete 2x2 factorial, prompt-adaptation, orchestration, and parity analysis."""
     overall_cells = summarize_arm_cells(records)
     overall_contrasts = compute_stratum_contrasts(records, n_boot=n_boot, seed=seed)
-    overall_parity = compute_parity_summary(records, n_boot=n_boot, seed=seed)
+    overall_parity = compute_parity_summary(
+        records, n_boot=n_boot, seed=seed, models_cfg=models_cfg
+    )
 
     suites = sorted({str(r.get("suite")) for r in records if r.get("suite")})
     models = sorted({str(r.get("model_name")) for r in records if r.get("model_name")})
     tasks = sorted({str(r.get("base_task")) for r in records if r.get("base_task")})
+    packs = sorted({str(r.get("pack_id") or "ra_00a11ea") for r in records})
 
     by_suite: dict[str, Any] = {}
     for s_idx, suite in enumerate(suites):
@@ -807,7 +860,7 @@ def analyze_factorial(
                 s_recs, n_boot=n_boot, seed=seed + 100_000 + s_idx * 101
             ),
             "parity": compute_parity_summary(
-                s_recs, n_boot=n_boot, seed=seed + 110_000 + s_idx * 101
+                s_recs, n_boot=n_boot, seed=seed + 110_000 + s_idx * 101, models_cfg=models_cfg
             ),
         }
 
@@ -828,7 +881,7 @@ def analyze_factorial(
                 g_recs, n_boot=n_boot, seed=seed + 150_000 + g_idx * 101
             ),
             "parity": compute_parity_summary(
-                g_recs, n_boot=n_boot, seed=seed + 160_000 + g_idx * 101
+                g_recs, n_boot=n_boot, seed=seed + 160_000 + g_idx * 101, models_cfg=models_cfg
             ),
         }
 
@@ -879,27 +932,44 @@ def analyze_factorial(
                 t_recs, n_boot=n_boot, seed=seed + 400_000 + t_idx * 101
             ),
             "parity": compute_parity_summary(
-                t_recs, n_boot=n_boot, seed=seed + 410_000 + t_idx * 101
+                t_recs, n_boot=n_boot, seed=seed + 410_000 + t_idx * 101, models_cfg=models_cfg
             ),
         }
 
-    return sanitize_json_tree(
-        {
-            "config": {
-                "n_boot": int(n_boot),
-                "seed": int(seed),
-                "wilson_z": WILSON_Z_95,
-            },
-            "n_trials": len(records),
-            "overall": {
-                "cells": overall_cells,
-                "contrasts": overall_contrasts,
-                "parity": overall_parity,
-            },
-            "by_suite": by_suite,
-            "by_stage_group": by_stage_group,
-            "by_model": by_model,
-            "by_suite_model": by_suite_model,
-            "by_task": by_task,
-        }
-    )
+    result_payload: dict[str, Any] = {
+        "config": {
+            "n_boot": int(n_boot),
+            "seed": int(seed),
+            "wilson_z": WILSON_Z_95,
+        },
+        "n_trials": len(records),
+        "overall": {
+            "cells": overall_cells,
+            "contrasts": overall_contrasts,
+            "parity": overall_parity,
+        },
+        "by_suite": by_suite,
+        "by_stage_group": by_stage_group,
+        "by_model": by_model,
+        "by_suite_model": by_suite_model,
+        "by_task": by_task,
+    }
+
+    if len(packs) > 1:
+        by_pack: dict[str, Any] = {}
+        for p_idx, pack_id in enumerate(packs):
+            p_recs = [r for r in records if str(r.get("pack_id") or "ra_00a11ea") == pack_id]
+            by_pack[pack_id] = {
+                "pack_id": pack_id,
+                "n_trials": len(p_recs),
+                "cells": summarize_arm_cells(p_recs),
+                "contrasts": compute_stratum_contrasts(
+                    p_recs, n_boot=n_boot, seed=seed + 500_000 + p_idx * 101
+                ),
+                "parity": compute_parity_summary(
+                    p_recs, n_boot=n_boot, seed=seed + 510_000 + p_idx * 101, models_cfg=models_cfg
+                ),
+            }
+        result_payload["by_pack"] = by_pack
+
+    return sanitize_json_tree(result_payload)

@@ -9,6 +9,7 @@ from radio_bench.analysis.collect import (
     discover_trial_dirs,
     extract_trajectory_telemetry,
     parse_task_variant,
+    parse_task_variant_with_pack,
     sanitize_json_tree,
     write_trials_outputs,
 )
@@ -31,7 +32,6 @@ from radio_bench.analysis.factorial import (
 from radio_bench.analysis.pricing import (
     HAIKU_CLIFF_MULTIPLIER,
     HAIKU_CLIFF_TOKEN_THRESHOLD,
-    MODEL_RATES,
     ModelRate,
     TrialPricing,
     TurnPricing,
@@ -77,6 +77,7 @@ __all__ = [
     "main",
     "normalize_model_key",
     "parse_task_variant",
+    "parse_task_variant_with_pack",
     "pass_at_k_unbiased",
     "price_from_agent_context",
     "price_turn",
@@ -93,9 +94,14 @@ __all__ = [
 
 if TYPE_CHECKING:
     from radio_bench.analysis.cli import main, run_analysis_pipeline
+    from radio_bench.analysis.pricing import MODEL_RATES
 
 
 def __getattr__(name: str) -> Any:
+    if name == "MODEL_RATES":
+        from radio_bench.analysis import pricing as _pricing
+
+        return _pricing.MODEL_RATES
     if name in ("main", "run_analysis_pipeline"):
         from radio_bench.analysis import cli as _cli
 

@@ -8,6 +8,14 @@ env/
 tasks
 exported_skills/
 
+# Local benchmark/model overrides and default portable runtime directories
+bench.local.toml
+models.local.toml
+configs/models.local.toml
+.work
+data
+runs
+
 # Markdown notes and task prompt specs live in the separate Vault repository
 *.md
 !/README.md

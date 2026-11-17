@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
+
+from radio_bench.config import ModelsConfig, load_models_config, resolve_repo_root
 
 HAIKU_CLIFF_TOKEN_THRESHOLD = 100_000
 HAIKU_CLIFF_MULTIPLIER = 5.0
@@ -24,59 +28,92 @@ class ModelRate:
     cliff_multiplier: float = 1.0
 
 
-# Canonical list-price rates (USD per 1,000,000 tokens) per SPEC.md Section 5.
-MODEL_RATES: dict[str, ModelRate] = {
-    "oracle": ModelRate(
-        canonical_model="oracle",
-        input_per_mtok=0.0,
-        output_per_mtok=0.0,
-        cache_read_per_mtok=0.0,
-        cache_write_5m_per_mtok=0.0,
-        cache_write_1h_per_mtok=0.0,
-        cliff_prompt_tokens=None,
-        cliff_multiplier=1.0,
-    ),
-    "anthropic/claude-haiku-4-5": ModelRate(
-        canonical_model="anthropic/claude-haiku-4-5",
-        input_per_mtok=1.00,
-        output_per_mtok=5.00,
-        cache_read_per_mtok=0.10,
-        cache_write_5m_per_mtok=1.25,
-        cache_write_1h_per_mtok=2.00,
-        cliff_prompt_tokens=HAIKU_CLIFF_TOKEN_THRESHOLD,
-        cliff_multiplier=HAIKU_CLIFF_MULTIPLIER,
-    ),
-    "anthropic/claude-sonnet-4-6": ModelRate(
-        canonical_model="anthropic/claude-sonnet-4-6",
-        input_per_mtok=3.00,
-        output_per_mtok=15.00,
-        cache_read_per_mtok=0.30,
-        cache_write_5m_per_mtok=3.75,
-        cache_write_1h_per_mtok=6.00,
-        cliff_prompt_tokens=None,
-        cliff_multiplier=1.0,
-    ),
-    "nrp/kimi": ModelRate(
-        canonical_model="nrp/kimi",
-        input_per_mtok=0.60,
-        output_per_mtok=3.00,
-        cache_read_per_mtok=0.10,
-        cache_write_5m_per_mtok=0.60,
-        cache_write_1h_per_mtok=0.60,
-        cliff_prompt_tokens=None,
-        cliff_multiplier=1.0,
-    ),
-    "nrp/glm-5": ModelRate(
-        canonical_model="nrp/glm-5",
-        input_per_mtok=1.00,
-        output_per_mtok=3.20,
-        cache_read_per_mtok=0.20,
-        cache_write_5m_per_mtok=1.00,
-        cache_write_1h_per_mtok=1.00,
-        cliff_prompt_tokens=None,
-        cliff_multiplier=1.0,
-    ),
-}
+ORACLE_MODEL_RATE = ModelRate(
+    canonical_model="oracle",
+    input_per_mtok=0.0,
+    output_per_mtok=0.0,
+    cache_read_per_mtok=0.0,
+    cache_write_5m_per_mtok=0.0,
+    cache_write_1h_per_mtok=0.0,
+    cliff_prompt_tokens=None,
+    cliff_multiplier=1.0,
+)
+
+
+def build_model_rates(
+    models_cfg: ModelsConfig | None = None,
+) -> tuple[dict[str, ModelRate], dict[str, str]]:
+    """Build `(rates_by_canonical_model, alias_to_canonical)` from ModelsConfig."""
+    cfg = models_cfg if models_cfg is not None else load_models_config()
+    rates: dict[str, ModelRate] = {"oracle": ORACLE_MODEL_RATE}
+    aliases: dict[str, str] = {"oracle": "oracle"}
+    for mkey, spec in cfg.models.items():
+        canon = spec.model_name.strip().lower()
+        p = spec.pricing
+        rates[canon] = ModelRate(
+            canonical_model=canon,
+            input_per_mtok=p.input_per_mtok,
+            output_per_mtok=p.output_per_mtok,
+            cache_read_per_mtok=p.cache_read_per_mtok,
+            cache_write_5m_per_mtok=p.cache_write_5m_per_mtok,
+            cache_write_1h_per_mtok=p.cache_write_1h_per_mtok,
+            cliff_prompt_tokens=p.cliff_prompt_tokens,
+            cliff_multiplier=p.cliff_multiplier,
+        )
+        aliases[mkey.strip().lower()] = canon
+        aliases[canon] = canon
+        for al in spec.aliases:
+            aliases[al.strip().lower()] = canon
+    return rates, aliases
+
+
+_RATES_CACHE: dict[tuple[Any, ...], tuple[dict[str, ModelRate], dict[str, str]]] = {}
+
+
+def _stat_mtime_ns(path: Path) -> int | None:
+    try:
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _current_rates_and_aliases(
+    models_cfg: ModelsConfig | None = None,
+) -> tuple[dict[str, ModelRate], dict[str, str]]:
+    if models_cfg is not None:
+        return build_model_rates(models_cfg)
+
+    env_models = os.environ.get("RADIO_BENCH_MODELS_CONFIG", "").strip()
+    env_repo = os.environ.get("RADIO_BENCH_REPO_ROOT", "").strip()
+    if env_models:
+        explicit = Path(os.path.expanduser(env_models))
+        key: tuple[Any, ...] = ("explicit", str(explicit), _stat_mtime_ns(explicit))
+    else:
+        repo = resolve_repo_root()
+        c1 = repo / "configs" / "models.toml"
+        c2 = repo / "configs" / "models.local.toml"
+        c3 = repo / "models.local.toml"
+        key = (
+            "repo",
+            env_repo,
+            str(repo),
+            _stat_mtime_ns(c1),
+            _stat_mtime_ns(c2),
+            _stat_mtime_ns(c3),
+        )
+
+    cached = _RATES_CACHE.get(key)
+    if cached is None:
+        cached = build_model_rates()
+        _RATES_CACHE[key] = cached
+    return cached
+
+
+def __getattr__(name: str) -> Any:
+    if name == "MODEL_RATES":
+        rates, _ = _current_rates_and_aliases()
+        return rates
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass(frozen=True)
@@ -124,7 +161,12 @@ class TrialPricing:
         return asdict(self)
 
 
-def normalize_model_key(model_name: str | None, agent_name: str | None = None) -> str:
+def normalize_model_key(
+    model_name: str | None,
+    agent_name: str | None = None,
+    *,
+    models_cfg: ModelsConfig | None = None,
+) -> str:
     """Resolve provider/date-suffixed model identifiers to canonical rate keys."""
     if (agent_name or "").strip().lower() == "oracle":
         return "oracle"
@@ -132,11 +174,17 @@ def normalize_model_key(model_name: str | None, agent_name: str | None = None) -
     if not raw or raw == "oracle":
         return "oracle" if (agent_name or "").strip().lower() == "oracle" else raw
 
-    if raw in MODEL_RATES:
-        return raw
+    rates, aliases = _current_rates_and_aliases(models_cfg)
 
-    bare = raw.split("/", 1)[-1]
+    if raw in rates:
+        return raw
+    if raw in aliases:
+        return aliases[raw]
+
+    provider, bare = raw.split("/", 1) if "/" in raw else ("", raw)
     bare = bare.split("@", 1)[0]
+    if bare in aliases and not provider:
+        return aliases[bare]
 
     if "haiku-4-5" in bare or "haiku-4.5" in bare or bare.startswith("claude-haiku"):
         return "anthropic/claude-haiku-4-5"
@@ -148,16 +196,27 @@ def normalize_model_key(model_name: str | None, agent_name: str | None = None) -
     ):
         return "anthropic/claude-sonnet-4-6"
     if "kimi" in bare:
-        return "nrp/kimi"
-    if "glm-5" in bare or bare.startswith("glm"):
+        if provider == "tacc" and "tacc/kimi" in rates:
+            return "tacc/kimi"
+        if provider in ("", "nrp"):
+            return "nrp/kimi"
+    if ("glm-5" in bare or bare.startswith("glm")) and provider in ("", "nrp"):
         return "nrp/glm-5"
+    if ("qwen" in bare) and provider == "local" and "local/qwen" in rates:
+        return "local/qwen"
     return raw
 
 
-def get_model_rate(model_name: str | None, agent_name: str | None = None) -> ModelRate | None:
+def get_model_rate(
+    model_name: str | None,
+    agent_name: str | None = None,
+    *,
+    models_cfg: ModelsConfig | None = None,
+) -> ModelRate | None:
     """Look up the list-price rate schedule for `model_name`, or None if unknown."""
-    key = normalize_model_key(model_name, agent_name=agent_name)
-    return MODEL_RATES.get(key)
+    rates, _ = _current_rates_and_aliases(models_cfg)
+    key = normalize_model_key(model_name, agent_name=agent_name, models_cfg=models_cfg)
+    return rates.get(key)
 
 
 def _safe_nonneg_int(val: Any) -> int:
@@ -200,8 +259,9 @@ def price_turn(
     agent_name: str | None = None,
     fallback_cost_usd: float | None = None,
     allow_cliff: bool = True,
+    models_cfg: ModelsConfig | None = None,
 ) -> TurnPricing:
-    """Price a single LLM turn using list prices and the Haiku 100K 5x cliff."""
+    """Price a single LLM turn using list prices and configured prompt cliff rules."""
     u_in = _safe_nonneg_int(uncached_input_tokens)
     c_read = _safe_nonneg_int(cache_read_tokens)
     c_write = _safe_nonneg_int(cache_write_tokens)
@@ -210,8 +270,8 @@ def price_turn(
     out_tok = _safe_nonneg_int(output_tokens)
     total_in = u_in + c_read + c_write
 
-    canonical = normalize_model_key(model_name, agent_name=agent_name)
-    rate = MODEL_RATES.get(canonical)
+    canonical = normalize_model_key(model_name, agent_name=agent_name, models_cfg=models_cfg)
+    rate = get_model_rate(canonical, agent_name=agent_name, models_cfg=models_cfg)
     if rate is None:
         fb_val = _safe_nonneg_float(fallback_cost_usd)
         fb = fb_val if fb_val is not None else 0.0
@@ -352,6 +412,8 @@ def _collect_trajectory_turns(
     traj_dict: dict[str, Any],
     default_model: str | None,
     agent_name: str | None,
+    *,
+    models_cfg: ModelsConfig | None = None,
 ) -> list[TurnPricing]:
     turns: list[TurnPricing] = []
     agent_block = traj_dict.get("agent")
@@ -392,6 +454,7 @@ def _collect_trajectory_turns(
                     output_tokens=out_tok,
                     agent_name=traj_agent,
                     fallback_cost_usd=fb_usd,
+                    models_cfg=models_cfg,
                 )
             )
 
@@ -399,7 +462,9 @@ def _collect_trajectory_turns(
     if isinstance(sub_trajs, list):
         for sub in sub_trajs:
             if isinstance(sub, dict):
-                turns.extend(_collect_trajectory_turns(sub, traj_model, traj_agent))
+                turns.extend(
+                    _collect_trajectory_turns(sub, traj_model, traj_agent, models_cfg=models_cfg)
+                )
     return turns
 
 
@@ -409,9 +474,10 @@ def price_from_agent_context(
     model_name: str | None = None,
     agent_name: str | None = None,
     n_agent_steps: int | None = None,
+    models_cfg: ModelsConfig | None = None,
 ) -> TrialPricing:
     """Price cumulative `AgentContext` usage without false multi-turn Haiku cliff inflation."""
-    canonical_top = normalize_model_key(model_name, agent_name=agent_name)
+    canonical_top = normalize_model_key(model_name, agent_name=agent_name, models_cfg=models_cfg)
     if canonical_top == "oracle":
         return TrialPricing(
             input_tokens=0,
@@ -464,6 +530,7 @@ def price_from_agent_context(
                         agent_name=agent_name,
                         fallback_cost_usd=fb,
                         allow_cliff=single_turn,
+                        models_cfg=models_cfg,
                     )
                 )
         else:
@@ -481,6 +548,7 @@ def price_from_agent_context(
                         agent_name=agent_name,
                         fallback_cost_usd=fb,
                         allow_cliff=single_turn,
+                        models_cfg=models_cfg,
                     )
                 )
 
@@ -516,7 +584,12 @@ def price_from_agent_context(
         )
 
     empty_src = (
-        "unknown_model" if (canonical_top and MODEL_RATES.get(canonical_top) is None) else "empty"
+        "unknown_model"
+        if (
+            canonical_top
+            and get_model_rate(canonical_top, agent_name=agent_name, models_cfg=models_cfg) is None
+        )
+        else "empty"
     )
     return TrialPricing(
         input_tokens=0,
@@ -543,9 +616,10 @@ def compute_trial_pricing(
     agent_name: str | None = None,
     trajectory_dict: dict[str, Any] | None = None,
     trial_result_dict: dict[str, Any] | None = None,
+    models_cfg: ModelsConfig | None = None,
 ) -> TrialPricing:
     """Compute per-trial token and list-price USD metrics from ATIF trace or TrialResult."""
-    canonical = normalize_model_key(model_name, agent_name=agent_name)
+    canonical = normalize_model_key(model_name, agent_name=agent_name, models_cfg=models_cfg)
     if canonical == "oracle":
         return TrialPricing(
             input_tokens=0,
@@ -569,7 +643,9 @@ def compute_trial_pricing(
 
     # 1. Primary source: per-step ATIF trajectory metrics (preserves exact PeakTurnTokens & cliff).
     if isinstance(trajectory_dict, dict):
-        turns = _collect_trajectory_turns(trajectory_dict, model_name, agent_name)
+        turns = _collect_trajectory_turns(
+            trajectory_dict, model_name, agent_name, models_cfg=models_cfg
+        )
         if turns:
             in_tok = sum(t.input_tokens for t in turns)
             u_in = sum(t.uncached_input_tokens for t in turns)
@@ -653,6 +729,7 @@ def compute_trial_pricing(
                     agent_name=eff_agent,
                     fallback_cost_usd=fb_usd,
                     allow_cliff=single_turn,
+                    models_cfg=models_cfg,
                 )
                 return TrialPricing(
                     input_tokens=tp.input_tokens,
@@ -692,6 +769,7 @@ def compute_trial_pricing(
                 model_name=model_name,
                 agent_name=agent_name,
                 n_agent_steps=eff_ctx_steps,
+                models_cfg=models_cfg,
             )
             if (
                 priced_ctx.total_tokens > 0
@@ -700,7 +778,14 @@ def compute_trial_pricing(
             ):
                 return priced_ctx
 
-    empty_src = "unknown_model" if (canonical and MODEL_RATES.get(canonical) is None) else "empty"
+    empty_src = (
+        "unknown_model"
+        if (
+            canonical
+            and get_model_rate(canonical, agent_name=agent_name, models_cfg=models_cfg) is None
+        )
+        else "empty"
+    )
     return TrialPricing(
         input_tokens=0,
         uncached_input_tokens=0,

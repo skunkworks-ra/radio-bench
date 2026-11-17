@@ -1,0 +1,84 @@
+# Declarative model, harness, endpoint, concurrency, and pricing registry for radio-bench.
+# Override local ports or URLs in gitignored configs/models.local.toml or models.local.toml.
+
+[models.claude_haiku_4_5]
+harness = "claude-code"
+model_name = "anthropic/claude-haiku-4-5"
+api_format = "anthropic_messages"
+api_key_env = "ANTHROPIC_API_KEY"
+thinking_levels = ["default"]
+context_window_tokens = 200000
+disable_web_search = true
+aliases = ["claude-haiku-4-5", "haiku-4-5", "haiku-4.5"]
+pricing = { input_per_mtok = 1.00, output_per_mtok = 5.00, cache_read_per_mtok = 0.10, cache_write_5m_per_mtok = 1.25, cache_write_1h_per_mtok = 2.00, cliff_prompt_tokens = 100000, cliff_multiplier = 5.0 }
+
+[models.claude_sonnet_4_6]
+harness = "claude-code"
+model_name = "anthropic/claude-sonnet-4-6"
+api_format = "anthropic_messages"
+api_key_env = "ANTHROPIC_API_KEY"
+thinking_levels = ["default", "high"]
+context_window_tokens = 200000
+disable_web_search = true
+aliases = ["claude-sonnet-4-6", "sonnet-4-6", "sonnet-4.6", "sonnet-4-5"]
+pricing = { input_per_mtok = 3.00, output_per_mtok = 15.00, cache_read_per_mtok = 0.30, cache_write_5m_per_mtok = 3.75, cache_write_1h_per_mtok = 6.00 }
+
+[models.nrp_kimi]
+harness = "opencode"
+model_name = "nrp/kimi"
+api_format = "openai_chat_completions"
+base_url = "https://ellm.nrp-nautilus.io/v1"
+api_key_env = "NRP_API_KEY"
+opencode_version = "1.19.5"
+thinking_levels = ["default"]
+context_window_tokens = 131072
+disable_web_search = true
+pricing = { input_per_mtok = 0.60, output_per_mtok = 3.00, cache_read_per_mtok = 0.10, cache_write_5m_per_mtok = 0.60, cache_write_1h_per_mtok = 0.60 }
+
+[models.nrp_glm5]
+harness = "opencode"
+model_name = "nrp/glm-5"
+api_format = "openai_chat_completions"
+base_url = "https://ellm.nrp-nautilus.io/v1"
+api_key_env = "NRP_API_KEY"
+opencode_version = "1.19.5"
+thinking_levels = ["default"]
+context_window_tokens = 131072
+disable_web_search = true
+pricing = { input_per_mtok = 1.00, output_per_mtok = 3.20, cache_read_per_mtok = 0.20, cache_write_5m_per_mtok = 1.00, cache_write_1h_per_mtok = 1.00 }
+
+[models.tacc_kimi]
+harness = "opencode"
+model_name = "tacc/kimi"
+api_format = "openai_chat_completions"
+base_url_env = "TACC_BASE_URL"
+api_key_env = "TACC_API_KEY"
+opencode_version = "1.19.5"
+thinking_levels = ["default"]
+context_window_tokens = 131072
+disable_web_search = true
+pricing = { input_per_mtok = 0.60, output_per_mtok = 3.00, cache_read_per_mtok = 0.10, cache_write_5m_per_mtok = 0.60, cache_write_1h_per_mtok = 0.60 }
+
+[models.local_llama_qwen]
+harness = "opencode"
+model_name = "local/qwen"
+api_format = "openai_chat_completions"
+base_url = "http://host.containers.internal:8080/v1"
+api_key_env = "LOCAL_LLM_API_KEY"
+opencode_version = "1.19.5"
+thinking_levels = ["default"]
+context_window_tokens = 65536
+max_concurrent_trials = 1
+host_gateway_required = true
+disable_web_search = true
+pricing = { input_per_mtok = 0.0, output_per_mtok = 0.0, cache_read_per_mtok = 0.0, cache_write_5m_per_mtok = 0.0, cache_write_1h_per_mtok = 0.0 }
+
+[[parity_pairs]]
+pair_id = "anthropic_haiku_vs_sonnet"
+small = { model = "claude_haiku_4_5", arm = "11_full", thinking_level = "default" }
+frontier = { model = "claude_sonnet_4_6", arm = "00_none", thinking_level = "default" }
+
+[[parity_pairs]]
+pair_id = "nrp_kimi_vs_glm5"
+small = { model = "nrp_kimi", arm = "11_full", thinking_level = "default" }
+frontier = { model = "nrp_glm5", arm = "00_none", thinking_level = "default" }

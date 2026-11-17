@@ -1,7 +1,7 @@
 """Export `raw`, `orchestrated_skills`, and CASA-native (`casa`) skill trees + stage subagents.
 
-Reads strictly read-only via `git archive` from `/home/pjaganna/Software/radio-analyst` at
-`RADIO_ANALYST_SHA = "00a11ea"`, never modifying `radio-analyst` and never touching `/tmp`.
+Reads strictly read-only via `git archive` from the configured `radio-analyst` pack source
+(`bench.toml` / `bench.local.toml`), never modifying the source repository and never touching `/tmp`.
 """
 
 from __future__ import annotations
@@ -16,11 +16,26 @@ import subprocess
 import tarfile
 import textwrap
 from pathlib import Path
+from typing import Any
 
-from radio_bench import RADIO_ANALYST_SHA, TEST_ROOT
+from radio_bench.config import (
+    BenchConfig,
+    add_config_cli_args,
+    config_from_cli_args,
+    load_bench_config,
+    materialize_pack_source,
+    reject_slash_tmp,
+    resolve_git_ref,
+)
 
-DEFAULT_RADIO_ANALYST_REPO = Path("/home/pjaganna/Software/radio-analyst")
-DEFAULT_EXPORT_DIR = TEST_ROOT / "exported_skills"
+
+def __getattr__(name: str) -> Any:
+    if name == "DEFAULT_EXPORT_DIR":
+        return load_bench_config().exported_skills_dir
+    if name == "RADIO_ANALYST_SHA":
+        return load_bench_config().get_pack().analyst_ref
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 MS_TOKEN_RE = re.compile(r"\bms_[a-z0-9_]+\b")
 PYTHON_FENCE_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
@@ -90,13 +105,7 @@ RAW_TRANSLATION_NOTE = (
 
 
 def _reject_slash_tmp(path: Path, label: str) -> Path:
-    raw = str(path)
-    if raw == "/tmp" or raw.startswith("/tmp/"):
-        raise ValueError(f"{label} must not reside under /tmp: {path}")
-    resolved = path.resolve()
-    res_str = str(resolved)
-    if res_str == "/tmp" or res_str.startswith("/tmp/"):
-        raise ValueError(f"{label} resolves under /tmp: {resolved}")
+    reject_slash_tmp(path, label=label)
     return path
 
 
@@ -109,18 +118,7 @@ def _strip_plugin_mcp_prefixes(text: str) -> str:
 
 
 def _verify_pinned_commit(repo: Path, sha: str) -> str:
-    if not (repo / ".git").exists():
-        raise FileNotFoundError(f"radio-analyst git repository not found at {repo}")
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", f"{sha}^{{commit}}"],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=15,
-    )
-    full_sha = proc.stdout.strip()
-    if not full_sha.startswith(sha):
-        raise ValueError(f"Pinned SHA mismatch: expected prefix {sha!r}, got {full_sha!r}")
+    full_sha, _ = resolve_git_ref(repo, sha)
     return full_sha
 
 
@@ -1621,46 +1619,76 @@ def validate_exported_tree(export_dir: Path) -> dict[str, object]:
     }
 
 
+def _sync_default_pack_compat_root(pack_dir: Path, compat_root: Path) -> None:
+    """Mirror default pack skill subtrees to `<work_dir>/exported_skills/` without touching other packs."""
+    compat_root.mkdir(parents=True, exist_ok=True)
+    for subtree in ("raw", "casa", "full", "orchestrated", "orchestrated_skills", "agents"):
+        dst_sub = compat_root / subtree
+        if dst_sub.exists():
+            shutil.rmtree(dst_sub)
+        shutil.copytree(pack_dir / subtree, dst_sub)
+    shutil.copy2(pack_dir / "manifest.json", compat_root / "manifest.json")
+
+
 def export_skills(
     *,
-    radio_analyst_repo: Path = DEFAULT_RADIO_ANALYST_REPO,
-    sha: str = RADIO_ANALYST_SHA,
-    output_dir: Path = DEFAULT_EXPORT_DIR,
+    radio_analyst_repo: Path | None = None,
+    sha: str | None = None,
+    output_dir: Path | None = None,
+    pack_id: str | None = None,
+    cfg: BenchConfig | None = None,
 ) -> dict[str, object]:
     """Export deterministic `raw`, `orchestrated_skills`, and `casa` skill trees + stage subagents."""
-    _reject_slash_tmp(output_dir, "output_dir")
-    full_sha = _verify_pinned_commit(radio_analyst_repo, sha)
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    pack = resolved_cfg.get_pack(pack_id)
 
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if radio_analyst_repo is not None:
+        eff_repo = radio_analyst_repo
+        eff_ref = sha if sha is not None else pack.analyst_ref
+        full_sha, short_sha = resolve_git_ref(eff_repo, eff_ref)
+    else:
+        eff_repo, full_sha, short_sha = materialize_pack_source(
+            pack, resolved_cfg.work_dir, repo_root=resolved_cfg.repo_root
+        )
+        if sha is not None:
+            full_sha, short_sha = resolve_git_ref(eff_repo, sha)
+
+    sync_compat = output_dir is None and pack.pack_id == resolved_cfg.default_pack
+    target_dir = (
+        output_dir if output_dir is not None else (resolved_cfg.exported_skills_dir / pack.pack_id)
+    )
+    _reject_slash_tmp(target_dir, "output_dir")
+
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Extract single-agent raw/skills (excluding orchestrate & simulators) and orchestrated_skills.
-    skills_tar = _git_archive_bytes(radio_analyst_repo, sha, [".claude/skills"])
+    skills_tar = _git_archive_bytes(eff_repo, full_sha, [".claude/skills"])
     _extract_filtered_skills(
         skills_tar,
         ".claude/skills",
-        output_dir / "raw" / "skills",
+        target_dir / "raw" / "skills",
         excluded_top_dirs=SINGLE_AGENT_EXCLUDED_SKILLS,
         adapt_orchestrate_stage_names=False,
     )
     _extract_filtered_skills(
         skills_tar,
         ".claude/skills",
-        output_dir / "orchestrated_skills",
+        target_dir / "orchestrated_skills",
         excluded_top_dirs=ORCHESTRATED_EXCLUDED_SKILLS,
         adapt_orchestrate_stage_names=True,
     )
 
-    # 2. Extract stage agents and commands from radio-analyst@00a11ea.
+    # 2. Extract stage agents and commands from configured radio-analyst ref.
     agents_tar = _git_archive_bytes(
-        radio_analyst_repo, sha, ["agents", ".opencode/agents", ".claude/commands"]
+        eff_repo, full_sha, ["agents", ".opencode/agents", ".claude/commands"]
     )
     tar_texts = _read_tar_text_map(agents_tar)
 
-    claude_agents_dir = output_dir / "agents" / "claude"
-    opencode_agents_dir = output_dir / "agents" / "opencode"
-    commands_dir = output_dir / "agents" / "commands"
+    claude_agents_dir = target_dir / "agents" / "claude"
+    opencode_agents_dir = target_dir / "agents" / "opencode"
+    commands_dir = target_dir / "agents" / "commands"
     claude_agents_dir.mkdir(parents=True, exist_ok=True)
     opencode_agents_dir.mkdir(parents=True, exist_ok=True)
     commands_dir.mkdir(parents=True, exist_ok=True)
@@ -1689,7 +1717,7 @@ def export_skills(
         opencode_out.chmod(0o644)
 
     # 3. Emit dataset-blind CASA-native steelman skill tree under casa/skills/.
-    casa_skills_root = output_dir / "casa" / "skills"
+    casa_skills_root = target_dir / "casa" / "skills"
     for rel_path, content in _build_casa_skill_files().items():
         clean_content = _sanitize_dashes(content)
         target = casa_skills_root / rel_path
@@ -1701,50 +1729,66 @@ def export_skills(
     docs = _build_workspace_docs()
     for mode_key, doc_text in docs.items():
         clean_doc = _sanitize_dashes(doc_text)
-        mode_dir = output_dir / mode_key
+        mode_dir = target_dir / mode_key
         mode_dir.mkdir(parents=True, exist_ok=True)
         for fname in ("CLAUDE.md", "AGENTS.md"):
             p = mode_dir / fname
             p.write_text(clean_doc, encoding="utf-8")
             p.chmod(0o644)
 
-    summary = validate_exported_tree(output_dir)
-    summary["radio_analyst_sha"] = sha
+    summary = validate_exported_tree(target_dir)
+    summary["pack_id"] = pack.pack_id
+    summary["output_dir"] = str(target_dir)
+    summary["radio_analyst_sha"] = short_sha
     summary["radio_analyst_commit"] = full_sha
 
-    manifest_path = output_dir / "manifest.json"
+    manifest_path = target_dir / "manifest.json"
     manifest_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     manifest_path.chmod(0o644)
+
+    if sync_compat:
+        _sync_default_pack_compat_root(target_dir, resolved_cfg.exported_skills_dir)
+
     return summary
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Export raw and CASA-native skill trees from pinned radio-analyst commit."
+        description="Export raw and CASA-native skill trees from configured radio-analyst pack."
+    )
+    add_config_cli_args(parser)
+    parser.add_argument(
+        "--pack",
+        type=str,
+        default=None,
+        help="Pack ID from bench.toml (defaults to default_pack).",
     )
     parser.add_argument(
         "--radio-analyst-repo",
         type=Path,
-        default=DEFAULT_RADIO_ANALYST_REPO,
-        help="Read-only path to radio-analyst git repository.",
+        default=None,
+        help="Explicit read-only path to radio-analyst git repository.",
     )
     parser.add_argument(
         "--sha",
         type=str,
-        default=RADIO_ANALYST_SHA,
-        help="Pinned git commit SHA prefix to export.",
+        default=None,
+        help="Explicit git commit SHA or ref to export.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_EXPORT_DIR,
-        help="Destination directory on /mnt/fast/radio-bench.",
+        default=None,
+        help="Destination directory under work_dir/exported_skills.",
     )
     args = parser.parse_args(argv)
+    cfg = config_from_cli_args(args)
     summary = export_skills(
         radio_analyst_repo=args.radio_analyst_repo,
         sha=args.sha,
         output_dir=args.output_dir,
+        pack_id=args.pack,
+        cfg=cfg,
     )
     print(json.dumps(summary, indent=2))
     return 0

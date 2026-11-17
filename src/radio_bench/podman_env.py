@@ -1,4 +1,4 @@
-"""Rootless Podman socket, Compose v2, Harbor CLI, and fast-storage readiness checks."""
+"""Rootless Podman socket, Compose v2, Harbor CLI, and work-directory readiness checks."""
 
 from __future__ import annotations
 
@@ -19,7 +19,14 @@ from pathlib import Path
 
 import yaml
 
-from radio_bench import DATA_ROOT, RUNS_ROOT, TEST_ROOT
+from radio_bench.config import (
+    BenchConfig,
+    add_config_cli_args,
+    config_from_cli_args,
+    is_under_slash_tmp,
+    load_bench_config,
+    reject_slash_tmp,
+)
 
 CommandRunner = Callable[[list[str], dict[str, str]], subprocess.CompletedProcess[str]]
 
@@ -55,14 +62,7 @@ def default_podman_socket(uid: int | None = None) -> Path:
 
 
 def _is_under_slash_tmp(path: Path) -> bool:
-    raw = str(path)
-    if raw == "/tmp" or raw.startswith("/tmp/"):
-        return True
-    try:
-        resolved = str(path.resolve())
-    except OSError:
-        return False
-    return resolved == "/tmp" or resolved.startswith("/tmp/")
+    return is_under_slash_tmp(path)
 
 
 def ensure_docker_compose_plugin(
@@ -70,7 +70,12 @@ def ensure_docker_compose_plugin(
     compose_binary: Path | None = None,
 ) -> Path | None:
     """Ensure DOCKER_CONFIG/cli-plugins/docker-compose points at an executable binary."""
-    cfg_dir = docker_config_dir or (TEST_ROOT / "docker_config")
+    cfg_dir = (
+        docker_config_dir
+        if docker_config_dir is not None
+        else load_bench_config().docker_config_dir
+    )
+    reject_slash_tmp(cfg_dir, label="docker_config_dir")
     binary = compose_binary
     if binary is None:
         which_compose = shutil.which("docker-compose")
@@ -149,32 +154,52 @@ def build_podman_env(
     base_env: Mapping[str, str] | None = None,
     *,
     uid: int | None = None,
-    test_root: Path = TEST_ROOT,
-    data_root: Path = DATA_ROOT,
+    test_root: Path | None = None,
+    data_root: Path | None = None,
+    container_tmpdir: Path | None = None,
+    cfg: BenchConfig | None = None,
 ) -> dict[str, str]:
-    """Construct environment dictionary wired to rootless podman.sock and /mnt/fast."""
+    """Construct environment dictionary wired to rootless podman.sock and configured work_dir."""
     env = dict(os.environ if base_env is None else base_env)
-    sock = default_podman_socket(uid=uid)
-    env.setdefault("DOCKER_HOST", f"unix://{sock}")
+    resolved_cfg = cfg
+    if resolved_cfg is None and test_root is None:
+        resolved_cfg = load_bench_config(uid=uid)
 
-    tmpdir = test_root / "tmp"
-    mpl_dir = test_root / "mplconfig"
-    podman_tmp = data_root / "podman_tmp"
+    eff_work = test_root if test_root is not None else resolved_cfg.work_dir  # type: ignore[union-attr]
+    _ = data_root  # retained for call-site backward compatibility
+
+    if uid is not None or resolved_cfg is None:
+        sock = default_podman_socket(uid=uid)
+        env.setdefault("DOCKER_HOST", f"unix://{sock}")
+    else:
+        env.setdefault("DOCKER_HOST", resolved_cfg.docker_host)
+
+    tmpdir = eff_work / "tmp"
+    mpl_dir = eff_work / "mplconfig"
+    if container_tmpdir is not None:
+        podman_tmp = container_tmpdir
+    elif test_root is not None or resolved_cfg is None:
+        podman_tmp = eff_work / "podman_tmp"
+    else:
+        podman_tmp = resolved_cfg.container_tmpdir
+
     for directory in (tmpdir, mpl_dir, podman_tmp):
-        directory.mkdir(parents=True, exist_ok=True)
+        if not _is_under_slash_tmp(directory):
+            directory.mkdir(parents=True, exist_ok=True)
 
     if _is_under_slash_tmp(Path(env.get("TMPDIR", "/tmp"))):
         env["TMPDIR"] = str(tmpdir)
     env.setdefault("CONTAINER_TMPDIR", str(podman_tmp))
     env.setdefault("MPLCONFIGDIR", str(mpl_dir))
 
-    casa_cfg = test_root / "casaconfig_local.py"
+    casa_cfg = eff_work / "casaconfig_local.py"
     if casa_cfg.is_file():
         env.setdefault("CASASITECONFIG", str(casa_cfg))
 
-    cfg_dir = ensure_docker_compose_plugin(test_root / "docker_config")
-    if cfg_dir is not None:
-        env.setdefault("DOCKER_CONFIG", str(cfg_dir))
+    if not _is_under_slash_tmp(eff_work):
+        cfg_dir = ensure_docker_compose_plugin(eff_work / "docker_config")
+        if cfg_dir is not None:
+            env.setdefault("DOCKER_CONFIG", str(cfg_dir))
 
     pixi_bin = str(Path(sys.executable).resolve().parent)
     current_path = env.get("PATH", "")
@@ -204,16 +229,37 @@ def check_podman_env(
     uid: int | None = None,
     socket_path: Path | None = None,
     ensure_socket: bool = True,
-    test_root: Path = TEST_ROOT,
-    data_root: Path = DATA_ROOT,
-    runs_root: Path = RUNS_ROOT,
+    test_root: Path | None = None,
+    data_root: Path | None = None,
+    runs_root: Path | None = None,
+    cfg: BenchConfig | None = None,
     base_env: Mapping[str, str] | None = None,
     runner: CommandRunner = _default_runner,
 ) -> PodmanEnvReport:
-    """Verify rootless podman.sock, Compose v2, Harbor CLI, and /mnt/fast storage."""
+    """Verify rootless podman.sock, Compose v2, Harbor CLI, and configured non-/tmp storage."""
     resolved_uid = os.getuid() if uid is None else uid
-    sock = socket_path if socket_path is not None else default_podman_socket(resolved_uid)
-    env = build_podman_env(base_env, uid=resolved_uid, test_root=test_root, data_root=data_root)
+    resolved_cfg = cfg
+    if resolved_cfg is None and (test_root is None or data_root is None or runs_root is None):
+        resolved_cfg = load_bench_config(uid=resolved_uid)
+
+    eff_work = test_root if test_root is not None else resolved_cfg.work_dir  # type: ignore[union-attr]
+    eff_data = data_root if data_root is not None else resolved_cfg.data_dir  # type: ignore[union-attr]
+    eff_runs = runs_root if runs_root is not None else resolved_cfg.runs_dir  # type: ignore[union-attr]
+
+    if socket_path is not None:
+        sock = socket_path
+    elif resolved_cfg is not None and resolved_cfg.docker_host.startswith("unix://"):
+        sock = Path(resolved_cfg.docker_host[len("unix://") :])
+    else:
+        sock = default_podman_socket(resolved_uid)
+
+    env = build_podman_env(
+        base_env,
+        uid=resolved_uid,
+        test_root=eff_work,
+        data_root=eff_data,
+        cfg=resolved_cfg if test_root is None else None,
+    )
     if socket_path is not None:
         env["DOCKER_HOST"] = f"unix://{sock}"
 
@@ -221,9 +267,9 @@ def check_podman_env(
 
     storage_paths_ok = True
     for label, root in (
-        ("test_root", test_root),
-        ("data_root", data_root),
-        ("runs_root", runs_root),
+        ("work_dir", eff_work),
+        ("data_dir", eff_data),
+        ("runs_dir", eff_runs),
     ):
         if _is_under_slash_tmp(root):
             storage_paths_ok = False
@@ -358,9 +404,10 @@ def cleanup_stale_harbor_resources(
     base_env: Mapping[str, str] | None = None,
     runner: CommandRunner = _default_runner,
     aardvark_dir: Path | None = None,
+    cfg: BenchConfig | None = None,
 ) -> dict[str, object]:
     """Remove leaked Harbor trial containers, networks, named volumes, and dead aardvark pids."""
-    env = build_podman_env(base_env)
+    env = build_podman_env(base_env, cfg=cfg)
     removed_containers: list[str] = []
     removed_volumes: list[str] = []
     removed_networks: list[str] = []
@@ -452,9 +499,15 @@ def smoke_compose_teardown(
     base_env: Mapping[str, str] | None = None,
     runner: CommandRunner = _default_runner,
     scratch_root: Path | None = None,
+    pack_id: str | None = None,
+    cfg: BenchConfig | None = None,
 ) -> dict[str, object]:
     """Smoke-test Compose up/down lifecycle for offline verifier and loopback MCP sidecar."""
-    env = build_podman_env(base_env)
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    tmp_base = scratch_root if scratch_root is not None else resolved_cfg.tmp_dir
+    reject_slash_tmp(tmp_base, label="scratch_root")
+    pack = resolved_cfg.get_pack(pack_id)
+    env = build_podman_env(base_env, cfg=resolved_cfg)
     errors: list[str] = []
 
     compose_cmd: list[str] | None = None
@@ -472,7 +525,6 @@ def smoke_compose_teardown(
             "errors": ["Neither 'docker compose version' nor 'podman compose version' succeeded."],
         }
 
-    tmp_base = scratch_root if scratch_root is not None else (TEST_ROOT / "tmp")
     tmp_base.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex[:8]
     proj_ver = f"rb_smoke_ver_{token}"
@@ -484,6 +536,8 @@ def smoke_compose_teardown(
     ver_result: dict[str, object] = {"project": proj_ver, "ok": False}
     tools_result: dict[str, object] = {"project": proj_tools, "ok": False}
     leftover_volumes: list[str] = []
+
+    ports_tuple = tuple(int(p) for p in pack.mcp_ports.values())
 
     try:
         # (a) Verifier compose project (network_mode: none, verifier_ws:/workspace)
@@ -559,6 +613,13 @@ def smoke_compose_teardown(
                 "exec /opt/casa-venv/bin/python /usr/local/bin/serve-mcp-sidecar.py",
             ]
         )
+        sidecar_env = {
+            "TMPDIR": "/var/tmp",
+            "RADIO_MCP_HOST": "127.0.0.1",
+            "RADIO_MCP_PORT_MS_INSPECT": str(pack.mcp_ports.get("ms-inspect", 8000)),
+            "RADIO_MCP_PORT_MS_MODIFY": str(pack.mcp_ports.get("ms-modify", 8001)),
+            "RADIO_MCP_PORT_MS_CREATE": str(pack.mcp_ports.get("ms-create", 8002)),
+        }
         tools_spec = {
             "services": {
                 "main": {
@@ -570,12 +631,9 @@ def smoke_compose_teardown(
                     "volumes": ["workspace_vol:/workspace", "agent_tmp:/var/tmp"],
                 },
                 "mcp-servers": {
-                    "image": "localhost/radio-bench-mcp-sidecar:latest",
+                    "image": pack.sidecar_image,
                     "network_mode": "service:main",
-                    "environment": {
-                        "TMPDIR": "/var/tmp",
-                        "RADIO_MCP_HOST": "127.0.0.1",
-                    },
+                    "environment": sidecar_env,
                     "command": ["bash", "-lc", sidecar_cmd],
                     "volumes": ["workspace_vol:/workspace", "agent_tmp:/var/tmp"],
                 },
@@ -614,7 +672,7 @@ def smoke_compose_teardown(
 
             probe_snippet = (
                 "import socket, sys, time\n"
-                "for port in (8000, 8001, 8002):\n"
+                f"for port in {ports_tuple!r}:\n"
                 "    for _ in range(150):\n"
                 "        try:\n"
                 "            with socket.create_connection(('mcp-servers', port), timeout=1.0):\n"
@@ -685,6 +743,8 @@ def smoke_compose_teardown(
         )
         tools_result = {
             "project": proj_tools,
+            "pack_id": pack.pack_id,
+            "sidecar_image": pack.sidecar_image,
             "up_rc": tools_up.returncode,
             "tcp_probe_rc": tcp_rc,
             "down_rc": tools_down.returncode,
@@ -708,6 +768,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Verify rootless Podman + Compose + Harbor environment."
     )
+    add_config_cli_args(parser)
+    parser.add_argument("--pack", type=str, default=None, help="Pack ID for smoke-compose.")
     parser.add_argument("--json", action="store_true", help="Emit JSON report only.")
     parser.add_argument(
         "--no-ensure-socket",
@@ -726,20 +788,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    cleanup_summary: dict[str, object] | None = None
-    if args.cleanup:
-        cleanup_summary = cleanup_stale_harbor_resources(include_running=True)
-    else:
-        cleanup_summary = cleanup_stale_harbor_resources(include_running=False)
+    cfg = config_from_cli_args(args)
 
-    report = check_podman_env(ensure_socket=not args.no_ensure_socket)
+    if args.cleanup:
+        cleanup_summary = cleanup_stale_harbor_resources(include_running=True, cfg=cfg)
+    else:
+        cleanup_summary = cleanup_stale_harbor_resources(include_running=False, cfg=cfg)
+
+    report = check_podman_env(ensure_socket=not args.no_ensure_socket, cfg=cfg)
     out_dict = report.to_dict()
     if cleanup_summary is not None:
         out_dict["cleanup"] = cleanup_summary
 
     smoke_summary: dict[str, object] | None = None
     if args.smoke_compose:
-        smoke_summary = smoke_compose_teardown()
+        smoke_summary = smoke_compose_teardown(pack_id=args.pack, cfg=cfg)
         out_dict["smoke_compose"] = smoke_summary
 
     overall_ok = report.ok and (smoke_summary is None or bool(smoke_summary.get("ok")))

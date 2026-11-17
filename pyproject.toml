@@ -33,9 +33,12 @@ casa = [
 ]
 
 [project.scripts]
+radio-bench = "radio_bench.cli:main"
 radio-bench-podman = "radio_bench.podman_env:main"
+radio-bench-build-images = "radio_bench.build_images:main"
 radio-bench-export-skills = "radio_bench.export_skills:main"
 radio-bench-build-tasks = "radio_bench.build_tasks:main"
+radio-bench-render-jobs = "radio_bench.render_jobs:main"
 radio-bench-analyze = "radio_bench.analysis.cli:main"
 
 [tool.hatch.build.targets.wheel]
@@ -52,5 +55,6 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-cache_dir = "/mnt/fast/radio-bench/pytest_cache"
+cache_dir = ".work/pytest_cache"
+addopts = "--basetemp=.work/pytest"
 testpaths = ["tests"]

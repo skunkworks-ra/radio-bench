@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import tomllib
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -177,6 +178,7 @@ CSV_BASE_COLUMNS: tuple[str, ...] = (
     "trial_name",
     "task_name",
     "base_task",
+    "pack_id",
     "suite",
     "stage",
     "is_e2e",
@@ -333,38 +335,85 @@ def discover_trial_dirs(
     return found
 
 
-def parse_task_variant(
+def _match_canonical_or_truncated_arm(token: str) -> str | None:
+    """Resolve an exact or Harbor 32-char truncated arm token to a canonical arm name."""
+    if token in CANONICAL_ARMS:
+        return token
+    if "_" in token or token in {"00", "10"}:
+        prefix_matches = [a for a in CANONICAL_ARMS if a.startswith(token)]
+        if len(prefix_matches) == 1:
+            return prefix_matches[0]
+    return None
+
+
+def parse_task_variant_with_pack(
     task_name: str, metrics_stage: str | None = None
-) -> tuple[str, str, str, str, bool]:
-    """Parse `task_name` into `(base_task, arm, suite, stage, is_e2e)`."""
+) -> tuple[str, str | None, str, str, str, bool]:
+    """Parse `task_name` into `(base_task, pack_id, arm, suite, stage, is_e2e)`.
+
+    Supports:
+    - `<task_id>__<arm>` (single-pack)
+    - `<task_id>__<arm>__<trial_hash>` (Harbor trial name for single-pack)
+    - `<task_id>__<pack_id>__<arm>` (multi-pack)
+    - `<task_id>__<pack_id>__<arm>__<trial_hash>` (Harbor trial name for multi-pack)
+    - `<task_id>__<pack_id>__<trial_hash>` (Harbor 32-char truncated multi-pack trial_dir.name)
+    """
     clean = task_name.strip().rstrip("/")
     if "/" in clean:
         clean = clean.rsplit("/", 1)[-1]
 
     base_task = clean
+    pack_id: str | None = None
     arm = "00_none"
 
-    for known_arm in sorted(CANONICAL_ARMS, key=len, reverse=True):
-        suffix = f"__{known_arm}"
-        if clean.endswith(suffix):
-            base_task = clean[: -len(suffix)]
-            arm = known_arm
-            break
-    else:
-        if "__" in clean:
-            parts = clean.split("__")
-            cand_arm = parts[1]
-            # Resolve exact or Harbor 32-char truncated arm prefixes (e.g. 01_skills_ca -> 01_skills_casa).
-            if cand_arm in CANONICAL_ARMS:
-                base_task = parts[0]
-                arm = cand_arm
+    if "__" in clean:
+        parts = clean.split("__")
+        if len(parts) == 2:
+            base_task = parts[0]
+            matched_p1 = _match_canonical_or_truncated_arm(parts[1])
+            if matched_p1 is not None:
+                arm = matched_p1
+            elif re.fullmatch(r"[0-9a-f]{6,12}", parts[1]):
+                arm = "00_none"
             else:
-                prefix_matches = [a for a in CANONICAL_ARMS if a.startswith(cand_arm)]
-                if len(prefix_matches) == 1 and "_" in cand_arm:
-                    base_task = parts[0]
-                    arm = prefix_matches[0]
-                else:
-                    base_task, arm = parts[0], cand_arm
+                arm = parts[1]
+        elif len(parts) == 3:
+            matched_p2 = _match_canonical_or_truncated_arm(parts[2])
+            matched_p1 = _match_canonical_or_truncated_arm(parts[1])
+            if matched_p2 is not None:
+                base_task = parts[0]
+                pack_id = parts[1]
+                arm = matched_p2
+            elif matched_p1 is not None:
+                base_task = parts[0]
+                pack_id = None
+                arm = matched_p1
+            else:
+                # Harbor 32-char truncation (`<task_id>__<pack_id>__<7hex_uuid>` where `__<arm>`
+                # was truncated before appending `__<uuid>`): never treat a trial hash as `arm`.
+                base_task = parts[0]
+                pack_id = parts[1]
+                arm = "00_none"
+        else:
+            matched_p2 = _match_canonical_or_truncated_arm(parts[2])
+            matched_last = _match_canonical_or_truncated_arm(parts[-1])
+            matched_p1 = _match_canonical_or_truncated_arm(parts[1])
+            if matched_p2 is not None:
+                base_task = parts[0]
+                pack_id = parts[1]
+                arm = matched_p2
+            elif matched_last is not None:
+                base_task = parts[0]
+                pack_id = "__".join(parts[1:-1])
+                arm = matched_last
+            elif matched_p1 is not None:
+                base_task = parts[0]
+                pack_id = None
+                arm = matched_p1
+            else:
+                base_task = parts[0]
+                pack_id = parts[1]
+                arm = "00_none"
 
     if base_task in BASE_TASK_META:
         suite, stage = BASE_TASK_META[base_task]
@@ -393,6 +442,16 @@ def parse_task_variant(
             stage = "unknown"
 
     is_e2e = stage == "e2e"
+    return base_task, pack_id, arm, suite, stage, is_e2e
+
+
+def parse_task_variant(
+    task_name: str, metrics_stage: str | None = None
+) -> tuple[str, str, str, str, bool]:
+    """Parse `task_name` into `(base_task, arm, suite, stage, is_e2e)`."""
+    base_task, _pack_id, arm, suite, stage, is_e2e = parse_task_variant_with_pack(
+        task_name, metrics_stage=metrics_stage
+    )
     return base_task, arm, suite, stage, is_e2e
 
 
@@ -956,9 +1015,40 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         if isinstance(metrics_dict, dict) and isinstance(metrics_dict.get("stage"), str)
         else None
     )
-    base_task, arm, suite, stage, is_e2e = parse_task_variant(
+    base_task, parsed_pack_id, arm, suite, stage, is_e2e = parse_task_variant_with_pack(
         task_name, metrics_stage=metrics_stage
     )
+    pack_id = parsed_pack_id
+    if isinstance(config_dict, dict):
+        task_cfg = config_dict.get("task")
+        task_path_raw = task_cfg.get("path") if isinstance(task_cfg, dict) else None
+        if isinstance(task_path_raw, str) and task_path_raw.strip():
+            task_toml = Path(task_path_raw) / "task.toml"
+            if task_toml.is_file():
+                try:
+                    t_meta = tomllib.loads(task_toml.read_text(encoding="utf-8")).get("metadata")
+                    if isinstance(t_meta, dict):
+                        if pack_id is None and isinstance(t_meta.get("pack_id"), str):
+                            pack_id = t_meta["pack_id"].strip() or None
+                        if (
+                            arm == "00_none"
+                            and isinstance(t_meta.get("arm"), str)
+                            and t_meta["arm"].strip()
+                        ):
+                            arm = t_meta["arm"].strip()
+                        if (
+                            base_task not in BASE_TASK_META
+                            and isinstance(t_meta.get("base_task"), str)
+                            and t_meta["base_task"].strip()
+                        ):
+                            base_task = t_meta["base_task"].strip()
+                            if base_task in BASE_TASK_META:
+                                suite, stage = BASE_TASK_META[base_task]
+                                is_e2e = stage == "e2e"
+                except (OSError, ValueError):
+                    pass
+    if pack_id is None:
+        pack_id = "ra_00a11ea"
 
     trial_name = (
         str(result_dict.get("trial_name")).strip()
@@ -1055,6 +1145,7 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
             "started_at": started_at_str,
             "task_name": task_name,
             "base_task": base_task,
+            "pack_id": pack_id,
             "suite": suite,
             "stage": stage,
             "is_e2e": is_e2e,
@@ -1262,13 +1353,14 @@ def _deduplicate_regraded_trials(
 
     # 2. Deduplicate identical trial_name across job directories (keep newest / regrade).
     by_trial_key: dict[
-        tuple[str, str, str, str, str, str], tuple[int, dict[str, Any], dict[str, Any]]
+        tuple[str, str, str, str, str, str, str], tuple[int, dict[str, Any], dict[str, Any]]
     ] = {}
     for ord_idx, rec, prov in surviving:
         t_name = str(rec.get("trial_name") or "")
         key = (
             str(rec.get("suite")),
             str(rec.get("base_task")),
+            str(rec.get("pack_id") or "ra_00a11ea"),
             str(rec.get("arm")),
             str(rec.get("agent_name")),
             str(rec.get("model_name")),
@@ -1315,11 +1407,12 @@ def collect_trials(
 
     records = _deduplicate_regraded_trials(entries)
 
-    grouped: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
+    grouped: dict[tuple[str, str, str, str, str, str], list[dict[str, Any]]] = {}
     for rec in records:
         key = (
             str(rec["suite"]),
             str(rec["base_task"]),
+            str(rec.get("pack_id") or "ra_00a11ea"),
             str(rec["arm"]),
             str(rec["agent_name"]),
             str(rec["model_name"]),

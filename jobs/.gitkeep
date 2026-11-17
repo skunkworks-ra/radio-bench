@@ -1,0 +1,1 @@
+# Generated Harbor job YAML files live in <work_dir>/jobs/ via `pixi run render-jobs`.

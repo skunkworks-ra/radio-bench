@@ -45,7 +45,7 @@ def test_build_podman_env_replaces_slash_tmp(tmp_path: Path) -> None:
     assert env["DOCKER_HOST"] == "unix:///run/user/1000/podman/podman.sock"
     assert env["TMPDIR"] == str(test_root / "tmp")
     assert not env["TMPDIR"].startswith("/tmp")
-    assert env["CONTAINER_TMPDIR"] == str(data_root / "podman_tmp")
+    assert env["CONTAINER_TMPDIR"] == str(test_root / "podman_tmp")
 
 
 def test_ensure_docker_compose_plugin_creates_symlink(tmp_path: Path) -> None:

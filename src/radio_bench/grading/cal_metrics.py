@@ -40,14 +40,16 @@ def resolve_scratch_root(scratch_root: Path | None = None) -> Path:
             cand.mkdir(parents=True, exist_ok=True)
             return cand
 
-    fast_tmp = Path("/mnt/fast/radio-bench/tmp")
-    if fast_tmp.parent.exists() and os.access(fast_tmp.parent, os.W_OK):
-        fast_tmp.mkdir(parents=True, exist_ok=True)
-        return fast_tmp
-
     var_tmp = Path("/var/tmp/radio-bench-verifier")
-    var_tmp.mkdir(parents=True, exist_ok=True)
-    return var_tmp
+    if Path("/var/tmp").exists() and os.access("/var/tmp", os.W_OK):
+        var_tmp.mkdir(parents=True, exist_ok=True)
+        return var_tmp
+
+    from radio_bench.config import load_bench_config
+
+    cfg_tmp = load_bench_config().tmp_dir
+    cfg_tmp.mkdir(parents=True, exist_ok=True)
+    return cfg_tmp
 
 
 def _parse_sky_coord_rad(
@@ -1520,9 +1522,11 @@ def _run_verifier_tclean_recipe(
         child_env["MKL_NUM_THREADS"] = "1"
         child_env["NUMEXPR_NUM_THREADS"] = "1"
         if not child_env.get("CASASITECONFIG", "").strip():
+            from radio_bench.config import load_bench_config
+
             for cand_cfg in (
                 Path("/etc/casa/config.py"),
-                Path("/mnt/fast/radio-bench/casaconfig_local.py"),
+                load_bench_config().casaconfig_path,
             ):
                 if cand_cfg.is_file():
                     child_env["CASASITECONFIG"] = str(cand_cfg)

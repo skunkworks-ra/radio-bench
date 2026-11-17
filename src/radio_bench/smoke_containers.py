@@ -1,4 +1,4 @@
-"""Automated hard-isolation and 61-tool streamable-http smoke checks for Wave 2 images."""
+"""Automated hard-isolation and streamable-http MCP tool smoke checks for container images."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -16,14 +17,23 @@ from typing import Any
 
 import httpx
 
-from radio_bench import RADIO_ANALYST_SHA, TEST_ROOT
+from radio_bench.config import (
+    BenchConfig,
+    add_config_cli_args,
+    config_from_cli_args,
+    load_bench_config,
+    materialize_pack_source,
+    reject_slash_tmp,
+    write_casaconfig_local,
+)
 from radio_bench.podman_env import build_podman_env
 
 CASA_BASE_IMAGE = "localhost/radio-bench-casa-base:latest"
 AGENT_IMAGE = "localhost/radio-bench-agent-base:latest"
 SIDECAR_IMAGE = "localhost/radio-bench-mcp-sidecar:latest"
 VERIFIER_IMAGE = "localhost/radio-bench-verifier:latest"
-RADIO_ANALYST_REPO = Path("/home/pjaganna/Software/radio-analyst")
+
+_HEX_SHORT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 OFFLINE_CASA_SNIPPET = (
     "import importlib.metadata as m, os, casatools, casatasks; "
@@ -43,7 +53,7 @@ OFFLINE_CASA_SNIPPET = (
     "print(casatools.version_string(), m.version('casatasks'), bool(vla), bool(azel))"
 )
 
-# Maps server name -> (container_port, expected_tool_count).
+# Baseline expected counts for default frozen pack ra_00a11ea -> (container_port, expected_tool_count).
 EXPECTED_SERVER_COUNTS: dict[str, tuple[int, int]] = {
     "ms-inspect": (8000, 38),
     "ms-modify": (8001, 19),
@@ -72,7 +82,7 @@ class ContainerRunResult:
 
 
 def classify_tool_probe_response(tool_name: str, res: dict[str, Any]) -> tuple[bool, str]:
-    """Validate an MCP tools/call response from the 61-tool smoke manifest."""
+    """Validate an MCP tools/call response from the smoke manifest."""
     is_error = bool(res.get("isError", False))
     structured = res.get("structuredContent") or {}
     content_items = res.get("content") or []
@@ -210,11 +220,12 @@ class StreamableHTTPMCPClient:
         return self.request("tools/call", {"name": name, "arguments": arguments})
 
 
-def generate_minimal_smoke_ms(ms_path: Path) -> None:
-    """Create a 3-antenna VLA-D smoke MS on host fast storage for MCP HTTP probing."""
-    casa_cfg = TEST_ROOT / "casaconfig_local.py"
-    if casa_cfg.is_file():
-        os.environ.setdefault("CASASITECONFIG", str(casa_cfg))
+def generate_minimal_smoke_ms(ms_path: Path, *, cfg: BenchConfig | None = None) -> None:
+    """Create a 3-antenna VLA-D smoke MS in configured work_dir for MCP HTTP probing."""
+    reject_slash_tmp(ms_path, label="ms_path")
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    casa_cfg = write_casaconfig_local(resolved_cfg)
+    os.environ.setdefault("CASASITECONFIG", str(casa_cfg))
     from casatools import componentlist, ctsys, measures, simulator, table
 
     if ms_path.exists():
@@ -319,10 +330,21 @@ def generate_minimal_smoke_ms(ms_path: Path) -> None:
         shutil.rmtree(cl_path, ignore_errors=True)
 
 
-def load_pinned_tool_manifest(sha: str = RADIO_ANALYST_SHA) -> dict[str, dict[str, Any]]:
-    """Read tool_manifest.json from pinned radio-analyst commit without touching its working tree."""
+def load_pinned_tool_manifest(
+    sha: str | None = None,
+    *,
+    pack_id: str | None = None,
+    cfg: BenchConfig | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Read tool_manifest.json from configured pack source without touching its working tree."""
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    pack = resolved_cfg.get_pack(pack_id)
+    repo_path, full_sha, _ = materialize_pack_source(
+        pack, resolved_cfg.work_dir, repo_root=resolved_cfg.repo_root
+    )
+    target_ref = sha if sha is not None else full_sha
     proc = subprocess.run(
-        ["git", "-C", str(RADIO_ANALYST_REPO), "show", f"{sha}:scripts/ci/tool_manifest.json"],
+        ["git", "-C", str(repo_path), "show", f"{target_ref}:scripts/ci/tool_manifest.json"],
         capture_output=True,
         text=True,
         check=True,
@@ -582,8 +604,38 @@ def _resolve_published_port(cname: str, container_port: int, env: dict[str, str]
     return int(first_line.rsplit(":", 1)[1])
 
 
-def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, Any]:
-    """Start mcp-sidecar and verify uid 1000, sidecar offload, run-step handoff, and all 61 tools."""
+def _resolve_server_expectations(
+    pack_id: str,
+    mcp_ports: dict[str, int],
+    manifest: dict[str, dict[str, Any]],
+) -> tuple[dict[str, tuple[int, int]], int]:
+    if pack_id == "ra_00a11ea":
+        counts = {
+            "ms-inspect": (int(mcp_ports.get("ms-inspect", 8000)), 38),
+            "ms-modify": (int(mcp_ports.get("ms-modify", 8001)), 19),
+            "ms-create": (int(mcp_ports.get("ms-create", 8002)), 4),
+        }
+        return counts, 61
+
+    dynamic_counts: dict[str, tuple[int, int]] = {}
+    for srv_name, port in mcp_ports.items():
+        dynamic_counts[srv_name] = (int(port), len(manifest.get(srv_name, {})))
+    total_expected = sum(cnt for _, cnt in dynamic_counts.values())
+    return dynamic_counts, total_expected
+
+
+def check_mcp_sidecar_http(
+    env: dict[str, str],
+    smoke_dir: Path,
+    *,
+    pack_id: str | None = None,
+    cfg: BenchConfig | None = None,
+) -> dict[str, Any]:
+    """Start mcp-sidecar and verify uid 1000, sidecar offload, run-step handoff, and all tools."""
+    reject_slash_tmp(smoke_dir, label="smoke_dir")
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    pack = resolved_cfg.get_pack(pack_id)
+
     reap_stale_smoke_containers(env, patterns=("^radio-bench-sidecar-smoke-",))
 
     ws_dir = smoke_dir / "workspace"
@@ -599,7 +651,10 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
         shutil.rmtree(ws_dir, ignore_errors=True)
     ws_dir.mkdir(parents=True, exist_ok=True)
     smoke_ms = ws_dir / "smoke.ms"
-    generate_minimal_smoke_ms(smoke_ms)
+    if cfg is None:
+        generate_minimal_smoke_ms(smoke_ms)
+    else:
+        generate_minimal_smoke_ms(smoke_ms, cfg=cfg)
     _make_tree_world_writable(ws_dir)
     subprocess.run(
         ["podman", "unshare", "chown", "-R", "1000:1000", str(ws_dir)],
@@ -610,7 +665,22 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
         check=False,
     )
 
-    manifest = load_pinned_tool_manifest()
+    if pack_id is None and cfg is None:
+        manifest = load_pinned_tool_manifest()
+    else:
+        manifest = load_pinned_tool_manifest(pack_id=pack.pack_id, cfg=resolved_cfg)
+
+    if _HEX_SHORT_RE.fullmatch(pack.analyst_ref) and pack.analyst_ref.upper() != "HEAD":
+        expected_sha = pack.analyst_ref.lower()
+    else:
+        _, _, expected_sha = materialize_pack_source(
+            pack, resolved_cfg.work_dir, repo_root=resolved_cfg.repo_root
+        )
+
+    server_counts, expected_total = _resolve_server_expectations(
+        pack.pack_id, pack.mcp_ports, manifest
+    )
+    sidecar_image = pack.sidecar_image
     cname = f"radio-bench-sidecar-smoke-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
     server_summaries: dict[str, Any] = {}
@@ -624,6 +694,14 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
     handoff_script_ready = False
     run_step_handoff_ok = False
 
+    port_publish_args: list[str] = []
+    for srv_port in (
+        pack.mcp_ports.get("ms-inspect", 8000),
+        pack.mcp_ports.get("ms-modify", 8001),
+        pack.mcp_ports.get("ms-create", 8002),
+    ):
+        port_publish_args.extend(["-p", f"127.0.0.1::{int(srv_port)}"])
+
     try:
         try:
             proc_start = subprocess.run(
@@ -634,15 +712,16 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
                     "--rm",
                     "--name",
                     cname,
-                    "-p",
-                    "127.0.0.1::8000",
-                    "-p",
-                    "127.0.0.1::8001",
-                    "-p",
-                    "127.0.0.1::8002",
+                    *port_publish_args,
+                    "-e",
+                    f"RADIO_MCP_PORT_MS_INSPECT={int(pack.mcp_ports.get('ms-inspect', 8000))}",
+                    "-e",
+                    f"RADIO_MCP_PORT_MS_MODIFY={int(pack.mcp_ports.get('ms-modify', 8001))}",
+                    "-e",
+                    f"RADIO_MCP_PORT_MS_CREATE={int(pack.mcp_ports.get('ms-create', 8002))}",
                     "-v",
                     f"{ws_dir}:/workspace:rw,z",
-                    SIDECAR_IMAGE,
+                    sidecar_image,
                 ],
                 env=env,
                 capture_output=True,
@@ -653,7 +732,7 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
             if proc_start.returncode != 0:
                 return {
                     "ok": False,
-                    "error": f"Failed to start {SIDECAR_IMAGE}: {proc_start.stderr.strip()}",
+                    "error": f"Failed to start {sidecar_image}: {proc_start.stderr.strip()}",
                 }
 
             proc_uid = subprocess.run(
@@ -671,7 +750,7 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
                 timeout=30,
                 check=False,
             )
-            expected_ident = f"1000|/workspace/.radio_mcp|{RADIO_ANALYST_SHA}|{RADIO_ANALYST_SHA}"
+            expected_ident = f"1000|/workspace/.radio_mcp|{expected_sha}|{expected_sha}"
             sidecar_uid_ok = proc_uid.returncode == 0 and proc_uid.stdout.strip() == expected_ident
             if not sidecar_uid_ok:
                 failures.append(
@@ -682,7 +761,7 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
                     }
                 )
 
-            for server_name, (container_port, expected_count) in EXPECTED_SERVER_COUNTS.items():
+            for server_name, (container_port, expected_count) in server_counts.items():
                 try:
                     host_port = _resolve_published_port(cname, container_port, env)
                 except Exception as exc:
@@ -859,7 +938,7 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
         except subprocess.TimeoutExpired as exc:
             return {
                 "ok": False,
-                "error": f"Timed out starting or querying {SIDECAR_IMAGE}: {exc}",
+                "error": f"Timed out starting or querying {sidecar_image}: {exc}",
             }
         finally:
             subprocess.run(
@@ -918,9 +997,9 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
         )
 
     ok = (
-        total_advertised == 61
-        and total_probed == 61
-        and total_passed == 61
+        total_advertised == expected_total
+        and total_probed == expected_total
+        and total_passed == expected_total
         and sidecar_uid_ok
         and sidecar_detail_ok
         and run_step_handoff_ok
@@ -928,10 +1007,14 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
     )
     return {
         "ok": ok,
+        "pack_id": pack.pack_id,
+        "sidecar_image": sidecar_image,
+        "analyst_sha": expected_sha,
         "sidecar_uid_1000_ok": sidecar_uid_ok,
         "sidecar_detail_ok": sidecar_detail_ok,
         "sidecar_detail_path": sidecar_detail_path,
         "run_step_handoff_ok": run_step_handoff_ok,
+        "expected_total": expected_total,
         "total_advertised": total_advertised,
         "total_probed": total_probed,
         "total_passed": total_passed,
@@ -940,23 +1023,31 @@ def check_mcp_sidecar_http(env: dict[str, str], smoke_dir: Path) -> dict[str, An
     }
 
 
-def run_all_smoke_checks(smoke_dir: Path | None = None) -> dict[str, Any]:
-    out_dir = smoke_dir or (TEST_ROOT / "smoke")
+def run_all_smoke_checks(
+    smoke_dir: Path | None = None,
+    *,
+    pack_id: str | None = None,
+    cfg: BenchConfig | None = None,
+) -> dict[str, Any]:
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    out_dir = smoke_dir or (resolved_cfg.work_dir / "smoke")
+    reject_slash_tmp(out_dir, label="smoke_dir")
     out_dir.mkdir(parents=True, exist_ok=True)
-    env = build_podman_env()
+    env = build_podman_env(cfg=resolved_cfg)
     reap_stale_smoke_containers(env)
     t0 = time.monotonic()
 
     casa_base_res = check_casa_base_offline(env)
     agent_res = check_agent_base_offline_and_isolation(env)
     verifier_res = check_verifier_offline(env)
-    sidecar_res = check_mcp_sidecar_http(env, out_dir)
+    sidecar_res = check_mcp_sidecar_http(env, out_dir, pack_id=pack_id, cfg=resolved_cfg)
 
     elapsed_s = round(time.monotonic() - t0, 2)
     report = {
         "ok": bool(
             casa_base_res["ok"] and agent_res["ok"] and verifier_res["ok"] and sidecar_res["ok"]
         ),
+        "pack_id": sidecar_res.get("pack_id"),
         "elapsed_s": elapsed_s,
         "casa_base": casa_base_res,
         "agent_base": agent_res,
@@ -970,16 +1061,19 @@ def run_all_smoke_checks(smoke_dir: Path | None = None) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run Wave 2 container isolation and MCP HTTP checks."
+        description="Run container isolation and MCP HTTP smoke checks."
     )
+    add_config_cli_args(parser)
+    parser.add_argument("--pack", type=str, default=None, help="Pack ID to probe.")
     parser.add_argument(
         "--smoke-dir",
         type=Path,
-        default=TEST_ROOT / "smoke",
-        help="Directory on /mnt/fast/radio-bench for smoke artifacts.",
+        default=None,
+        help="Scratch directory under work_dir for smoke artifacts.",
     )
     args = parser.parse_args(argv)
-    report = run_all_smoke_checks(args.smoke_dir)
+    cfg = config_from_cli_args(args)
+    report = run_all_smoke_checks(args.smoke_dir, pack_id=args.pack, cfg=cfg)
     print(json.dumps(report, indent=2))
     return 0 if report["ok"] else 1
 

@@ -5,27 +5,59 @@ from __future__ import annotations
 import math
 import os
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-_cur_tmpdir = os.environ.get("TMPDIR", "").strip()
-if not _cur_tmpdir or _cur_tmpdir == "/tmp" or _cur_tmpdir.startswith("/tmp/"):
-    os.environ["TMPDIR"] = "/mnt/fast/radio-bench/tmp"
-
-_cur_mpldir = os.environ.get("MPLCONFIGDIR", "").strip()
-if not _cur_mpldir or _cur_mpldir == "/tmp" or _cur_mpldir.startswith("/tmp/"):
-    os.environ["MPLCONFIGDIR"] = "/mnt/fast/radio-bench/mplconfig"
-
-os.environ.setdefault("CASASITECONFIG", "/mnt/fast/radio-bench/casaconfig_local.py")
-
-Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
-Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+_SRC_ROOT = Path(__file__).resolve().parent.parent / "src"
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
 import astropy.units as u  # noqa: E402
 import numpy as np  # noqa: E402
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord  # noqa: E402
 from astropy.time import Time  # noqa: E402
+
+from radio_bench.config import (  # noqa: E402
+    BenchConfig,
+    is_under_slash_tmp,
+    load_bench_config,
+    write_casaconfig_local,
+)
+
+_CASA_ENV_CONFIGURED_FOR: Path | None = None
+
+
+def configure_builder_casa_env(cfg: BenchConfig | None = None) -> BenchConfig:
+    """Configure offline CASA, TMPDIR, and MPLCONFIGDIR lazily before importing casatools."""
+    global _CASA_ENV_CONFIGURED_FOR
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    if resolved_cfg.work_dir == _CASA_ENV_CONFIGURED_FOR:
+        return resolved_cfg
+
+    cur_tmpdir = os.environ.get("TMPDIR", "").strip()
+    if not cur_tmpdir or is_under_slash_tmp(cur_tmpdir) or cfg is not None:
+        os.environ["TMPDIR"] = str(resolved_cfg.tmp_dir)
+
+    cur_mpldir = os.environ.get("MPLCONFIGDIR", "").strip()
+    if not cur_mpldir or is_under_slash_tmp(cur_mpldir) or cfg is not None:
+        os.environ["MPLCONFIGDIR"] = str(resolved_cfg.mplconfig_dir)
+
+    casa_cfg = write_casaconfig_local(resolved_cfg)
+    if cfg is not None:
+        os.environ["CASASITECONFIG"] = str(casa_cfg)
+    else:
+        os.environ.setdefault("CASASITECONFIG", str(casa_cfg))
+
+    if not os.access(os.environ.get("HOME", "/"), os.W_OK):
+        os.environ["HOME"] = str(resolved_cfg.tmp_dir)
+
+    Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
+    Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+    _CASA_ENV_CONFIGURED_FOR = resolved_cfg.work_dir
+    return resolved_cfg
+
 
 SYNTH_ANTENNA_INDICES = [18, 3, 12, 19, 21, 8, 5, 24, 17, 26]
 SYNTH_ANTENNA_NAMES = [
@@ -169,6 +201,7 @@ def fixed_scan_intents() -> dict[int, str]:
 
 def clear_ms_pointing(ms_path: Path) -> None:
     """Clear POINTING rows (matching VLA importasdm MSs) so CASA MosaicFT uses FIELD.PHASE_DIR cleanly."""
+    configure_builder_casa_env()
     from casatools import table
 
     ptg_path = ms_path / "POINTING"
@@ -193,6 +226,7 @@ def clear_ms_pointing(ms_path: Path) -> None:
 
 def clear_ms_history(ms_path: Path) -> None:
     """Remove all rows from ms_path/HISTORY so zero builder provenance leaks into staged MSs."""
+    configure_builder_casa_env()
     from casatools import table
 
     hist_path = ms_path / "HISTORY"
@@ -217,6 +251,7 @@ def clear_ms_history(ms_path: Path) -> None:
 
 def verify_ms_unlocked(ms_path: Path) -> None:
     """Assert that an MS and all its subtables hold zero active casacore locks."""
+    configure_builder_casa_env()
     from casatasks import clearstat
     from casatools import table
 
@@ -238,6 +273,7 @@ def verify_ms_unlocked(ms_path: Path) -> None:
 
 def load_vla_d_subset() -> tuple[list[float], list[float], list[float], list[float], list[str]]:
     """Load 10 well-distributed antennas from CASA's shipped vla.d.cfg."""
+    configure_builder_casa_env()
     from casatools import ctsys
 
     cfg_path = Path(ctsys.resolve("alma/simmos")) / "vla.d.cfg"
@@ -336,6 +372,7 @@ def _evla_pb(theta_arcmin: float, freq_ghz: float) -> float:
 
 def compute_field_min_elevation_deg(ms_path: Path, field_id: int) -> float:
     """Compute minimum elevation (deg) across rows of a field using astropy AltAz."""
+    configure_builder_casa_env()
     from casatools import table
 
     tb_ant = table()
@@ -392,6 +429,7 @@ def compute_field_min_elevation_deg(ms_path: Path, field_id: int) -> float:
 
 def compute_field_min_elevation_casa_deg(ms_path: Path, field_id: int) -> float:
     """Cross-check minimum field elevation (deg) using casatools.measures AZELGEO."""
+    configure_builder_casa_env()
     from casatools import measures, table
 
     tb_ant = table()
@@ -465,6 +503,7 @@ def assign_scan_intents(ms_path: Path, scan_intents: dict[int, str]) -> None:
     while MAIN.STATE_ID contains -1. Unassigned scans ("") therefore point to a valid
     STATE row with OBS_MODE = "" (giving msmd.intentsforfield(fid) == [] cleanly).
     """
+    configure_builder_casa_env()
     from casatools import table
 
     non_empty = sorted({intent for intent in scan_intents.values() if intent})
@@ -531,6 +570,7 @@ def create_base_noiseless_ms(
     work_dir: Path,
 ) -> dict[str, Any]:
     """Create a 10-antenna VLA-D MS with exact Perley-Butler 3C286 + phase cal + mosaic sky."""
+    configure_builder_casa_env()
     from casatasks import clearcal, ft, setjy
     from casatools import componentlist, measures, simulator, table
 
@@ -815,6 +855,7 @@ def apply_corruptions_to_ms(
     target_vis_out_npz: Path | None = None,
 ) -> dict[str, Any]:
     """Apply seeded delays, bandpass, time-varying gains, thermal noise, quack, RFI, and dead ant."""
+    configure_builder_casa_env()
     from casatools import table
 
     rng = np.random.default_rng(seed)

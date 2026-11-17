@@ -1,14 +1,19 @@
 # Isolated FastMCP sidecar serving ms-inspect (8000), ms-modify (8001), and ms-create (8002)
-# built strictly from pinned RADIO_ANALYST_SHA (00a11ea).
+# built strictly from configured radio-analyst pack source and ref.
 FROM localhost/radio-bench-casa-base:latest
 
-LABEL org.radio-bench.radio-analyst-sha="00a11ea"
+ARG RADIO_ANALYST_SHA=00a11ea
+ARG PACK_ID=ra_00a11ea
+
+LABEL org.radio-bench.radio-analyst-sha="${RADIO_ANALYST_SHA}" \
+      org.radio-bench.pack-id="${PACK_ID}"
 
 ENV RADIO_MCP_TRANSPORT=http \
     RADIO_MCP_HOST=0.0.0.0 \
     RADIO_MCP_DIR=/workspace/.radio_mcp \
-    ANALYST_REV=00a11ea \
-    RADIO_ANALYST_SHA=00a11ea
+    ANALYST_REV=${RADIO_ANALYST_SHA} \
+    RADIO_ANALYST_SHA=${RADIO_ANALYST_SHA} \
+    RADIO_BENCH_PACK_ID=${PACK_ID}
 
 RUN uv pip install --no-cache --python /opt/casa-venv/bin/python \
         "mcp[cli]>=1.0,<2" \

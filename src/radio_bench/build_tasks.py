@@ -1,10 +1,9 @@
-"""Compile Harbor 0.25.0 task variants across capability arms for radio-bench.
+"""Compile Harbor 0.25.0 task variants across capability arms and tool/skill packs.
 
-Reads the 10 canonical task specs in ``task_specs/<task_id>/`` plus the exported
-skill/agent trees in ``/mnt/fast/radio-bench/exported_skills/`` and emits up
-to 52 Harbor task directories under ``/mnt/fast/radio-bench/tasks/``:
-- 8 stage tasks x 5 arms (00_none, 01_skills_raw, 01_skills_casa, 10_tools, 11_full) = 40
-- 2 end-to-end tasks x 6 arms (+ 11_orchestrated when --include-orchestrated) = 12
+Reads canonical task specs in ``task_specs/<task_id>/`` plus exported skill/agent trees in
+``<work_dir>/exported_skills/`` and emits Harbor task directories under ``<work_dir>/tasks/``:
+- Single pack (default): ``<task_id>__<arm>``
+- Multi-pack (``--packs id1,id2`` or ``--force-pack-in-name``): ``<task_id>__<pack_id>__<arm>``
 """
 
 from __future__ import annotations
@@ -12,9 +11,12 @@ from __future__ import annotations
 import argparse
 import errno
 import json
+import logging
 import os
+import re
 import shutil
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,12 +25,33 @@ import tomli_w
 import yaml
 from harbor.models.task.config import TaskConfig
 
-from radio_bench.export_skills import DEFAULT_EXPORT_DIR as DEFAULT_SKILLS_DIR
-from radio_bench.export_skills import RADIO_ANALYST_SHA
+from radio_bench.config import (
+    DEFAULT_MCP_PORTS,
+    BenchConfig,
+    PackConfig,
+    add_config_cli_args,
+    config_from_cli_args,
+    load_bench_config,
+    materialize_pack_source,
+    reject_slash_tmp,
+)
 
-REPO_ROOT = Path("/home/pjaganna/Software/radio-bench")
-DEFAULT_SPECS_DIR = REPO_ROOT / "task_specs"
-DEFAULT_TASKS_DIR = Path("/mnt/fast/radio-bench/tasks")
+logger = logging.getLogger(__name__)
+
+
+def __getattr__(name: str) -> Any:
+    if name in {"REPO_ROOT", "DEFAULT_SPECS_DIR", "DEFAULT_TASKS_DIR", "RADIO_ANALYST_SHA"}:
+        cfg = load_bench_config()
+        if name == "REPO_ROOT":
+            return cfg.repo_root
+        if name == "DEFAULT_SPECS_DIR":
+            return cfg.repo_root / "task_specs"
+        if name == "DEFAULT_TASKS_DIR":
+            return cfg.tasks_dir
+        if name == "RADIO_ANALYST_SHA":
+            return cfg.get_pack().analyst_ref
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 ARM_NONE = "00_none"
 ARM_SKILLS_RAW = "01_skills_raw"
@@ -41,10 +64,13 @@ SKILL_ARMS = frozenset({ARM_SKILLS_RAW, ARM_SKILLS_CASA, ARM_FULL, ARM_ORCHESTRA
 TOOL_ARMS = frozenset({ARM_TOOLS, ARM_FULL, ARM_ORCHESTRATED})
 
 AGENT_IMAGE = "${RADIO_BENCH_AGENT_IMAGE:-localhost/radio-bench-agent-base:latest}"
-SIDECAR_IMAGE = "${RADIO_BENCH_SIDECAR_IMAGE:-localhost/radio-bench-mcp-sidecar:latest}"
+SIDECAR_IMAGE = "${RADIO_BENCH_SIDECAR_IMAGE:-localhost/radio-bench-mcp-sidecar:00a11ea}"
 VERIFIER_IMAGE = "${RADIO_BENCH_VERIFIER_IMAGE:-localhost/radio-bench-verifier:latest}"
 AGENT_NETWORK_MODE = "pasta"
 VERIFIER_NETWORK_MODE = "none"
+
+_HEX_SHORT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_WARNED_CROSS_DEVICE_PAIRS: set[tuple[int, int]] = set()
 
 MCP_SERVERS: list[dict[str, str]] = [
     {
@@ -107,17 +133,41 @@ class TaskSpec:
     memory_mb: int
     input_calibrators_ms: Path | None = None
     verifier_cpus: int | None = None
+    instruction_path: Path | None = None
 
     @property
     def effective_verifier_cpus(self) -> int:
         return self.verifier_cpus if self.verifier_cpus is not None else self.cpus
 
+    @property
+    def effective_instruction_path(self) -> Path:
+        return (
+            self.instruction_path
+            if self.instruction_path is not None
+            else (self.spec_dir / "instruction.md")
+        )
 
-def load_task_spec(spec_dir: Path) -> TaskSpec:
-    """Load and validate one task spec directory."""
+
+def _resolve_spec_data_path(raw_val: str, data_root: Path) -> Path:
+    p = Path(raw_val)
+    return p if p.is_absolute() else (data_root / p)
+
+
+def load_task_spec(
+    spec_dir: Path,
+    *,
+    data_root: Path | None = None,
+    prompts_dir: Path | None = None,
+    cfg: BenchConfig | None = None,
+) -> TaskSpec:
+    """Load and validate one task spec directory, resolving relative data paths via BenchConfig."""
     spec_path = spec_dir / "spec.toml"
     if not spec_path.is_file():
         raise FileNotFoundError(f"Missing spec.toml in {spec_dir}")
+
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    eff_data_root = data_root if data_root is not None else resolved_cfg.data_dir
+    eff_prompts_dir = prompts_dir if prompts_dir is not None else resolved_cfg.prompts_dir
 
     raw = tomllib.loads(spec_path.read_text(encoding="utf-8"))
     missing = sorted(REQUIRED_SPEC_KEYS - raw.keys())
@@ -136,16 +186,31 @@ def load_task_spec(spec_dir: Path) -> TaskSpec:
     if stage not in {"inspect", "precal", "calibrate", "image", "e2e"}:
         raise ValueError(f"{spec_path} invalid stage={stage!r}")
 
-    for required_file in ("instruction.md", "solve.py", "verify.py"):
+    prompt_cand = eff_prompts_dir / task_id / "instruction.md"
+    spec_inst = spec_dir / "instruction.md"
+    default_prompts = (resolved_cfg.repo_root / "task_specs").resolve()
+    prompts_overridden = prompts_dir is not None or eff_prompts_dir.resolve() != default_prompts
+    candidates = (prompt_cand, spec_inst) if prompts_overridden else (spec_inst, prompt_cand)
+    instruction_path: Path | None = None
+    for cand in candidates:
+        if cand.is_file():
+            instruction_path = cand
+            break
+    if instruction_path is None:
+        raise FileNotFoundError(f"Missing instruction.md in {spec_dir} (and {prompt_cand})")
+
+    for required_file in ("solve.py", "verify.py"):
         p = spec_dir / required_file
         if not p.is_file():
             raise FileNotFoundError(f"Missing {required_file} in {spec_dir}")
 
-    data_dir = Path(str(raw["data_dir"]))
-    input_ms = Path(str(raw["input_ms"]))
+    data_dir = _resolve_spec_data_path(str(raw["data_dir"]), eff_data_root)
+    input_ms = _resolve_spec_data_path(str(raw["input_ms"]), eff_data_root)
     raw_cal_ms = str(raw.get("input_calibrators_ms", "")).strip()
-    input_calibrators_ms = Path(raw_cal_ms) if raw_cal_ms else None
-    ground_truth = Path(str(raw["ground_truth"]))
+    input_calibrators_ms = (
+        _resolve_spec_data_path(raw_cal_ms, eff_data_root) if raw_cal_ms else None
+    )
+    ground_truth = _resolve_spec_data_path(str(raw["ground_truth"]), eff_data_root)
     extra_test_files = [str(x) for x in raw["extra_test_files"]]
 
     if not input_ms.is_dir():
@@ -180,6 +245,7 @@ def load_task_spec(spec_dir: Path) -> TaskSpec:
         memory_mb=int(raw["memory_mb"]),
         input_calibrators_ms=input_calibrators_ms,
         verifier_cpus=int(raw["verifier_cpus"]) if "verifier_cpus" in raw else None,
+        instruction_path=instruction_path,
     )
 
 
@@ -204,16 +270,42 @@ def arms_for_spec(
     return arms
 
 
+def _warn_cross_device_once(src: Path, dst_parent: Path, src_dev: int, dst_dev: int) -> None:
+    pair = (src_dev, dst_dev)
+    if pair not in _WARNED_CROSS_DEVICE_PAIRS:
+        _WARNED_CROSS_DEVICE_PAIRS.add(pair)
+        logger.warning(
+            "Cross-filesystem staging detected (src=%s st_dev=%d, dst=%s st_dev=%d); "
+            "falling back from zero-copy hardlink (os.link) to regular 0o644 file copy.",
+            src,
+            src_dev,
+            dst_parent,
+            dst_dev,
+        )
+
+
 def _hardlink_file(src: Path, dst: Path) -> None:
-    """Hardlink ``src`` to ``dst`` without touching source inode permissions."""
+    """Hardlink ``src`` to ``dst`` when on the same filesystem, else warn and copy as 0o644."""
     if src.is_symlink():
         src = src.resolve(strict=True)
     dst.parent.mkdir(parents=True, exist_ok=True)
+
+    src_dev = src.stat().st_dev
+    dst_dev = dst.parent.stat().st_dev
+    if src_dev != dst_dev:
+        _warn_cross_device_once(src, dst.parent, src_dev, dst_dev)
+        dst.unlink(missing_ok=True)
+        shutil.copy2(src, dst, follow_symlinks=True)
+        os.chmod(dst, 0o644)
+        return
+
     try:
         os.link(src, dst)
     except OSError as exc:
         if exc.errno != errno.EXDEV:
             raise
+        _warn_cross_device_once(src, dst.parent, src_dev, -1)
+        dst.unlink(missing_ok=True)
         shutil.copy2(src, dst, follow_symlinks=True)
         os.chmod(dst, 0o644)
 
@@ -284,9 +376,44 @@ def _build_runtime_env(omp_threads: str) -> dict[str, str]:
     }
 
 
-def _build_task_toml_dict(spec: TaskSpec, arm: str) -> dict[str, Any]:
-    """Build Harbor 0.25.0 task.toml dictionary for ``(spec, arm)``."""
-    variant_id = f"{spec.task_id}__{arm}"
+def _mcp_servers_for_ports(mcp_ports: dict[str, int]) -> list[dict[str, str]]:
+    ordered_names = ["ms-inspect", "ms-modify", "ms-create"]
+    extras = sorted(set(mcp_ports) - set(ordered_names))
+    out: list[dict[str, str]] = []
+    for srv_name in [*ordered_names, *extras]:
+        if srv_name in mcp_ports:
+            out.append(
+                {
+                    "name": srv_name,
+                    "transport": "streamable-http",
+                    "url": f"http://mcp-servers:{int(mcp_ports[srv_name])}/mcp",
+                }
+            )
+    return out
+
+
+def format_variant_name(
+    task_id: str,
+    arm: str,
+    *,
+    pack_id: str | None = None,
+    include_pack_in_name: bool = False,
+) -> str:
+    if include_pack_in_name and pack_id:
+        return f"{task_id}__{pack_id}__{arm}"
+    return f"{task_id}__{arm}"
+
+
+def _build_task_toml_dict(
+    spec: TaskSpec,
+    arm: str,
+    *,
+    variant_id: str,
+    pack_id: str,
+    analyst_sha: str,
+    mcp_ports: dict[str, int],
+) -> dict[str, Any]:
+    """Build Harbor 0.25.0 task.toml dictionary for ``(spec, pack, arm)``."""
     omp_threads = str(spec.cpus)
     ver_cpus = spec.effective_verifier_cpus
     ver_omp_threads = str(ver_cpus)
@@ -309,7 +436,7 @@ def _build_task_toml_dict(spec: TaskSpec, arm: str) -> dict[str, Any]:
     if arm in SKILL_ARMS:
         env_cfg["skills_dir"] = "/skills"
     if arm in TOOL_ARMS:
-        env_cfg["mcp_servers"] = [dict(srv) for srv in MCP_SERVERS]
+        env_cfg["mcp_servers"] = _mcp_servers_for_ports(mcp_ports)
 
     data: dict[str, Any] = {
         "schema_version": "1.4",
@@ -317,13 +444,15 @@ def _build_task_toml_dict(spec: TaskSpec, arm: str) -> dict[str, Any]:
         "metadata": {
             "task_id": variant_id,
             "base_task": spec.task_id,
+            "pack_id": pack_id,
+            "analyst_sha": analyst_sha,
             "suite": spec.suite,
             "stage": spec.stage,
             "arm": arm,
             "difficulty": spec.difficulty,
             "category": spec.category,
             "tags": list(spec.tags),
-            "radio_analyst_sha": RADIO_ANALYST_SHA,
+            "radio_analyst_sha": analyst_sha,
         },
         "agent": {
             "user": "analyst",
@@ -354,8 +483,10 @@ def _build_environment_compose(
     cpus: int,
     has_seed_workspace: bool,
     has_calibrators_ms: bool,
+    sidecar_image: str,
+    mcp_ports: dict[str, int],
 ) -> dict[str, Any]:
-    """Build environment/docker-compose.yaml for ``arm``."""
+    """Build environment/docker-compose.yaml for ``arm`` and ``pack``."""
     has_skills = arm in SKILL_ARMS
     has_tools = arm in TOOL_ARMS
     runtime_env = _build_runtime_env(str(cpus))
@@ -397,10 +528,11 @@ def _build_environment_compose(
         ]
     )
     if has_tools:
+        ports_tuple = tuple(int(p) for p in mcp_ports.values())
         tcp_probe = (
             "/opt/casa-venv/bin/python -c '"
             "import socket, sys, time\n"
-            "for port in (8000, 8001, 8002):\n"
+            f"for port in {ports_tuple!r}:\n"
             "    for _ in range(150):\n"
             "        try:\n"
             '            with socket.create_connection(("mcp-servers", port), timeout=1.0):\n'
@@ -451,8 +583,20 @@ def _build_environment_compose(
         )
         sidecar_env = dict(runtime_env)
         sidecar_env["RADIO_MCP_HOST"] = "127.0.0.1"
+        if "ms-inspect" in mcp_ports and int(mcp_ports["ms-inspect"]) != 8000:
+            sidecar_env["RADIO_MCP_PORT_MS_INSPECT"] = str(int(mcp_ports["ms-inspect"]))
+        if "ms-modify" in mcp_ports and int(mcp_ports["ms-modify"]) != 8001:
+            sidecar_env["RADIO_MCP_PORT_MS_MODIFY"] = str(int(mcp_ports["ms-modify"]))
+        if "ms-create" in mcp_ports and int(mcp_ports["ms-create"]) != 8002:
+            sidecar_env["RADIO_MCP_PORT_MS_CREATE"] = str(int(mcp_ports["ms-create"]))
+
+        sidecar_image_ref = (
+            sidecar_image
+            if sidecar_image.startswith("${")
+            else f"${{RADIO_BENCH_SIDECAR_IMAGE:-{sidecar_image}}}"
+        )
         services["mcp-servers"] = {
-            "image": SIDECAR_IMAGE,
+            "image": sidecar_image_ref,
             "network_mode": "service:main",
             "environment": sidecar_env,
             "command": ["bash", "-lc", sidecar_cmd],
@@ -546,7 +690,7 @@ def _stage_skills_and_workspace(
     return True
 
 
-def _validate_exported_skills(exported_skills_dir: Path) -> None:
+def _validate_exported_skills(exported_skills_dir: Path, *, pack_id: str | None = None) -> None:
     """Verify required exported_skills subdirectories exist before compiling."""
     required_paths = [
         exported_skills_dir / "raw" / "skills",
@@ -566,10 +710,49 @@ def _validate_exported_skills(exported_skills_dir: Path) -> None:
     ]
     missing = [str(p) for p in required_paths if not p.exists()]
     if missing:
+        hint = f" --pack {pack_id}" if pack_id else ""
         raise FileNotFoundError(
-            "Missing exported skill files (run `python -m radio_bench.export_skills` first): "
+            f"Missing exported skill files (run `python -m radio_bench.export_skills{hint}` first): "
             + ", ".join(missing)
         )
+
+
+def _resolve_pack_skills_and_sha(
+    pack: PackConfig,
+    skills_dir: Path,
+    *,
+    default_pack: str,
+    cfg: BenchConfig,
+) -> tuple[Path, str]:
+    """Locate exported_skills directory and resolved short SHA for `pack`."""
+    per_pack_dir = skills_dir / pack.pack_id
+    if (per_pack_dir / "raw" / "skills").is_dir():
+        eff_skills = per_pack_dir
+    elif pack.pack_id == default_pack and (skills_dir / "raw" / "skills").is_dir():
+        eff_skills = skills_dir
+    else:
+        eff_skills = per_pack_dir
+
+    _validate_exported_skills(eff_skills, pack_id=pack.pack_id)
+
+    manifest_file = eff_skills / "manifest.json"
+    if manifest_file.is_file():
+        try:
+            mdata = json.loads(manifest_file.read_text(encoding="utf-8"))
+            sha_cand = str(mdata.get("radio_analyst_sha") or "").strip()
+            commit_cand = str(mdata.get("radio_analyst_commit") or "").strip()
+            if _HEX_SHORT_RE.fullmatch(sha_cand) and sha_cand.upper() != "HEAD":
+                return eff_skills, sha_cand.lower()
+            if _HEX_SHORT_RE.fullmatch(commit_cand):
+                return eff_skills, commit_cand[:7].lower()
+        except (OSError, ValueError):
+            pass
+
+    if _HEX_SHORT_RE.fullmatch(pack.analyst_ref) and pack.analyst_ref.upper() != "HEAD":
+        return eff_skills, pack.analyst_ref.lower()
+
+    _, _, short_sha = materialize_pack_source(pack, cfg.work_dir, repo_root=cfg.repo_root)
+    return eff_skills, short_sha
 
 
 def compile_variant(
@@ -578,9 +761,30 @@ def compile_variant(
     *,
     output_dir: Path,
     exported_skills_dir: Path,
+    pack: PackConfig | None = None,
+    analyst_sha: str | None = None,
+    include_pack_in_name: bool = False,
 ) -> Path:
-    """Compile a single Harbor task directory ``<output_dir>/<task_id>__<arm>``."""
-    variant_name = f"{spec.task_id}__{arm}"
+    """Compile a single Harbor task directory under ``output_dir``."""
+    reject_slash_tmp(output_dir, label="output_dir")
+    eff_pack = pack or PackConfig(
+        pack_id="ra_00a11ea",
+        description="Frozen v0.1 radio-analyst baseline",
+        analyst_src="",
+        analyst_ref="00a11ea",
+        sidecar_image="localhost/radio-bench-mcp-sidecar:00a11ea",
+        mcp_ports=dict(DEFAULT_MCP_PORTS),
+    )
+    eff_sha = analyst_sha or (
+        eff_pack.analyst_ref.lower() if _HEX_SHORT_RE.fullmatch(eff_pack.analyst_ref) else "00a11ea"
+    )
+
+    variant_name = format_variant_name(
+        spec.task_id,
+        arm,
+        pack_id=eff_pack.pack_id,
+        include_pack_in_name=include_pack_in_name,
+    )
     variant_dir = output_dir / variant_name
     if variant_dir.exists():
         shutil.rmtree(variant_dir)
@@ -589,10 +793,17 @@ def compile_variant(
     os.chmod(variant_dir, 0o755)
 
     # 1. instruction.md (verbatim regular file; identical across arms of spec.task_id)
-    _copy_regular_file(spec.spec_dir / "instruction.md", variant_dir / "instruction.md")
+    _copy_regular_file(spec.effective_instruction_path, variant_dir / "instruction.md")
 
     # 2. task.toml
-    toml_dict = _build_task_toml_dict(spec, arm)
+    toml_dict = _build_task_toml_dict(
+        spec,
+        arm,
+        variant_id=variant_name,
+        pack_id=eff_pack.pack_id,
+        analyst_sha=eff_sha,
+        mcp_ports=eff_pack.mcp_ports,
+    )
     _write_text_file(variant_dir / "task.toml", tomli_w.dumps(toml_dict))
 
     # 3. environment/
@@ -614,6 +825,8 @@ def compile_variant(
         cpus=spec.cpus,
         has_seed_workspace=has_seed_ws,
         has_calibrators_ms=spec.input_calibrators_ms is not None,
+        sidecar_image=eff_pack.sidecar_image,
+        mcp_ports=eff_pack.mcp_ports,
     )
     _write_text_file(
         env_dir / "docker-compose.yaml",
@@ -670,46 +883,89 @@ def compile_variant(
 
 def build_all_tasks(
     *,
-    specs_dir: Path = DEFAULT_SPECS_DIR,
-    skills_dir: Path = DEFAULT_SKILLS_DIR,
-    output_dir: Path = DEFAULT_TASKS_DIR,
+    specs_dir: Path | None = None,
+    skills_dir: Path | None = None,
+    output_dir: Path | None = None,
     skills_mode: str = "both",
     include_orchestrated: bool = True,
+    pack_id: str | None = None,
+    pack_ids: Sequence[str] | None = None,
+    force_pack_in_name: bool = False,
+    cfg: BenchConfig | None = None,
 ) -> dict[str, Any]:
     """Compile all configured Harbor task directories and prune unselected variants."""
-    _validate_exported_skills(skills_dir)
+    _WARNED_CROSS_DEVICE_PAIRS.clear()
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
 
-    spec_dirs = sorted(p for p in specs_dir.iterdir() if p.is_dir() and not p.name.startswith("."))
+    eff_specs_dir = specs_dir if specs_dir is not None else (resolved_cfg.repo_root / "task_specs")
+    eff_skills_dir = skills_dir if skills_dir is not None else resolved_cfg.exported_skills_dir
+    eff_output_dir = output_dir if output_dir is not None else resolved_cfg.tasks_dir
+    reject_slash_tmp(eff_output_dir, label="output_dir")
+
+    selected_pack_ids: list[str]
+    if pack_ids is not None and len(pack_ids) > 0:
+        selected_pack_ids = [p.strip() for p in pack_ids if p.strip()]
+    elif pack_id is not None and pack_id.strip():
+        selected_pack_ids = [pack_id.strip()]
+    else:
+        selected_pack_ids = [resolved_cfg.default_pack]
+
+    if not selected_pack_ids:
+        raise ValueError("At least one pack ID is required")
+
+    packs = [resolved_cfg.get_pack(pid) for pid in selected_pack_ids]
+    include_pack_in_name = bool(force_pack_in_name or len(packs) > 1)
+
+    pack_bundles: list[tuple[PackConfig, Path, str]] = []
+    for p in packs:
+        p_skills_dir, p_sha = _resolve_pack_skills_and_sha(
+            p,
+            eff_skills_dir,
+            default_pack=resolved_cfg.default_pack,
+            cfg=resolved_cfg,
+        )
+        pack_bundles.append((p, p_skills_dir, p_sha))
+
+    spec_dirs = sorted(
+        p for p in eff_specs_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
+    )
     if not spec_dirs:
-        raise FileNotFoundError(f"No task spec directories found under {specs_dir}")
+        raise FileNotFoundError(f"No task spec directories found under {eff_specs_dir}")
 
-    specs = [load_task_spec(d) for d in spec_dirs]
-    output_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(output_dir, 0o755)
+    specs = [load_task_spec(d, cfg=resolved_cfg) for d in spec_dirs]
+    eff_output_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(eff_output_dir, 0o755)
 
     known_prefixes = tuple(f"{s.task_id}__" for s in specs)
     emitted: list[str] = []
     by_suite: dict[str, int] = {"synth": 0, "3c391": 0}
     by_arm: dict[str, int] = {}
+    by_pack: dict[str, int] = {}
 
     for spec in specs:
-        for arm in arms_for_spec(
+        arms = arms_for_spec(
             spec,
             skills_mode=skills_mode,
             include_orchestrated=include_orchestrated,
-        ):
-            variant_dir = compile_variant(
-                spec,
-                arm,
-                output_dir=output_dir,
-                exported_skills_dir=skills_dir,
-            )
-            emitted.append(variant_dir.name)
-            by_suite[spec.suite] = by_suite.get(spec.suite, 0) + 1
-            by_arm[arm] = by_arm.get(arm, 0) + 1
+        )
+        for p_cfg, p_skills_dir, p_sha in pack_bundles:
+            for arm in arms:
+                variant_dir = compile_variant(
+                    spec,
+                    arm,
+                    output_dir=eff_output_dir,
+                    exported_skills_dir=p_skills_dir,
+                    pack=p_cfg,
+                    analyst_sha=p_sha,
+                    include_pack_in_name=include_pack_in_name,
+                )
+                emitted.append(variant_dir.name)
+                by_suite[spec.suite] = by_suite.get(spec.suite, 0) + 1
+                by_arm[arm] = by_arm.get(arm, 0) + 1
+                by_pack[p_cfg.pack_id] = by_pack.get(p_cfg.pack_id, 0) + 1
 
     emitted_set = set(emitted)
-    for child in sorted(output_dir.iterdir()):
+    for child in sorted(eff_output_dir.iterdir()):
         if (
             child.is_dir()
             and child.name.startswith(known_prefixes)
@@ -718,13 +974,16 @@ def build_all_tasks(
             shutil.rmtree(child)
 
     return {
-        "output_dir": str(output_dir),
+        "output_dir": str(eff_output_dir),
         "skills_mode": skills_mode,
         "include_orchestrated": include_orchestrated,
+        "packs": [p.pack_id for p in packs],
+        "include_pack_in_name": include_pack_in_name,
         "base_tasks": len(specs),
         "compiled_tasks": len(emitted),
         "by_suite": by_suite,
         "by_arm": by_arm,
+        "by_pack": by_pack,
     }
 
 
@@ -732,22 +991,40 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Compile Harbor 0.25.0 task directories for radio-bench."
     )
+    add_config_cli_args(parser)
+    parser.add_argument(
+        "--pack",
+        type=str,
+        default=None,
+        help="Single pack ID to compile (emits <task_id>__<arm> unless --force-pack-in-name).",
+    )
+    parser.add_argument(
+        "--packs",
+        type=str,
+        default=None,
+        help="Comma-separated pack IDs (multi-pack emits <task_id>__<pack_id>__<arm>).",
+    )
+    parser.add_argument(
+        "--force-pack-in-name",
+        action="store_true",
+        help="Include <pack_id> in directory names even when compiling a single pack.",
+    )
     parser.add_argument(
         "--specs-dir",
         type=Path,
-        default=DEFAULT_SPECS_DIR,
+        default=None,
         help="Path to task_specs/ directory.",
     )
     parser.add_argument(
         "--skills-dir",
         type=Path,
-        default=DEFAULT_SKILLS_DIR,
+        default=None,
         help="Path to exported_skills/ directory.",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=DEFAULT_TASKS_DIR,
+        default=None,
         help="Destination directory for compiled Harbor tasks.",
     )
     parser.add_argument(
@@ -764,12 +1041,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    cfg = config_from_cli_args(args)
+    parsed_packs = [p.strip() for p in args.packs.split(",") if p.strip()] if args.packs else None
     summary = build_all_tasks(
         specs_dir=args.specs_dir,
         skills_dir=args.skills_dir,
         output_dir=args.output_dir,
         skills_mode=args.skills_mode,
         include_orchestrated=args.include_orchestrated,
+        pack_id=args.pack,
+        pack_ids=parsed_packs,
+        force_pack_in_name=args.force_pack_in_name,
+        cfg=cfg,
     )
     print(json.dumps(summary, indent=2))
     return 0

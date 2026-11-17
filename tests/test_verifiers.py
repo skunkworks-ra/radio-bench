@@ -14,15 +14,22 @@ import types
 from pathlib import Path
 from typing import Any
 
+from radio_bench.config import is_under_slash_tmp, load_bench_config, write_casaconfig_local
+
+BENCH_CFG = load_bench_config()
+
 _cur_tmp = os.environ.get("TMPDIR", "").strip()
-if not _cur_tmp or _cur_tmp == "/tmp" or _cur_tmp.startswith("/tmp/"):
-    os.environ["TMPDIR"] = "/mnt/fast/radio-bench/tmp"
+if not _cur_tmp or is_under_slash_tmp(_cur_tmp):
+    os.environ["TMPDIR"] = str(BENCH_CFG.tmp_dir)
+Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
 
 _cur_mpl = os.environ.get("MPLCONFIGDIR", "").strip()
-if not _cur_mpl or _cur_mpl == "/tmp" or _cur_mpl.startswith("/tmp/"):
-    os.environ["MPLCONFIGDIR"] = "/mnt/fast/radio-bench/mplconfig"
+if not _cur_mpl or is_under_slash_tmp(_cur_mpl):
+    os.environ["MPLCONFIGDIR"] = str(BENCH_CFG.mplconfig_dir)
+Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 
-os.environ.setdefault("CASASITECONFIG", "/mnt/fast/radio-bench/casaconfig_local.py")
+write_casaconfig_local(BENCH_CFG)
+os.environ.setdefault("CASASITECONFIG", str(BENCH_CFG.casaconfig_path))
 
 import casatasks  # noqa: E402
 import casatools  # noqa: E402
@@ -40,8 +47,8 @@ from radio_bench.grading import (  # noqa: E402
     write_verifier_outputs,
 )
 
-SYNTH_ROOT = Path("/mnt/fast/radio_bench_data/synth")
-R3C391_ROOT = Path("/mnt/fast/radio_bench_data/checkpoints/3c391")
+SYNTH_ROOT = BENCH_CFG.data_dir / "synth"
+R3C391_ROOT = BENCH_CFG.data_dir / "checkpoints" / "3c391"
 
 
 def _parse_with_harbor(reward_json_path: Path) -> dict[str, float | int]:
@@ -871,14 +878,16 @@ def _run_py_script(script_path: Path, args: list[str]) -> None:
     import sys
 
     env = os.environ.copy()
-    env["TMPDIR"] = "/mnt/fast/radio-bench/tmp"
-    env["MPLCONFIGDIR"] = "/mnt/fast/radio-bench/mplconfig"
-    env.setdefault("CASASITECONFIG", "/mnt/fast/radio-bench/casaconfig_local.py")
+    BENCH_CFG.tmp_dir.mkdir(parents=True, exist_ok=True)
+    BENCH_CFG.mplconfig_dir.mkdir(parents=True, exist_ok=True)
+    env["TMPDIR"] = str(BENCH_CFG.tmp_dir)
+    env["MPLCONFIGDIR"] = str(BENCH_CFG.mplconfig_dir)
+    env.setdefault("CASASITECONFIG", str(BENCH_CFG.casaconfig_path))
     src_root = str(Path(__file__).resolve().parents[1] / "src")
     env["PYTHONPATH"] = f"{src_root}:{env['PYTHONPATH']}" if env.get("PYTHONPATH") else src_root
     proc = subprocess.run(
         [sys.executable, str(script_path), *args],
-        cwd="/mnt/fast/radio-bench/tmp",
+        cwd=str(BENCH_CFG.tmp_dir),
         env=env,
         capture_output=True,
         text=True,

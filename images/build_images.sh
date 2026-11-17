@@ -1,32 +1,131 @@
 #!/usr/bin/env bash
-# Rootless Podman image builder and automated Wave 2 smoke verifier.
-# Uses /mnt/fast/radio_bench_data/podman_tmp exclusively -- never /tmp.
+# Rootless Podman image builder and automated container isolation / MCP smoke verifier.
+# Resolves all directories and pack sources from bench.toml (+ bench.local.toml / env) -- never /tmp.
 
 set -euo pipefail
 
-REPO_ROOT="/home/pjaganna/Software/radio-bench"
-RADIO_ANALYST_REPO="/home/pjaganna/Software/radio-analyst"
-RADIO_ANALYST_SHA="00a11ea"
-HOST_CASA_DATA="/home/pjaganna/.casa/data"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT_INIT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SKIP_SMOKE=0
 VERIFIER_ONLY=0
-for arg in "$@"; do
-    case "$arg" in
-        --skip-smoke) SKIP_SMOKE=1 ;;
-        --verifier-only) VERIFIER_ONLY=1 ;;
+SIDECAR_ONLY=0
+PACK_ARG=""
+CONFIG_ARG=""
+WORK_DIR_ARG=""
+DATA_DIR_ARG=""
+RUNS_DIR_ARG=""
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --skip-smoke)
+            SKIP_SMOKE=1
+            shift
+            ;;
+        --verifier-only)
+            VERIFIER_ONLY=1
+            shift
+            ;;
+        --sidecar-only)
+            SIDECAR_ONLY=1
+            shift
+            ;;
+        --pack)
+            if [ "$#" -lt 2 ]; then
+                echo "Missing value for --pack" >&2
+                exit 2
+            fi
+            PACK_ARG="$2"
+            shift 2
+            ;;
+        --pack=*)
+            PACK_ARG="${1#--pack=}"
+            shift
+            ;;
+        --config)
+            if [ "$#" -lt 2 ]; then
+                echo "Missing value for --config" >&2
+                exit 2
+            fi
+            CONFIG_ARG="$2"
+            shift 2
+            ;;
+        --config=*)
+            CONFIG_ARG="${1#--config=}"
+            shift
+            ;;
+        --work-dir)
+            WORK_DIR_ARG="$2"
+            shift 2
+            ;;
+        --work-dir=*)
+            WORK_DIR_ARG="${1#--work-dir=}"
+            shift
+            ;;
+        --data-dir)
+            DATA_DIR_ARG="$2"
+            shift 2
+            ;;
+        --data-dir=*)
+            DATA_DIR_ARG="${1#--data-dir=}"
+            shift
+            ;;
+        --runs-dir)
+            RUNS_DIR_ARG="$2"
+            shift 2
+            ;;
+        --runs-dir=*)
+            RUNS_DIR_ARG="${1#--runs-dir=}"
+            shift
+            ;;
         *)
-            echo "Unknown option: $arg" >&2
+            echo "Unknown option: $1" >&2
             exit 2
             ;;
     esac
 done
 
-export TMPDIR="/mnt/fast/radio_bench_data/podman_tmp"
-export CONTAINER_TMPDIR="/mnt/fast/radio_bench_data/podman_tmp"
-export MPLCONFIGDIR="/mnt/fast/radio-bench/mplconfig"
-export CASASITECONFIG="/mnt/fast/radio-bench/casaconfig_local.py"
-mkdir -p "$TMPDIR" "$MPLCONFIGDIR"
+if [ "$VERIFIER_ONLY" -eq 1 ] && [ "$SIDECAR_ONLY" -eq 1 ]; then
+    echo "Cannot combine --verifier-only and --sidecar-only" >&2
+    exit 2
+fi
+
+PYTHON_BIN="python"
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 || ! PYTHONPATH="$REPO_ROOT_INIT/src:${PYTHONPATH:-}" "$PYTHON_BIN" -c "import radio_bench.config" >/dev/null 2>&1; then
+    if [ -x "$REPO_ROOT_INIT/.pixi/envs/default/bin/python" ]; then
+        PYTHON_BIN="$REPO_ROOT_INIT/.pixi/envs/default/bin/python"
+    fi
+fi
+
+CFG_CMD=("$PYTHON_BIN" -m radio_bench.config --shell-env)
+if [ -n "$CONFIG_ARG" ]; then
+    CFG_CMD+=(--config "$CONFIG_ARG")
+fi
+if [ -n "$WORK_DIR_ARG" ]; then
+    CFG_CMD+=(--work-dir "$WORK_DIR_ARG")
+fi
+if [ -n "$DATA_DIR_ARG" ]; then
+    CFG_CMD+=(--data-dir "$DATA_DIR_ARG")
+fi
+if [ -n "$RUNS_DIR_ARG" ]; then
+    CFG_CMD+=(--runs-dir "$RUNS_DIR_ARG")
+fi
+if [ -n "$PACK_ARG" ]; then
+    CFG_CMD+=(--pack "$PACK_ARG")
+fi
+if [ "$VERIFIER_ONLY" -eq 0 ] || [ "$SKIP_SMOKE" -eq 0 ]; then
+    CFG_CMD+=(--materialize-pack)
+fi
+
+eval "$(PYTHONPATH="$REPO_ROOT_INIT/src:${PYTHONPATH:-}" "${CFG_CMD[@]}")"
+
+export TMPDIR="$CONTAINER_TMPDIR"
+export CONTAINER_TMPDIR
+export MPLCONFIGDIR
+export CASASITECONFIG
+export DOCKER_CONFIG
+export DOCKER_HOST
+mkdir -p "$CONTAINER_TMPDIR" "$MPLCONFIGDIR"
 
 STAGE_ROOT=""
 cleanup() {
@@ -36,10 +135,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-STAGE_ROOT="$(mktemp -d "$TMPDIR/image_stage.XXXXXX")"
+STAGE_ROOT="$(mktemp -d "$CONTAINER_TMPDIR/image_stage.XXXXXX")"
 
-if [ "$VERIFIER_ONLY" -eq 0 ]; then
-    echo "[build_images] Staging CASA measures data..."
+if [ "$VERIFIER_ONLY" -eq 0 ] && [ "$SIDECAR_ONLY" -eq 0 ]; then
+    echo "[build_images] Staging CASA measures data from ${HOST_CASA_DATA}..."
     mkdir -p "$STAGE_ROOT/casa_ctx"
     cp -a "$HOST_CASA_DATA" "$STAGE_ROOT/casa_ctx/casa-data"
     chmod -R a+rX "$STAGE_ROOT/casa_ctx/casa-data"
@@ -56,7 +155,7 @@ if [ "$VERIFIER_ONLY" -eq 0 ]; then
 
     echo "[build_images] Staging run-step.sh at ${RADIO_ANALYST_SHA} and building agent-base..."
     mkdir -p "$STAGE_ROOT/agent_ctx"
-    git -C "$RADIO_ANALYST_REPO" show "${RADIO_ANALYST_SHA}:scripts/plugin/run-step.sh" \
+    git -C "$RADIO_ANALYST_REPO" show "${RADIO_ANALYST_FULL_SHA}:scripts/plugin/run-step.sh" \
         > "$STAGE_ROOT/agent_ctx/run-step.sh"
     chmod 0755 "$STAGE_ROOT/agent_ctx/run-step.sh"
 
@@ -69,16 +168,13 @@ if [ "$VERIFIER_ONLY" -eq 0 ]; then
         "$STAGE_ROOT/agent_ctx"
 
     rm -rf "$STAGE_ROOT/agent_ctx"
+fi
 
-    echo "[build_images] Cloning radio-analyst read-only at ${RADIO_ANALYST_SHA}..."
-    mkdir -p "$STAGE_ROOT/sidecar_ctx"
-    git clone --no-hardlinks --quiet "$RADIO_ANALYST_REPO" "$STAGE_ROOT/sidecar_ctx/radio-analyst-src"
-    git -C "$STAGE_ROOT/sidecar_ctx/radio-analyst-src" checkout --quiet --detach "$RADIO_ANALYST_SHA"
-    ACTUAL_SHA="$(git -C "$STAGE_ROOT/sidecar_ctx/radio-analyst-src" rev-parse HEAD)"
-    if [[ "$ACTUAL_SHA" != "${RADIO_ANALYST_SHA}"* ]]; then
-        echo "Pinned SHA mismatch: expected prefix ${RADIO_ANALYST_SHA}, got ${ACTUAL_SHA}" >&2
-        exit 1
-    fi
+if [ "$VERIFIER_ONLY" -eq 0 ]; then
+    echo "[build_images] Exporting pack ${PACK_ID} read-only via git archive at ${RADIO_ANALYST_SHA} (${RADIO_ANALYST_FULL_SHA})..."
+    mkdir -p "$STAGE_ROOT/sidecar_ctx/radio-analyst-src"
+    git -C "$RADIO_ANALYST_REPO" archive --format=tar "$RADIO_ANALYST_FULL_SHA" \
+        | tar -xf - -C "$STAGE_ROOT/sidecar_ctx/radio-analyst-src"
     rm -rf \
         "$STAGE_ROOT/sidecar_ctx/radio-analyst-src/.git" \
         "$STAGE_ROOT/sidecar_ctx/radio-analyst-src/docs" \
@@ -91,42 +187,52 @@ if [ "$VERIFIER_ONLY" -eq 0 ]; then
     cp "$REPO_ROOT/images/serve_mcp_sidecar.py" "$STAGE_ROOT/sidecar_ctx/serve_mcp_sidecar.py"
     chmod 0755 "$STAGE_ROOT/sidecar_ctx/serve_mcp_sidecar.py"
 
-    echo "[build_images] Building localhost/radio-bench-mcp-sidecar:latest..."
+    echo "[build_images] Building ${SIDECAR_IMAGE} (pack=${PACK_ID}, sha=${RADIO_ANALYST_SHA})..."
     podman build \
         --pull=missing \
-        -t localhost/radio-bench-mcp-sidecar:latest \
+        --build-arg "RADIO_ANALYST_SHA=${RADIO_ANALYST_SHA}" \
+        --build-arg "PACK_ID=${PACK_ID}" \
+        -t "$SIDECAR_IMAGE" \
         -f "$REPO_ROOT/images/mcp-sidecar.Containerfile" \
         "$STAGE_ROOT/sidecar_ctx"
+
+    if [ "$PACK_ID" = "$DEFAULT_PACK" ]; then
+        podman tag "$SIDECAR_IMAGE" localhost/radio-bench-mcp-sidecar:latest
+    fi
 
     rm -rf "$STAGE_ROOT/sidecar_ctx"
 fi
 
-echo "[build_images] Staging radio-bench verifier package..."
-mkdir -p "$STAGE_ROOT/verifier_ctx/radio-bench-src"
-cp "$REPO_ROOT/pyproject.toml" "$STAGE_ROOT/verifier_ctx/radio-bench-src/pyproject.toml"
-cp -L "$REPO_ROOT/README.md" "$STAGE_ROOT/verifier_ctx/radio-bench-src/README.md"
-cp -r "$REPO_ROOT/src" "$STAGE_ROOT/verifier_ctx/radio-bench-src/src"
-chmod -R a+rX "$STAGE_ROOT/verifier_ctx/radio-bench-src"
+if [ "$SIDECAR_ONLY" -eq 0 ]; then
+    echo "[build_images] Staging radio-bench verifier package..."
+    mkdir -p "$STAGE_ROOT/verifier_ctx/radio-bench-src"
+    cp "$REPO_ROOT/pyproject.toml" "$STAGE_ROOT/verifier_ctx/radio-bench-src/pyproject.toml"
+    cp -L "$REPO_ROOT/README.md" "$STAGE_ROOT/verifier_ctx/radio-bench-src/README.md"
+    cp "$REPO_ROOT/bench.toml" "$STAGE_ROOT/verifier_ctx/radio-bench-src/bench.toml"
+    cp -r "$REPO_ROOT/configs" "$STAGE_ROOT/verifier_ctx/radio-bench-src/configs"
+    cp -r "$REPO_ROOT/src" "$STAGE_ROOT/verifier_ctx/radio-bench-src/src"
+    chmod -R a+rX "$STAGE_ROOT/verifier_ctx/radio-bench-src"
 
-echo "[build_images] Building localhost/radio-bench-verifier:latest..."
-podman build \
-    --pull=missing \
-    -t localhost/radio-bench-verifier:latest \
-    -f "$REPO_ROOT/images/verifier.Containerfile" \
-    "$STAGE_ROOT/verifier_ctx"
+    echo "[build_images] Building localhost/radio-bench-verifier:latest..."
+    podman build \
+        --pull=missing \
+        -t localhost/radio-bench-verifier:latest \
+        -f "$REPO_ROOT/images/verifier.Containerfile" \
+        "$STAGE_ROOT/verifier_ctx"
 
-rm -rf "$STAGE_ROOT/verifier_ctx"
+    rm -rf "$STAGE_ROOT/verifier_ctx"
+fi
 
 echo "[build_images] Pruning superseded dangling Podman image layers..."
 podman image prune -f || true
 
 if [ "$SKIP_SMOKE" -eq 0 ]; then
-    echo "[build_images] Running automated Wave 2 isolation and 61-tool HTTP smoke checks..."
-    PYTHON_BIN="python"
-    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1 || ! "$PYTHON_BIN" -c "import radio_bench" >/dev/null 2>&1; then
-        PYTHON_BIN="/mnt/fast/radio-bench/.pixi/envs/default/bin/python"
+    echo "[build_images] Running automated container isolation and MCP HTTP smoke checks..."
+    SMOKE_CMD=("$PYTHON_BIN" -m radio_bench.smoke_containers --pack "$PACK_ID")
+    if [ -n "$CONFIG_ARG" ]; then
+        SMOKE_CMD+=(--config "$CONFIG_ARG")
     fi
-    (cd "$TMPDIR" && "$PYTHON_BIN" -m radio_bench.smoke_containers)
+    (cd "$WORK_DIR" && PYTHONPATH="$REPO_ROOT/src:${PYTHONPATH:-}" "${SMOKE_CMD[@]}")
 fi
 
 echo "[build_images] DONE."

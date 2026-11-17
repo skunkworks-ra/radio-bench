@@ -17,12 +17,8 @@ def _configure_temp_env(workspace: Path) -> tuple[Path, bool]:
     os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     cur_tmp = os.environ.get("TMPDIR", "").strip()
     if not cur_tmp or cur_tmp == "/tmp" or cur_tmp.startswith("/tmp/"):
-        fast_root = Path("/mnt/fast/radio-bench/tmp")
         var_tmp = Path("/var/tmp")
-        if fast_root.parent.exists() and os.access(fast_root.parent, os.W_OK):
-            scratch = fast_root / f"solver_{os.getpid()}"
-            os.environ.setdefault("CASASITECONFIG", "/mnt/fast/radio-bench/casaconfig_local.py")
-        elif var_tmp.exists() and os.access(var_tmp, os.W_OK):
+        if var_tmp.exists() and os.access(var_tmp, os.W_OK):
             scratch = var_tmp / f"solver_{os.getpid()}"
         else:
             scratch = workspace / f".solver_scratch_{os.getpid()}"

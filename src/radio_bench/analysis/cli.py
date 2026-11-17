@@ -12,6 +12,12 @@ from radio_bench.analysis.collect import _is_trial_directory, collect_trials
 from radio_bench.analysis.diagnostics import write_diagnostic_reports
 from radio_bench.analysis.factorial import DEFAULT_BOOT_SEED, DEFAULT_N_BOOT, analyze_factorial
 from radio_bench.analysis.taxonomy import summarize_failure_taxonomy
+from radio_bench.config import (
+    add_config_cli_args,
+    config_from_cli_args,
+    prepare_runtime_env,
+    reject_slash_tmp,
+)
 
 
 def run_analysis_pipeline(
@@ -33,6 +39,8 @@ def run_analysis_pipeline(
         target_out = resolved_jobs[0].parent / "analysis"
     else:
         target_out = resolved_jobs[0] / "analysis"
+
+    reject_slash_tmp(target_out, label="output_dir")
 
     records = collect_trials(resolved_jobs, output_dir=target_out)
     factorial_summary = analyze_factorial(records, n_boot=n_boot, seed=seed)
@@ -61,6 +69,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "contrasts, paired bootstrap CIs, failure taxonomy, and truth-vs-measured tables."
         ),
     )
+    add_config_cli_args(parser)
     parser.add_argument(
         "job_dirs",
         nargs="+",
@@ -98,6 +107,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        cfg = config_from_cli_args(args)
+        prepare_runtime_env(cfg, config_path=args.config, mutate_os_environ=True)
         result = run_analysis_pipeline(
             args.job_dirs,
             output_dir=args.output_dir,

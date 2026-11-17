@@ -1,0 +1,30 @@
+# Portable default configuration for radio-bench.
+# Machine-specific paths belong in gitignored bench.local.toml or RADIO_BENCH_* env vars.
+
+default_pack = "ra_00a11ea"
+
+[paths]
+work_dir = "./.work"
+data_dir = "./data"
+runs_dir = "./runs"
+casaguides_dir = "./data/casaguides"
+prompts_dir = "./task_specs"
+casa_data_dir = "~/.casa/data"
+
+[runtime]
+docker_host = "unix:///run/user/${UID}/podman/podman.sock"
+container_tmpdir = "./.work/podman_tmp"
+
+[packs.ra_00a11ea]
+description = "Frozen v0.1 radio-analyst baseline"
+analyst_src = "https://github.com/skunkworks-ra/radio-analyst.git"
+analyst_ref = "00a11ea"
+sidecar_image = "localhost/radio-bench-mcp-sidecar:00a11ea"
+mcp_ports = { ms-inspect = 8000, ms-modify = 8001, ms-create = 8002 }
+
+[packs.ra_rescue]
+description = "Conditional pre-flight + rescue-reviewer scientist loop"
+analyst_src = "../radio-analyst-rescue"
+analyst_ref = "HEAD"
+sidecar_image = "localhost/radio-bench-mcp-sidecar:ra_rescue"
+mcp_ports = { ms-inspect = 8000, ms-modify = 8001, ms-create = 8002 }
