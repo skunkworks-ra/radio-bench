@@ -397,9 +397,12 @@ def test_precal_golden_both_suites(synth_golden_precal_dir: Path, tmp_path: Path
     _parse_with_harbor(log_s1 / "reward.json")
     assert rew_s1["reward"] == 1.0
     assert rew_s1["passed"] == 1
-    assert met_s1["measured"]["j1331_model_source_ms"] == "calibrators.ms"
-    assert met_s1["measured"]["must_flag_recall"] == 1.0
-    assert met_s1["measured"]["clean_false_positive_rate"] == 0.0
+    assert (
+        met_s1["measurements"]["precal.flux_cal_model_amp_jy"]["provenance"]
+        == "calibrators.ms::MODEL_DATA"
+    )
+    assert met_s1["measured"]["precal.must_flag_recall"] == 1.0
+    assert met_s1["measured"]["precal.clean_false_positive_rate"] == 0.0
 
     # Suite R golden post_precal checkpoint
     ws_r1 = tmp_path / "ws_r1_precal"
@@ -417,8 +420,8 @@ def test_precal_golden_both_suites(synth_golden_precal_dir: Path, tmp_path: Path
     _parse_with_harbor(log_r1 / "reward.json")
     assert rew_r1["reward"] == 1.0
     assert rew_r1["passed"] == 1
-    assert met_r1["measured"]["must_flag_recall"] == 1.0
-    assert met_r1["measured"]["clean_false_positive_rate"] == 0.0
+    assert met_r1["measured"]["precal.must_flag_recall"] == 1.0
+    assert met_r1["measured"]["precal.clean_false_positive_rate"] == 0.0
 
 
 def test_precal_unity_model_and_overflagging_adversarial(
@@ -546,8 +549,8 @@ def test_calibrate_golden_and_adversarial_synth(tmp_path: Path) -> None:
     _parse_with_harbor(log_ok / "reward.json")
     assert rew_ok["reward"] == 1.0
     assert rew_ok["passed"] == 1
-    assert met_ok["measured"]["coherent_amp_rel_err"] < 0.01
-    assert abs(met_ok["measured"]["coherent_phase_deg"]) < 1.0
+    assert met_ok["measured"]["cal.coherent_vis_amp_rel_err"] < 0.01
+    assert abs(met_ok["measured"]["cal.coherent_vis_phase_err_deg"]) < 1.0
 
     # Fallback analytical/simulator prediction when masks_npz_path=None
     gt_cal = _load_gt(SYNTH_ROOT / "s1_calibrate" / "ground_truth.json")
@@ -555,8 +558,8 @@ def test_calibrate_golden_and_adversarial_synth(tmp_path: Path) -> None:
         ws_ok, gt_cal, masks_npz_path=None, task_id="s1_calibrate", scratch_root=tmp_path
     )
     assert rew_fb["reward"] == 1.0
-    assert met_fb["measured"]["coherent_amp_rel_err"] == pytest.approx(
-        met_ok["measured"]["coherent_amp_rel_err"], abs=1e-4
+    assert met_fb["measured"]["cal.coherent_vis_amp_rel_err"] == pytest.approx(
+        met_ok["measured"]["cal.coherent_vis_amp_rel_err"], abs=1e-4
     )
 
     # Uncalibrated s1_calibrate/input.ms (missing CORRECTED_DATA, ea07 unflagged) -> < 0.25
@@ -619,7 +622,9 @@ def test_calibrate_3c391_golden_and_verifier_tclean_recipe_path(tmp_path: Path) 
         cm._run_verifier_tclean_recipe = lambda *_a, **_kw: {  # type: ignore[assignment]
             "verifier_tclean_peak_jy": 0.134512,
             "verifier_tclean_offsource_rms_jy": 0.00043623,
+            "verifier_tclean_offsource_mad_over_rms": 1.04,
             "verifier_tclean_dynamic_range": 308.35,
+            "verifier_tclean_pb_valid": True,
         }
         log_r1 = tmp_path / "log_r1_cal"
         rew_r1, met_r1 = grade_task(
@@ -633,9 +638,11 @@ def test_calibrate_3c391_golden_and_verifier_tclean_recipe_path(tmp_path: Path) 
         _parse_with_harbor(log_r1 / "reward.json")
         assert rew_r1["reward"] == 1.0
         assert rew_r1["passed"] == 1
-        assert met_r1["measured"]["dead_antenna_flagged_fraction"] == 1.0
-        assert 0.70 <= met_r1["measured"]["target_row_retention"] <= 0.90
-        assert met_r1["measured"]["pcal_caltable_flux_jy"] == pytest.approx(2.296125, rel=1e-4)
+        assert met_r1["measured"]["cal.dead_antenna_flagged_fraction"] == 1.0
+        assert 0.70 <= met_r1["measured"]["cal.target_row_retention"] <= 0.90
+        assert met_r1["measured"]["cal.fluxscale_table_flux_jy"] == pytest.approx(
+            2.296125, rel=1e-4
+        )
     finally:
         cm._run_verifier_tclean_recipe = orig_runner
 
@@ -688,9 +695,9 @@ def test_image_golden_both_suites(synth_golden_image_dir: Path, tmp_path: Path) 
     _parse_with_harbor(log_s1 / "reward.json")
     assert rew_s1["reward"] == 1.0
     assert rew_s1["passed"] == 1
-    assert met_s1["measured"]["ext_flux_rel_err"] < 0.10
-    assert met_s1["measured"]["pt_snr_image"] >= 8.0
-    assert met_s1["measured"]["negative_bowl_ratio"] < 0.06
+    assert abs(met_s1["measured"]["image.source_integrated_flux_jy"] - 0.075) / 0.075 < 0.10
+    assert met_s1["measured"]["image.point_source_snr"] >= 8.0
+    assert met_s1["measured"]["image.negative_bowl_ratio"] < 0.06
 
     # Suite R golden reference_image/3c391_mosaic symlinked into workspace
     ws_r1 = tmp_path / "ws_r1_img"
@@ -709,10 +716,10 @@ def test_image_golden_both_suites(synth_golden_image_dir: Path, tmp_path: Path) 
     _parse_with_harbor(log_r1 / "reward.json")
     assert rew_r1["reward"] == 1.0
     assert rew_r1["passed"] == 1
-    assert met_r1["measured"]["offsource_residual_rms_mjy_per_beam"] == pytest.approx(
+    assert met_r1["measured"]["image.offsource_residual_rms_jy"] * 1e3 == pytest.approx(
         0.43617, abs=0.01
     )
-    assert met_r1["measured"]["dynamic_range"] >= 300.0
+    assert met_r1["measured"]["image.dynamic_range"] >= 300.0
 
 
 def test_image_clean_bowl_and_bad_pixel_sampling_adversarial(
@@ -744,7 +751,7 @@ def test_image_clean_bowl_and_bad_pixel_sampling_adversarial(
         ia.done()
 
     rew_bowl, met_bowl = grade_image(ws, gt_s1, task_id="s1_image")
-    assert met_bowl["measured"]["negative_bowl_ratio"] == pytest.approx(0.35, rel=0.02)
+    assert met_bowl["measured"]["image.negative_bowl_ratio"] == pytest.approx(0.35, rel=0.02)
     assert rew_bowl["deconv_and_bowl_score"] == 0.0
     assert rew_bowl["reward"] <= 0.60
     assert rew_bowl["passed"] == 0
@@ -767,7 +774,7 @@ def test_image_clean_bowl_and_bad_pixel_sampling_adversarial(
         ia.done()
 
     rew_cell, met_cell = grade_image(ws, gt_s1, task_id="s1_image")
-    assert met_cell["measured"]["pixels_per_beam"] < 1.0
+    assert met_cell["measured"]["image.pixels_per_beam"] < 1.0
     assert rew_cell["beam_sampling_score"] == 0.0
     assert rew_cell["passed"] == 0
 
@@ -850,7 +857,9 @@ def test_e2e_requires_both_calibration_and_imaging(
         cm._run_verifier_tclean_recipe = lambda *_a, **_kw: {  # type: ignore[assignment]
             "verifier_tclean_peak_jy": 0.134512,
             "verifier_tclean_offsource_rms_jy": 0.00043623,
+            "verifier_tclean_offsource_mad_over_rms": 1.04,
             "verifier_tclean_dynamic_range": 308.35,
+            "verifier_tclean_pb_valid": True,
         }
         log_r2 = tmp_path / "log_r2"
         rew_r2, _ = grade_task(
@@ -868,9 +877,49 @@ def test_e2e_requires_both_calibration_and_imaging(
         cm._run_verifier_tclean_recipe = orig_runner
 
 
-# ---------------------------------------------------------------------------
-# 7. Wave 4 Adversarial & End-to-End Hardening Regression Tests
-# ---------------------------------------------------------------------------
+def _run_py_module(mod_name: str, args: list[str]) -> None:
+    import subprocess
+    import sys
+
+    env = os.environ.copy()
+    BENCH_CFG.tmp_dir.mkdir(parents=True, exist_ok=True)
+    BENCH_CFG.mplconfig_dir.mkdir(parents=True, exist_ok=True)
+    env["TMPDIR"] = str(BENCH_CFG.tmp_dir)
+    env["MPLCONFIGDIR"] = str(BENCH_CFG.mplconfig_dir)
+    env.setdefault("CASASITECONFIG", str(BENCH_CFG.casaconfig_path))
+    src_root = str(Path(__file__).resolve().parents[1] / "src")
+    env["PYTHONPATH"] = f"{src_root}:{env['PYTHONPATH']}" if env.get("PYTHONPATH") else src_root
+    proc = subprocess.run(
+        [sys.executable, "-m", mod_name, *args],
+        cwd=str(BENCH_CFG.tmp_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300.0,
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        f"python -m {mod_name} exited {proc.returncode}:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
+    )
+
+
+def _stage_runner_tests_dir(task_id: str, stage: str, src_data_dir: Path, dst_dir: Path) -> Path:
+    from radio_bench.grading.inspect_metrics import resolve_task_configs
+
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    gt_src = src_data_dir / "ground_truth.json"
+    gt = _load_gt(gt_src)
+    ec, rb = resolve_task_configs(task_id, stage, gt)
+    (dst_dir / "extract_config.json").write_text(
+        json.dumps(ec.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8"
+    )
+    (dst_dir / "rubric.json").write_text(
+        json.dumps(rb.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8"
+    )
+    os.symlink(gt_src, dst_dir / "ground_truth.json")
+    for npz_p in src_data_dir.glob("*.npz"):
+        os.symlink(npz_p, dst_dir / npz_p.name)
+    return dst_dir
 
 
 def _run_py_script(script_path: Path, args: list[str]) -> None:
@@ -902,7 +951,7 @@ def _run_py_script(script_path: Path, args: list[str]) -> None:
 def test_wave4_inspect_solve_verify_and_core_subscore_gates(tmp_path: Path) -> None:
     specs_dir = Path(__file__).resolve().parents[1] / "task_specs"
 
-    # 1. Direct solve.py -> verify.py execution on s1_inspect and r1_3c391_inspect
+    # 1. Direct solve.py -> grading.runner execution on s1_inspect and r1_3c391_inspect
     for task_id, data_dir in (
         ("s1_inspect", SYNTH_ROOT / "s1_inspect"),
         ("r1_3c391_inspect", R3C391_ROOT / "r1_3c391_inspect"),
@@ -916,10 +965,13 @@ def test_wave4_inspect_solve_verify_and_core_subscore_gates(tmp_path: Path) -> N
         )
         os.symlink(src_ms, ws / "input.ms")
         log_dir = tmp_path / f"log_{task_id}"
+        tests_dir = _stage_runner_tests_dir(
+            task_id, "inspect", data_dir, tmp_path / f"td_{task_id}"
+        )
         _run_py_script(specs_dir / task_id / "solve.py", ["--workspace", str(ws)])
-        _run_py_script(
-            specs_dir / task_id / "verify.py",
-            ["--workspace", str(ws), "--tests-dir", str(data_dir), "--log-dir", str(log_dir)],
+        _run_py_module(
+            "radio_bench.grading.runner",
+            ["--workspace", str(ws), "--tests-dir", str(tests_dir), "--log-dir", str(log_dir)],
         )
         parsed = _parse_with_harbor(log_dir / "reward.json")
         assert parsed["reward"] == 1.0
@@ -1082,8 +1134,14 @@ def test_wave4_mcp_calibrators_ms_and_outlier_rfi_robustness(
     _parse_with_harbor(log_mcp / "reward.json")
     assert rew_mcp["reward"] == 1.0
     assert rew_mcp["passed"] == 1
-    assert met_mcp["measured"]["j1331_source_ms"] == "calibrators.ms"
-    assert met_mcp["measured"]["pcal_source_ms"] == "calibrators.ms"
+    assert (
+        met_mcp["measurements"]["cal.bandpass_coh_phase_slope_deg_per_100mhz"]["provenance"]
+        == "calibrators.ms::CORRECTED_DATA"
+    )
+    assert (
+        met_mcp["measurements"]["cal.phase_cal_corrected_amp_jy"]["provenance"]
+        == "calibrators.ms::CORRECTED_DATA"
+    )
 
     # 2. Outlier 170 Jy unflagged RFI integration directly inside calibrated J1331 (no calibrators.ms)
     ws_rfi = tmp_path / "ws_j1331_outlier"
@@ -1120,25 +1178,28 @@ def test_wave4_mcp_calibrators_ms_and_outlier_rfi_robustness(
         task_id="s1_calibrate",
         scratch_root=tmp_path,
     )
-    assert met_rfi["measured"]["j1331_med_baseline_slope_deg_per_100mhz"] < 5.0
+    assert met_rfi["measured"]["cal.bandpass_med_bl_phase_slope_deg_per_100mhz"] < 5.0
     assert rew_rfi["bandpass_flatness_score"] == 1.0
     assert rew_rfi["reward"] == 1.0
     assert rew_rfi["passed"] == 1
 
-    # 3. Verify s1_calibrate/solve.py -> verify.py works cleanly when calibrators.ms is staged (SF-5)
+    # 3. Verify s1_calibrate/solve.py -> grading.runner works cleanly when calibrators.ms is staged
     ws_sol = tmp_path / "ws_s1_cal_solve"
     ws_sol.mkdir()
     shutil.copytree(synth_golden_precal_dir / "input.ms", ws_sol / "input.ms")
     shutil.copytree(synth_golden_precal_dir / "calibrators.ms", ws_sol / "calibrators.ms")
     log_sol = tmp_path / "log_s1_cal_solve"
+    td_sol = _stage_runner_tests_dir(
+        "s1_calibrate", "calibrate", SYNTH_ROOT / "s1_calibrate", tmp_path / "td_s1_cal_solve"
+    )
     _run_py_script(specs_dir / "s1_calibrate" / "solve.py", ["--workspace", str(ws_sol)])
-    _run_py_script(
-        specs_dir / "s1_calibrate" / "verify.py",
+    _run_py_module(
+        "radio_bench.grading.runner",
         [
             "--workspace",
             str(ws_sol),
             "--tests-dir",
-            str(SYNTH_ROOT / "s1_calibrate"),
+            str(td_sol),
             "--log-dir",
             str(log_sol),
         ],
@@ -1153,19 +1214,22 @@ def test_wave4_fromarray_fake_image_bypasses_blocked(
 ) -> None:
     specs_dir = Path(__file__).resolve().parents[1] / "task_specs"
 
-    # 0. Direct s1_image/solve.py -> s1_image/verify.py golden execution still scores 1.0
+    # 0. Direct s1_image/solve.py -> grading.runner golden execution still scores 1.0
     ws_s1_img = tmp_path / "ws_s1_img_solve"
     ws_s1_img.mkdir()
     shutil.copytree(SYNTH_ROOT / "s1_image" / "input.ms", ws_s1_img / "input.ms")
     log_s1_img = tmp_path / "log_s1_img_solve"
+    td_s1_img = _stage_runner_tests_dir(
+        "s1_image", "image", SYNTH_ROOT / "s1_image", tmp_path / "td_s1_img_solve"
+    )
     _run_py_script(specs_dir / "s1_image" / "solve.py", ["--workspace", str(ws_s1_img)])
-    _run_py_script(
-        specs_dir / "s1_image" / "verify.py",
+    _run_py_module(
+        "radio_bench.grading.runner",
         [
             "--workspace",
             str(ws_s1_img),
             "--tests-dir",
-            str(SYNTH_ROOT / "s1_image"),
+            str(td_s1_img),
             "--log-dir",
             str(log_s1_img),
         ],
@@ -1301,8 +1365,8 @@ def test_wave4_constant_corrected_data_and_subprocess_tclean_isolation(tmp_path:
         task_id="s1_calibrate",
         scratch_root=tmp_path,
     )
-    assert met_const["antenna_gain_consistent"] is False
-    assert met_const["measured"]["coherent_pearson_r"] == 0.0
+    assert met_const["measured"]["cal.target_corrected_std_jy"] == 0.0
+    assert met_const["measured"]["cal.coherent_vis_pearson_r"] == 0.0
     assert rew_const["target_fidelity_score"] == 0.0
     assert rew_const["retention_and_dead_ant_score"] == 0.0
     assert rew_const["passed"] == 0
@@ -1330,8 +1394,7 @@ def test_wave4_constant_corrected_data_and_subprocess_tclean_isolation(tmp_path:
         task_id="s1_calibrate",
         scratch_root=tmp_path,
     )
-    assert met_noisy["antenna_gain_consistent"] is False
-    assert met_noisy["measured"]["rank1_logamp_rms_median"] > 0.12
+    assert met_noisy["measured"]["cal.rank1_logamp_rms_median"] > 0.12
     assert rew_noisy["target_fidelity_score"] == 0.0
     assert rew_noisy["passed"] == 0
 
@@ -1349,8 +1412,10 @@ def test_wave4_constant_corrected_data_and_subprocess_tclean_isolation(tmp_path:
         tb.close()
         tb.done()
 
+    from radio_bench.grading.inspect_metrics import resolve_task_configs
+
     gt_tclean_crash = dict(gt_s1)
-    gt_tclean_crash["suite"] = "R"
+    gt_tclean_crash["j1822_expected_flux_jy"] = 2.150366
     gt_tclean_crash["verifier_tclean_recipe"] = {
         "field": "2,3",
         "spw": "0:4~59",
@@ -1379,8 +1444,16 @@ def test_wave4_constant_corrected_data_and_subprocess_tclean_isolation(tmp_path:
         "pbcor": True,
         "off_source_min_radius_arcsec": 80.0,
     }
+    ec_crash, _ = resolve_task_configs("s1_calibrate", "calibrate", gt_tclean_crash)
+    _, rb_crash = resolve_task_configs("r1_3c391_calibrate", "calibrate", gt_tclean_crash)
     tests_crash = tmp_path / "tests_crash"
     tests_crash.mkdir()
+    (tests_crash / "extract_config.json").write_text(
+        json.dumps(ec_crash.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8"
+    )
+    (tests_crash / "rubric.json").write_text(
+        json.dumps(rb_crash.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8"
+    )
     (tests_crash / "ground_truth.json").write_text(json.dumps(gt_tclean_crash), encoding="utf-8")
     log_crash = tmp_path / "log_crash"
 
@@ -1432,7 +1505,7 @@ def test_wave4_parallel_hand_and_calibrator_overflagging_blocked(tmp_path: Path)
         task_id="s1_calibrate",
         scratch_root=tmp_path,
     )
-    assert met_par["measured"]["target_row_retention"] < 0.01
+    assert met_par["measured"]["cal.target_row_retention"] < 0.01
     assert rew_par["retention_and_dead_ant_score"] == 0.0
     assert rew_par["target_fidelity_score"] == 0.0
     assert rew_par["passed"] == 0
@@ -1467,44 +1540,38 @@ def test_wave4_parallel_hand_and_calibrator_overflagging_blocked(tmp_path: Path)
     assert rew_cf["passed"] == 0
 
 
-def test_extract_cal_truth_suite_s_and_suite_r_ground_truth() -> None:
-    """Regression check for MF-1, MF-2, SF-4, SF-5 on Suite S and Suite R ground_truth.json."""
-    from radio_bench.grading.cal_metrics import _extract_cal_truth
+def test_suite_manifests_and_extract_configs_zero_truth_leakage() -> None:
+    """Verify `suites/*/suite.toml` + `rubrics/*.json` schemas and zero truth leakage in `ExtractConfig`."""
+    from radio_bench.grading.inspect_metrics import load_suite_task_registry
 
-    for synth_tid in ("s1_calibrate", "s2_e2e_synth"):
-        gt_s = _load_gt(SYNTH_ROOT / synth_tid / "ground_truth.json")
-        ct_s = _extract_cal_truth(gt_s)
-        assert ct_s["is_suite_r"] is False
-        assert ct_s["expected_pcal_flux_jy"] == pytest.approx(2.150366)
-        assert ct_s["pcal_flux_rel_tol"] == pytest.approx(0.05)
-        assert ct_s["excludes_dead_in_retention"] is True
-        assert ct_s["weights"] == {
-            "retention_and_dead_ant": pytest.approx(0.20),
-            "bandpass_flatness": pytest.approx(0.25),
-            "fluxscale_accuracy": pytest.approx(0.25),
-            "target_fidelity": pytest.approx(0.30),
-        }
-
-    for r_tid in ("r1_3c391_calibrate", "r2_3c391_e2e"):
-        gt_r = _load_gt(R3C391_ROOT / r_tid / "ground_truth.json")
-        ct_r = _extract_cal_truth(gt_r)
-        assert ct_r["is_suite_r"] is True
-        assert ct_r["excludes_dead_in_retention"] is False
-        assert ct_r["expected_pcal_flux_jy"] == pytest.approx(2.3)
-        assert ct_r["pcal_flux_rel_tol"] == pytest.approx(0.08)
-        assert ct_r["weights"] == {
-            "retention_and_dead_ant": pytest.approx(0.20),
-            "bandpass_flatness": pytest.approx(0.25),
-            "fluxscale_accuracy": pytest.approx(0.25),
-            "target_fidelity": pytest.approx(0.30),
-        }
-
-    ct_fallback_s = _extract_cal_truth({"suite": "synth"})
-    assert ct_fallback_s["expected_pcal_flux_jy"] == pytest.approx(2.150366)
-    assert ct_fallback_s["excludes_dead_in_retention"] is True
-
-    ct_fallback_r = _extract_cal_truth({"suite": "R"})
-    assert ct_fallback_r["excludes_dead_in_retention"] is False
+    reg = load_suite_task_registry()
+    assert set(reg.keys()) == {
+        "s1_inspect",
+        "s1_precal",
+        "s1_calibrate",
+        "s1_image",
+        "s2_e2e_synth",
+        "r1_3c391_inspect",
+        "r1_3c391_precal",
+        "r1_3c391_calibrate",
+        "r1_3c391_image",
+        "r2_3c391_e2e",
+    }
+    forbidden_scalar_substrings = (
+        "expected_flux",
+        "fluxscale_jy",
+        "dynamic_range",
+        "offsource_rms",
+        "pass_reward_min",
+        "min_elevation",
+        "raw_data_blake2b",
+    )
+    for tid, (ec, rb) in reg.items():
+        assert ec.suite_id in {"synth_vla_d", "vla_3c391_cband"}
+        assert rb.task_id == tid
+        dumped = json.dumps(ec.model_dump(mode="json")).lower()
+        for bad in forbidden_scalar_substrings:
+            assert bad not in dumped, f"ExtractConfig for {tid} leaked truth key {bad!r}"
 
 
 def test_wave6_bandpass_flatness_sparse_rfi_channel_and_branch_cut(tmp_path: Path) -> None:
@@ -1572,8 +1639,8 @@ def test_wave6_bandpass_flatness_sparse_rfi_channel_and_branch_cut(tmp_path: Pat
         task_id="s2_e2e_synth",
         scratch_root=tmp_path,
     )
-    assert met_sp["measured"]["j1331_phase_slope_deg_per_100mhz"] < 5.0
-    assert met_sp["measured"]["j1331_chan_phase_rms_deg"] < 8.0
+    assert met_sp["measured"]["cal.bandpass_coh_phase_slope_deg_per_100mhz"] < 5.0
+    assert met_sp["measured"]["cal.bandpass_coh_chan_phase_rms_deg"] < 8.0
     assert rew_sp["bandpass_flatness_score"] == 1.0
     assert rew_sp["reward"] == 1.0
 
@@ -1603,6 +1670,1369 @@ def test_wave6_bandpass_flatness_sparse_rfi_channel_and_branch_cut(tmp_path: Pat
         task_id="s2_e2e_synth",
         scratch_root=tmp_path,
     )
-    assert met_unc["measured"]["j1331_med_baseline_slope_deg_per_100mhz"] > 50.0
+    assert met_unc["measured"]["cal.bandpass_med_bl_phase_slope_deg_per_100mhz"] > 50.0
     assert rew_unc["bandpass_flatness_score"] == 0.0
     assert rew_unc["passed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 8. Wave 2 Two-Sided Calibration Matrix (Planted Faults + Alternative Recipes)
+# ---------------------------------------------------------------------------
+
+
+def test_wave2_precal_unflagged_rfi_and_virtual_source_model(
+    synth_golden_precal_dir: Path, tmp_path: Path
+) -> None:
+    """Two-sided `precal` calibration:
+    - Planted fault: unflagged RFI (`must_flag_recall == 0.0`) -> `flag_recall_score == 0.0`, `passed == 0`.
+    - Alternative recipe: `setjy(usescratch=False)` virtual `SOURCE_MODEL` without `MODEL_DATA`
+      scores `0.0` on `model_data_score` when `allow_virtual_model == False` (`v0.1` parity) and
+      `1.0` (`reward == 1.0, passed == 1`) when `allow_virtual_model == True`.
+    """
+    from radio_bench.grading.inspect_metrics import resolve_task_configs
+    from radio_bench.grading.runner import run_verification
+
+    gt_s1 = _load_gt(SYNTH_ROOT / "s1_precal" / "ground_truth.json")
+    npz_s1 = SYNTH_ROOT / "s1_precal" / "corruption_masks.npz"
+
+    # 1. Planted fault: clear all flags on input.ms and calibrators.ms -> must_flag_recall == 0.0
+    ws_unflag = tmp_path / "ws_precal_unflag"
+    ws_unflag.mkdir()
+    shutil.copytree(synth_golden_precal_dir / "input.ms", ws_unflag / "input.ms")
+    shutil.copytree(synth_golden_precal_dir / "calibrators.ms", ws_unflag / "calibrators.ms")
+    for ms_p in (ws_unflag / "input.ms", ws_unflag / "calibrators.ms"):
+        tb = casatools.table()
+        tb.open(str(ms_p), nomodify=False)
+        try:
+            flg = tb.getcol("FLAG")
+            flgr = tb.getcol("FLAG_ROW")
+            flg[:] = False
+            flgr[:] = False
+            tb.putcol("FLAG", flg)
+            tb.putcol("FLAG_ROW", flgr)
+        finally:
+            tb.close()
+            tb.done()
+
+    rew_unf, met_unf = grade_precal(ws_unflag, gt_s1, masks_npz_path=npz_s1, task_id="s1_precal")
+    assert met_unf["measured"]["precal.must_flag_recall"] == 0.0
+    assert rew_unf["flag_recall_score"] == 0.0
+    assert rew_unf["passed"] == 0
+
+    # 2. Alternative recipe: virtual SOURCE_MODEL (`setjy(usescratch=False)`) with MODEL_DATA removed
+    ws_virt = tmp_path / "ws_precal_virt"
+    ws_virt.mkdir()
+    shutil.copytree(synth_golden_precal_dir / "input.ms", ws_virt / "input.ms")
+    shutil.copytree(synth_golden_precal_dir / "calibrators.ms", ws_virt / "calibrators.ms")
+    for ms_p in (ws_virt / "input.ms", ws_virt / "calibrators.ms"):
+        tb = casatools.table()
+        tb.open(str(ms_p), nomodify=False)
+        try:
+            if "MODEL_DATA" in tb.colnames():
+                tb.removecols(["MODEL_DATA"])
+        finally:
+            tb.close()
+            tb.done()
+
+    casatasks.setjy(
+        vis=str(ws_virt / "calibrators.ms"),
+        field="J1331+3030",
+        standard="Perley-Butler 2017",
+        usescratch=False,
+    )
+
+    # Under v0.1 parity (`allow_virtual_model == False`), virtual model scores 0 on model_data_score
+    ec_off, rb_s1 = resolve_task_configs("s1_precal", "precal", gt_s1)
+    assert ec_off.allow_virtual_model is False
+    rew_off, _ = run_verification(
+        workspace_dir=ws_virt,
+        tests_dir=SYNTH_ROOT / "s1_precal",
+        log_dir=None,
+        extract_config=ec_off,
+        rubric=rb_s1,
+        ground_truth=gt_s1,
+        ref_arrays_dir=SYNTH_ROOT / "s1_precal",
+        compute_raw_hash=False,
+    )
+    assert rew_off["model_data_score"] == 0.0
+    assert rew_off["passed"] == 0
+
+    # Under `allow_virtual_model == True`, SOURCE_MODEL is evaluated and scores 1.0
+    ec_on = ec_off.model_copy(update={"allow_virtual_model": True}, deep=True)
+    rew_on, met_on = run_verification(
+        workspace_dir=ws_virt,
+        tests_dir=SYNTH_ROOT / "s1_precal",
+        log_dir=None,
+        extract_config=ec_on,
+        rubric=rb_s1,
+        ground_truth=gt_s1,
+        ref_arrays_dir=SYNTH_ROOT / "s1_precal",
+        compute_raw_hash=False,
+    )
+    assert met_on["measured"]["precal.flux_cal_model_amp_jy"] == pytest.approx(7.61, rel=0.05)
+    assert rew_on["model_data_score"] == 1.0
+    assert rew_on["reward"] == 1.0
+    assert rew_on["passed"] == 1
+
+
+def test_wave2_raw_data_blake2b_mutation_gate_and_multi_ddid_streaming(tmp_path: Path) -> None:
+    """Verify `proc.raw_data_blake2b` hard gate on mutated `DATA` and `SIGABRT`-safe multi-`DDID` streaming."""
+    from radio_bench.analysis.taxonomy import classify_failure
+    from radio_bench.grading.extractors.calibrate import extract_calibrate
+    from radio_bench.grading.extractors.common import compute_raw_data_blake2b
+    from radio_bench.grading.extractors.precal import extract_precal
+    from radio_bench.grading.inspect_metrics import resolve_task_configs
+    from radio_bench.grading.runner import run_verification
+    from radio_bench.grading.schema import ExtractConfig, GeometrySpec, RolesSpec
+
+    # 1. Raw DATA mutation hard gate -> reward == 0.0, passed == 0, raw_data_or_calflag_mutation
+    ws_mut = tmp_path / "ws_raw_mut"
+    ws_mut.mkdir()
+    shutil.copytree(SYNTH_ROOT / "s1_image" / "input.ms", ws_mut / "input.ms")
+    orig_digest = compute_raw_data_blake2b(ws_mut / "input.ms")
+    assert isinstance(orig_digest, str) and len(orig_digest) == 64
+
+    tb = casatools.table()
+    tb.open(str(ws_mut / "input.ms"), nomodify=False)
+    try:
+        cell = tb.getcell("DATA", 0)
+        cell[0, 0] = cell[0, 0] + (5.0 + 0.0j)
+        tb.putcell("DATA", 0, cell)
+    finally:
+        tb.close()
+        tb.done()
+
+    gt_mut = dict(_load_gt(SYNTH_ROOT / "s1_calibrate" / "ground_truth.json"))
+    gt_mut["raw_data_blake2b"] = orig_digest
+    ec_cal, rb_cal = resolve_task_configs("s1_calibrate", "calibrate", gt_mut)
+    rew_mut, met_mut = run_verification(
+        workspace_dir=ws_mut,
+        tests_dir=SYNTH_ROOT / "s1_calibrate",
+        log_dir=None,
+        extract_config=ec_cal,
+        rubric=rb_cal,
+        ground_truth=gt_mut,
+        ref_arrays_dir=SYNTH_ROOT / "s1_calibrate",
+        scratch_root=tmp_path,
+        compute_raw_hash=True,
+    )
+    assert met_mut["measured"]["proc.raw_data_unmodified"] is False
+    assert rew_mut["reward"] == 0.0
+    assert rew_mut["passed"] == 0
+    assert (
+        classify_failure(
+            passed=rew_mut["passed"],
+            stage="calibrate",
+            reward=float(rew_mut["reward"]),
+            reward_dict=rew_mut,
+            metrics_dict=met_mut,
+        )
+        == "raw_data_or_calflag_mutation"
+    )
+
+    # 2. Multi-DDID heterogeneous-nchan MS (spw0=32ch, spw1=64ch) -> zero SIGABRT across extractors
+    multi_ms = tmp_path / "multi_ddid.ms"
+    sm = casatools.simulator()
+    me = casatools.measures()
+    try:
+        sm.open(str(multi_ms))
+        cofa = me.observatory("VLA")
+        sm.setconfig(
+            telescopename="VLA",
+            x=[0.0, 120.0, -90.0],
+            y=[0.0, 60.0, 140.0],
+            z=[0.0, 0.0, 0.0],
+            dishdiameter=[25.0, 25.0, 25.0],
+            mount=["alt-az", "alt-az", "alt-az"],
+            antname=["ea01", "ea02", "ea03"],
+            coordsystem="local",
+            referencelocation=cofa,
+        )
+        sm.setspwindow(
+            spwname="spw32",
+            freq="4.5GHz",
+            deltafreq="2MHz",
+            freqresolution="2MHz",
+            nchannels=32,
+            stokes="RR RL LR LL",
+        )
+        sm.setspwindow(
+            spwname="spw64",
+            freq="4.7GHz",
+            deltafreq="1MHz",
+            freqresolution="1MHz",
+            nchannels=64,
+            stokes="RR RL LR LL",
+        )
+        sm.setfeed(mode="perfect R L", pol=[""])
+        sm.setfield(
+            sourcename="J1331+3030",
+            sourcedirection=me.direction("J2000", "13h31m08.288s", "+30d30m32.959s"),
+        )
+        sm.setfield(
+            sourcename="J1822-0938",
+            sourcedirection=me.direction("J2000", "18h22m28.000s", "-09d38m00.000s"),
+        )
+        sm.setfield(
+            sourcename="TARGET_A",
+            sourcedirection=me.direction("J2000", "18h24m00.000s", "-09d35m00.000s"),
+        )
+        sm.settimes(
+            integrationtime="10s",
+            usehourangle=True,
+            referencetime=me.epoch("UTC", "2026/04/15/10:00:00"),
+        )
+        for fname in ("J1331+3030", "J1822-0938", "TARGET_A"):
+            sm.observe(fname, "spw32", starttime="-120s", stoptime="-100s")
+            sm.observe(fname, "spw64", starttime="-90s", stoptime="-70s")
+    finally:
+        with contextlib.suppress(Exception):
+            sm.close()
+        with contextlib.suppress(Exception):
+            sm.done()
+        with contextlib.suppress(Exception):
+            me.done()
+
+    # Populate nonzero per-row DATA & CORRECTED_DATA per DDID safely
+    casatasks.clearcal(vis=str(multi_ms), addmodel=True)
+    tb = casatools.table()
+    tb.open(str(multi_ms), nomodify=False)
+    try:
+        ddids = tb.getcol("DATA_DESC_ID")
+        assert set(np.unique(ddids).tolist()) == {0, 1}
+        for ddid, scale in ((0, 7.6), (1, 7.4)):
+            sub = tb.query(f"DATA_DESC_ID == {ddid}")
+            try:
+                d = sub.getcol("DATA")
+                d[:] = scale + 0.0j
+                sub.putcol("DATA", d)
+                sub.putcol("MODEL_DATA", d)
+                sub.putcol("CORRECTED_DATA", (1.02 * d).astype(d.dtype))
+                sub.putcol("FLAG", np.zeros_like(sub.getcol("FLAG"), dtype=bool))
+                sub.putcol("FLAG_ROW", np.zeros_like(sub.getcol("FLAG_ROW"), dtype=bool))
+            finally:
+                sub.close()
+                sub.done()
+    finally:
+        tb.close()
+        tb.done()
+
+    ws_mddid = tmp_path / "ws_mddid"
+    ws_mddid.mkdir()
+    os.symlink(multi_ms, ws_mddid / "input.ms")
+    os.symlink(multi_ms, ws_mddid / "calibrators.ms")
+
+    multi_digest = compute_raw_data_blake2b(ws_mddid / "input.ms")
+    assert isinstance(multi_digest, str) and len(multi_digest) == 64
+
+    ec_multi = ExtractConfig(
+        suite_id="test_suite",
+        split="dev",
+        telescope="VLA",
+        pol_basis="circular",
+        stages=["precal", "calibrate"],
+        roles=RolesSpec(
+            flux_cal=["J1331+3030"],
+            bandpass_cal=["J1331+3030"],
+            phase_cal=["J1822-0938"],
+            targets=["TARGET_A"],
+            dead_antennas=[],
+        ),
+        geometry=GeometrySpec(dish_diameter_m=25.0),
+    )
+    obs_pre, errs_pre = extract_precal(ws_mddid, ec_multi, ref_arrays_dir=None)
+    assert not errs_pre
+    assert obs_pre["precal.flux_cal_model_amp_jy"].status == "measured"
+    assert obs_pre["precal.flux_cal_model_amp_jy"].value == pytest.approx(7.5, abs=0.2)
+
+    obs_cal, _ = extract_calibrate(ws_mddid, ec_multi, ref_arrays_dir=None, scratch_root=tmp_path)
+    assert obs_cal["cal.bandpass_cal_calibrated"].value is True
+    assert obs_cal["cal.bandpass_coh_phase_slope_deg_per_100mhz"].value == pytest.approx(
+        0.0, abs=1e-3
+    )
+
+
+def test_wave2_viscal_arbitrary_names_fluxscale_orientation_and_unapplied_fluxscale(
+    synth_golden_precal_dir: Path, synth_golden_image_dir: Path, tmp_path: Path
+) -> None:
+    """Verify:
+    1. In-place `input.ms` calibration without `calibrators.ms` scores `1.0` on `calibrate` and `e2e`.
+    2. Arbitrary caltable filenames (`ap_flux.tab` < `z_unscaled.tab` alphabetically!) discover `VisCal`
+       keywords and orient `(G_unscaled, F_fluxscaled)` physically (`~2.14 Jy`, NEVER reciprocal `0.467 Jy`).
+    3. Wrong `fluxscale` (`5.0 Jy`) and unapplied `fluxscale` (`fluxscale` table == `2.14 Jy` while
+       `CORRECTED_DATA` has unscaled `1.0 Jy` gains) both fail (`passed == 0`).
+    """
+    from radio_bench.grading.inspect_metrics import resolve_task_configs
+    from radio_bench.grading.runner import run_verification
+
+    gt_cal = _load_gt(SYNTH_ROOT / "s1_calibrate" / "ground_truth.json")
+    gt_e2e = _load_gt(SYNTH_ROOT / "s2_e2e_synth" / "ground_truth.json")
+
+    # 1. In-place `input.ms` without `calibrators.ms` on `s1_calibrate` and `s2_e2e_synth` -> 1.0
+    ws_inplace = tmp_path / "ws_inplace"
+    ws_inplace.mkdir()
+    os.symlink(SYNTH_ROOT / "s1_image" / "input.ms", ws_inplace / "input.ms")
+    rew_inp_cal, _ = grade_calibrate(
+        ws_inplace,
+        gt_cal,
+        masks_npz_path=SYNTH_ROOT / "s1_calibrate" / "true_target_vis.npz",
+        task_id="s1_calibrate",
+        scratch_root=tmp_path,
+    )
+    assert rew_inp_cal["reward"] == 1.0
+    assert rew_inp_cal["passed"] == 1
+
+    ws_inplace_e2e = tmp_path / "ws_inplace_e2e"
+    ws_inplace_e2e.mkdir()
+    os.symlink(SYNTH_ROOT / "s1_image" / "input.ms", ws_inplace_e2e / "input.ms")
+    for sfx in ("image", "image.pbcor", "pb", "residual", "model"):
+        os.symlink(
+            synth_golden_image_dir / f"synth_mosaic.{sfx}",
+            ws_inplace_e2e / f"synth_mosaic.{sfx}",
+        )
+    rew_inp_e2e, _ = grade_e2e(
+        ws_inplace_e2e,
+        gt_e2e,
+        masks_npz_path=SYNTH_ROOT / "s2_e2e_synth" / "true_target_vis.npz",
+        task_id="s2_e2e_synth",
+        scratch_root=tmp_path,
+    )
+    assert rew_inp_e2e["reward"] == 1.0
+    assert rew_inp_e2e["passed"] == 1
+
+    # 2. Arbitrary caltable names where fluxscaled table sorts FIRST alphabetically (`ap_flux.tab` < `z_unscaled.tab`)
+    ws_arb = tmp_path / "ws_arb_names"
+    ws_arb.mkdir()
+    shutil.copytree(SYNTH_ROOT / "s1_calibrate" / "input.ms", ws_arb / "input.ms")
+    cal_ms = str(ws_arb / "input.ms")
+    casatasks.flagdata(vis=cal_ms, mode="manual", antenna="ea07", flagbackup=False)
+    casatasks.setjy(vis=cal_ms, field="J1331+3030", standard="Perley-Butler 2017", usescratch=True)
+
+    g0_tab = str(ws_arb / "00_init_phase.tab")
+    k_tab = str(ws_arb / "foo_delay.tab")
+    b_tab = str(ws_arb / "bar_bp.tab")
+    g_unscaled = str(ws_arb / "z_unscaled.tab")
+    f_scaled = str(ws_arb / "ap_flux.tab")
+
+    casatasks.gaincal(
+        vis=cal_ms,
+        caltable=g0_tab,
+        field="J1331+3030,J1822-0938",
+        spw="0:16~24",
+        solint="int",
+        refant="ea01",
+        calmode="p",
+        minsnr=3.0,
+    )
+    casatasks.gaincal(
+        vis=cal_ms,
+        caltable=k_tab,
+        field="J1331+3030",
+        solint="inf",
+        combine="scan",
+        refant="ea01",
+        gaintype="K",
+        gaintable=[g0_tab],
+        gainfield=["J1331+3030"],
+        minsnr=3.0,
+    )
+    casatasks.bandpass(
+        vis=cal_ms,
+        caltable=b_tab,
+        field="J1331+3030",
+        solint="inf",
+        combine="scan",
+        refant="ea01",
+        bandtype="B",
+        fillgaps=3,
+        solnorm=True,
+        gaintable=[g0_tab, k_tab],
+        gainfield=["J1331+3030", "J1331+3030"],
+        minsnr=3.0,
+    )
+    casatasks.gaincal(
+        vis=cal_ms,
+        caltable=g_unscaled,
+        field="J1331+3030,J1822-0938",
+        spw="0:4~59",
+        solint="inf",
+        refant="ea01",
+        calmode="ap",
+        gaintable=[k_tab, b_tab],
+        gainfield=["J1331+3030", "J1331+3030"],
+        minsnr=3.0,
+    )
+    casatasks.fluxscale(
+        vis=cal_ms,
+        caltable=g_unscaled,
+        fluxtable=f_scaled,
+        reference=["J1331+3030"],
+        transfer=["J1822-0938"],
+        incremental=False,
+    )
+
+    # First verify UNAPPLIED fluxscale (applying `z_unscaled.tab` instead of `ap_flux.tab`!)
+    casatasks.applycal(
+        vis=cal_ms,
+        field="J1331+3030",
+        gaintable=[k_tab, b_tab, g_unscaled],
+        gainfield=["", "", "J1331+3030"],
+        interp=["nearest", "nearest,linear", "linear"],
+        calwt=False,
+    )
+    casatasks.applycal(
+        vis=cal_ms,
+        field="J1822-0938,SYNTH_MOSAIC_P1,SYNTH_MOSAIC_P2",
+        gaintable=[k_tab, b_tab, g_unscaled],
+        gainfield=["", "", "J1822-0938"],
+        interp=["nearest", "nearest,linear", "linear"],
+        calwt=False,
+    )
+
+    # Even on v0.1 parity rubric, unapplied fluxscale fails target fidelity -> passed == 0
+    rew_unapp, met_unapp = grade_calibrate(
+        ws_arb,
+        gt_cal,
+        masks_npz_path=SYNTH_ROOT / "s1_calibrate" / "true_target_vis.npz",
+        task_id="s1_calibrate",
+        scratch_root=tmp_path,
+    )
+    assert met_unapp["measured"]["cal.fluxscale_table_flux_jy"] == pytest.approx(2.14, rel=0.03)
+    assert met_unapp["measured"]["cal.phase_cal_corrected_amp_jy"] == pytest.approx(1.0, abs=0.05)
+    assert rew_unapp["target_fidelity_score"] == 0.0
+    assert rew_unapp["passed"] == 0
+
+    # And on a strict v0.2 rubric requiring `cal.phase_cal_corrected_amp_jy` directly, `fluxscale_score == 0.0`
+    from radio_bench.grading.schema import CombineRuleSpec, LeafRuleSpec
+
+    ec_strict, rb_strict = resolve_task_configs("s1_calibrate", "calibrate", gt_cal)
+    for sub in rb_strict.subscores:
+        if sub.id == "fluxscale_score":
+            sub.expr = CombineRuleSpec(
+                combine="zero_if_any_zero",
+                children=[
+                    LeafRuleSpec(
+                        observable="cal.phase_cal_unflagged_fraction",
+                        primitive="threshold_gate",
+                        params={"op": ">=", "limit": 0.5},
+                    ),
+                    LeafRuleSpec(
+                        observable="cal.phase_cal_corrected_amp_jy",
+                        primitive="rel_err_ramp",
+                        params={
+                            "truth_key": "phase_calibrator_truth.spw_mean_flux_jy",
+                            "pass_rel_tol": 0.05,
+                            "zero_at_rel_err": 0.25,
+                        },
+                    ),
+                ],
+            )
+    rew_unapp_strict, _ = run_verification(
+        workspace_dir=ws_arb,
+        tests_dir=SYNTH_ROOT / "s1_calibrate",
+        log_dir=None,
+        extract_config=ec_strict,
+        rubric=rb_strict,
+        ground_truth=gt_cal,
+        ref_arrays_dir=SYNTH_ROOT / "s1_calibrate",
+        scratch_root=tmp_path,
+    )
+    assert rew_unapp_strict["fluxscale_score"] == 0.0
+    assert rew_unapp_strict["passed"] == 0
+
+    # Now apply `ap_flux.tab` properly + target rflag -> physical fluxscale orientation (`~2.14 Jy`) & reward == 1.0!
+    casatasks.applycal(
+        vis=cal_ms,
+        field="J1822-0938,SYNTH_MOSAIC_P1,SYNTH_MOSAIC_P2",
+        gaintable=[k_tab, b_tab, f_scaled],
+        gainfield=["J1331+3030", "J1331+3030", "J1822-0938"],
+        interp=["nearest", "nearest,linear", "linear"],
+        calwt=False,
+    )
+    casatasks.flagdata(
+        vis=cal_ms,
+        mode="rflag",
+        field="SYNTH_MOSAIC_P1,SYNTH_MOSAIC_P2",
+        datacolumn="corrected",
+        timedevscale=5.0,
+        freqdevscale=5.0,
+        flagbackup=False,
+    )
+    rew_arb_ok, met_arb_ok = grade_calibrate(
+        ws_arb,
+        gt_cal,
+        masks_npz_path=SYNTH_ROOT / "s1_calibrate" / "true_target_vis.npz",
+        task_id="s1_calibrate",
+        scratch_root=tmp_path,
+    )
+    assert met_arb_ok["measured"]["cal.fluxscale_table_flux_jy"] == pytest.approx(2.14, rel=0.03)
+    assert met_arb_ok["measured"]["cal.phase_cal_corrected_amp_jy"] == pytest.approx(2.14, rel=0.03)
+    assert rew_arb_ok["fluxscale_score"] == 1.0
+    assert rew_arb_ok["reward"] == 1.0
+    assert rew_arb_ok["passed"] == 1
+
+    rew_strict_ok, _ = run_verification(
+        workspace_dir=ws_arb,
+        tests_dir=SYNTH_ROOT / "s1_calibrate",
+        log_dir=None,
+        extract_config=ec_strict,
+        rubric=rb_strict,
+        ground_truth=gt_cal,
+        ref_arrays_dir=SYNTH_ROOT / "s1_calibrate",
+        scratch_root=tmp_path,
+    )
+    assert rew_strict_ok["fluxscale_score"] == 1.0
+    assert rew_strict_ok["reward"] == 1.0
+    assert rew_strict_ok["passed"] == 1
+
+    # 3. Planted fault: wrong ~5.0 Jy fluxscale transfer (wrong primary flux density setjy) -> fluxscale_score == 0.0
+    casatasks.setjy(
+        vis=cal_ms,
+        field="J1331+3030",
+        standard="manual",
+        fluxdensity=[7.61 * (5.0 / 2.14), 0.0, 0.0, 0.0],
+        usescratch=True,
+    )
+    shutil.rmtree(g_unscaled)
+    shutil.rmtree(f_scaled)
+    casatasks.gaincal(
+        vis=cal_ms,
+        caltable=g_unscaled,
+        field="J1331+3030,J1822-0938",
+        spw="0:4~59",
+        solint="inf",
+        refant="ea01",
+        calmode="ap",
+        gaintable=[k_tab, b_tab],
+        gainfield=["J1331+3030", "J1331+3030"],
+        minsnr=3.0,
+    )
+    casatasks.fluxscale(
+        vis=cal_ms,
+        caltable=g_unscaled,
+        fluxtable=f_scaled,
+        reference=["J1331+3030"],
+        transfer=["J1822-0938"],
+        incremental=False,
+    )
+    casatasks.applycal(
+        vis=cal_ms,
+        field="J1822-0938,SYNTH_MOSAIC_P1,SYNTH_MOSAIC_P2",
+        gaintable=[k_tab, b_tab, f_scaled],
+        gainfield=["J1331+3030", "J1331+3030", "J1822-0938"],
+        interp=["nearest", "nearest,linear", "linear"],
+        calwt=False,
+    )
+    rew_wrong5, met_wrong5 = grade_calibrate(
+        ws_arb,
+        gt_cal,
+        masks_npz_path=SYNTH_ROOT / "s1_calibrate" / "true_target_vis.npz",
+        task_id="s1_calibrate",
+        scratch_root=tmp_path,
+    )
+    assert met_wrong5["measured"]["cal.fluxscale_table_flux_jy"] == pytest.approx(5.0, rel=0.05)
+    assert met_wrong5["measured"]["cal.phase_cal_corrected_amp_jy"] == pytest.approx(5.0, rel=0.05)
+    assert rew_wrong5["fluxscale_score"] == 0.0
+    assert rew_wrong5["passed"] == 0
+
+
+def test_wave2_image_overfine_cell_pbcor_nonstealing_and_narrow_fov_pb(
+    synth_golden_image_dir: Path, tmp_path: Path
+) -> None:
+    """Verify:
+    1. Planted fault: overly fine pixel cell (`0.5 arcsec` -> `pixels_per_beam > 20`) -> `beam_sampling_score == 0.0`.
+    2. Alternative recipe: multi-image workspace where `dirty_test.*` lacks `.pbcor` alongside complete `final.*`
+       and a `*pbcor*.image` decoy -> selects `final` cleanly without stealing `final.image.pbcor`.
+    3. Single-pointing narrow-FoV (`pb_min_full > 0.85`): analytical Airy/Gaussian PB passes (`pb_taper_consistent == True`),
+       whereas constant `pb == 1.0` on the identical narrow-FoV grid fails (`pb_taper_consistent == False`).
+    """
+    from radio_bench.grading.extractors.image import extract_image
+    from radio_bench.grading.inspect_metrics import resolve_task_configs
+
+    gt_s1 = _load_gt(SYNTH_ROOT / "s1_image" / "ground_truth.json")
+
+    # 1. Overly fine pixel cell (`0.5 arcsec` -> ~23.7 px/beam > 20) -> beam_sampling_score == 0.0
+    ws_fine = tmp_path / "ws_fine_cell"
+    ws_fine.mkdir()
+    for sfx in ("image", "image.pbcor", "pb", "residual", "model"):
+        shutil.copytree(
+            synth_golden_image_dir / f"synth_mosaic.{sfx}",
+            ws_fine / f"synth_mosaic.{sfx}",
+        )
+    ia = casatools.image()
+    ia.open(str(ws_fine / "synth_mosaic.image"))
+    try:
+        cs = ia.coordsys()
+        try:
+            inc = cs.increment()["numeric"]
+            rad_05 = math.radians(0.5 / 3600.0)
+            cs.setincrement([-rad_05, rad_05, inc[2], inc[3]])
+            ia.setcoordsys(cs.torecord())
+        finally:
+            with contextlib.suppress(Exception):
+                cs.done()
+    finally:
+        ia.close()
+        ia.done()
+
+    rew_fine, met_fine = grade_image(ws_fine, gt_s1, task_id="s1_image")
+    assert met_fine["measured"]["image.pixels_per_beam"] > 20.0
+    assert rew_fine["beam_sampling_score"] == 0.0
+    assert rew_fine["passed"] == 0
+
+    # 2. Multi-image stem `.pbcor` non-stealing + `*pbcor*` stem exclusion
+    ws_multi = tmp_path / "ws_multi_stems"
+    ws_multi.mkdir()
+    for sfx in ("image", "residual", "pb", "model"):
+        shutil.copytree(
+            synth_golden_image_dir / f"synth_mosaic.{sfx}",
+            ws_multi / f"dirty_test.{sfx}",
+        )
+    # Zero out dirty_test.model so it mimics an uncleaned dirty image
+    ia = casatools.image()
+    ia.open(str(ws_multi / "dirty_test.model"))
+    try:
+        ia.putchunk(np.zeros_like(ia.getchunk()))
+    finally:
+        ia.close()
+        ia.done()
+
+    # Decoy `*pbcor*.image` directory
+    shutil.copytree(
+        synth_golden_image_dir / "synth_mosaic.image.pbcor",
+        ws_multi / "decoy_pbcor_view.image",
+    )
+    # Complete `final.*` image set
+    for sfx in ("image", "image.pbcor", "pb", "residual", "model"):
+        shutil.copytree(
+            synth_golden_image_dir / f"synth_mosaic.{sfx}",
+            ws_multi / f"final.{sfx}",
+        )
+
+    rew_multi, met_multi = grade_image(ws_multi, gt_s1, task_id="s1_image")
+    assert met_multi["measurements"]["image.products_complete"]["provenance"] == "final"
+    assert rew_multi["products_score"] == 1.0
+    assert rew_multi["reward"] == 1.0
+    assert rew_multi["passed"] == 1
+
+    # 3. Single-pointing narrow-FoV (`64x64`, `1.5 arcsec` cell at `4.6 GHz`, VLA `25m` dish -> `pb_min_full ~ 0.96 > 0.85`)
+    ref_ia = casatools.image()
+    ref_ia.open(str(synth_golden_image_dir / "synth_mosaic.image"))
+    try:
+        cs_obj = ref_ia.coordsys()
+        try:
+            rad_15as = math.radians(1.5 / 3600.0)
+            inc = cs_obj.increment()["numeric"]
+            cs_obj.setincrement([-rad_15as, rad_15as, inc[2], inc[3]])
+            cs_obj.setreferencepixel([32.0, 32.0, 0.0, 0.0])
+            cs_narrow = cs_obj.torecord()
+        finally:
+            with contextlib.suppress(Exception):
+                cs_obj.done()
+        rb_narrow = ref_ia.restoringbeam()
+    finally:
+        ref_ia.close()
+        ref_ia.done()
+
+    yy, xx = np.meshgrid(
+        np.arange(64, dtype=np.float64), np.arange(64, dtype=np.float64), indexing="ij"
+    )
+    theta_rad = np.hypot(xx - 32.0, yy - 32.0) * math.radians(1.5 / 3600.0)
+    lam_m = 299_792_458.0 / 4.599e9
+    fwhm_rad = 1.22 * lam_m / 25.0
+    pb_airy_2d = np.exp(-4.0 * math.log(2.0) * (theta_rad / fwhm_rad) ** 2).astype(np.float32)
+    assert float(np.min(pb_airy_2d)) > 0.90  # Narrow FoV: pb_min_full > 0.85!
+
+    rng = np.random.default_rng(77)
+    sky_pbcor = np.zeros((64, 64, 1, 1), dtype=np.float32)
+    sky_pbcor[32, 32, 0, 0] = 0.080
+    pb_true = pb_airy_2d[:, :, np.newaxis, np.newaxis]
+    img_true = (sky_pbcor * pb_true).astype(np.float32)
+    res_true = rng.normal(0.0, 5.5e-5, size=(64, 64, 1, 1)).astype(np.float32)
+
+    ec_img, _ = resolve_task_configs("s1_image", "image", gt_s1)
+    ec_narrow = ec_img.model_copy(deep=True)
+    ec_narrow.geometry.offsource_inner_exclusion_beams = 1.0
+    ec_narrow.geometry.source_apertures = []
+
+    ws_narrow_ok = tmp_path / "ws_narrow_ok"
+    ws_narrow_ok.mkdir()
+    for sfx, arr in (
+        ("image", img_true),
+        ("image.pbcor", sky_pbcor),
+        ("model", sky_pbcor),
+        ("pb", pb_true),
+        ("residual", res_true),
+    ):
+        ia = casatools.image()
+        ia.fromarray(
+            outfile=str(ws_narrow_ok / f"narrow.{sfx}"), pixels=arr, csys=cs_narrow, overwrite=True
+        )
+        if sfx in ("image", "image.pbcor", "residual"):
+            ia.setrestoringbeam(beam=rb_narrow)
+        ia.close()
+        ia.done()
+
+    obs_narrow_ok, _ = extract_image(ws_narrow_ok, ec_narrow)
+    assert obs_narrow_ok["image.pb_taper_consistent"].value is True
+
+    # Replace `.pb` with constant `1.0` (and matching `pbcor = image`) -> MUST FAIL analytical PB check!
+    ws_narrow_fake = tmp_path / "ws_narrow_fake"
+    shutil.copytree(ws_narrow_ok, ws_narrow_fake)
+    for sfx, arr in (("pb", np.ones_like(pb_true)), ("image.pbcor", img_true)):
+        ia = casatools.image()
+        ia.open(str(ws_narrow_fake / f"narrow.{sfx}"))
+        try:
+            ia.putchunk(arr)
+        finally:
+            ia.close()
+            ia.done()
+
+    obs_narrow_fake, _ = extract_image(ws_narrow_fake, ec_narrow)
+    assert obs_narrow_fake["image.pb_taper_consistent"].value is False
+
+
+def test_wave2_claim_auditor_report_html_nan_rejection_and_abstention_halt(
+    synth_golden_image_dir: Path, tmp_path: Path
+) -> None:
+    """Verify Layer B Claim Auditor (`stage_output.json` + `report.html`), strict `NaN`/`Inf` rejection,
+    and `expect_halt` / `proc.abstention_correct` / `invalid_abstention_or_halt` routing.
+    """
+    from radio_bench.analysis.taxonomy import classify_failure
+    from radio_bench.grading.inspect_metrics import resolve_task_configs
+    from radio_bench.grading.runner import run_verification
+    from radio_bench.grading.schema import HardGateSpec
+
+    gt_img = _load_gt(SYNTH_ROOT / "s1_image" / "ground_truth.json")
+    ec_img, rb_base = resolve_task_configs("s1_image", "image", gt_img)
+
+    ws = tmp_path / "ws_claims"
+    ws.mkdir()
+    for sfx in ("image", "image.pbcor", "pb", "residual", "model"):
+        os.symlink(
+            synth_golden_image_dir / f"synth_mosaic.{sfx}",
+            ws / f"synth_mosaic.{sfx}",
+        )
+
+    rb_claims = rb_base.model_copy(deep=True)
+    rb_claims.required_reported_metrics = ["image.dynamic_range"]
+    rb_claims.hard_gates.extend(
+        [
+            HardGateSpec(
+                id="no_missing_claims",
+                observable="proc.missing_required_claim_count",
+                primitive="threshold_gate",
+                params={"op": "<=", "limit": 0},
+                failure_tag="unsupported_or_missing_claim",
+            ),
+            HardGateSpec(
+                id="no_unsupported_claims",
+                observable="proc.unsupported_claim_count",
+                primitive="threshold_gate",
+                params={"op": "<=", "limit": 0},
+                failure_tag="unsupported_or_missing_claim",
+            ),
+        ]
+    )
+
+    # 1. Missing required claim -> missing_required_claim_count == 1, reward == 0.0, unsupported_or_missing_claim
+    (ws / "stage_output.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2",
+                "stage": "image",
+                "status": "completed",
+                "reported_metrics": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    rew_miss, met_miss = run_verification(
+        workspace_dir=ws,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_claims,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert met_miss["measured"]["proc.missing_required_claim_count"] == 1
+    assert rew_miss["reward"] == 0.0
+    assert rew_miss["passed"] == 0
+    assert (
+        classify_failure(
+            passed=rew_miss["passed"],
+            stage="image",
+            reward=float(rew_miss["reward"]),
+            reward_dict=rew_miss,
+            metrics_dict=met_miss,
+        )
+        == "unsupported_or_missing_claim"
+    )
+
+    # 2. Accurate claim in stage_output.json + unit-converted `mJy` span in report.html + ignored hidden/script spans -> 1.0!
+    true_dr = float(met_miss["measured"]["image.dynamic_range"])
+    true_rms_mjy = float(met_miss["measured"]["image.offsource_residual_rms_jy"]) * 1000.0
+    (ws / "stage_output.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2",
+                "stage": "image",
+                "status": "completed",
+                "reported_metrics": {
+                    "image.dynamic_range": {"value": round(true_dr, 2), "unit": "dimensionless"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ws / "report.html").write_text(
+        f"""<!doctype html><html><body>
+        <p>RMS: <span data-observable="image.offsource_residual_rms_jy" data-unit="mJy">{true_rms_mjy:.4f}</span> mJy/beam</p>
+        <div hidden><span data-observable="image.dynamic_range">999999.0</span></div>
+        <span style="display: none" data-observable="image.dynamic_range">888888.0</span>
+        <script><span data-observable="image.dynamic_range">777777.0</span></script>
+        </body></html>""",
+        encoding="utf-8",
+    )
+    rew_acc, met_acc = run_verification(
+        workspace_dir=ws,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_claims,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert met_acc["measured"]["proc.missing_required_claim_count"] == 0
+    assert met_acc["measured"]["proc.unsupported_claim_count"] == 0
+    assert rew_acc["reward"] == 1.0
+    assert rew_acc["passed"] == 1
+
+    # 3. Fabricated visible report.html claim -> unsupported_claim_count == 1, reward == 0.0
+    (ws / "report.html").write_text(
+        '<html><body><p>Peak DR: <span data-observable="image.dynamic_range">99999.0</span></p></body></html>',
+        encoding="utf-8",
+    )
+    rew_fab, met_fab = run_verification(
+        workspace_dir=ws,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_claims,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert met_fab["measured"]["proc.unsupported_claim_count"] >= 1
+    assert rew_fab["reward"] == 0.0
+    assert (
+        classify_failure(
+            passed=rew_fab["passed"],
+            stage="image",
+            reward=float(rew_fab["reward"]),
+            reward_dict=rew_fab,
+            metrics_dict=met_fab,
+        )
+        == "unsupported_or_missing_claim"
+    )
+    (ws / "report.html").unlink()
+
+    # 4. Strict NaN rejection in stage_output.json -> proc.manifest_schema_valid is False
+    (ws / "stage_output.json").write_text(
+        '{"schema_version": "0.2", "stage": "image", "status": "completed", '
+        '"reported_metrics": {"image.dynamic_range": {"value": NaN}}}',
+        encoding="utf-8",
+    )
+    _, met_nan = run_verification(
+        workspace_dir=ws,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_base,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert met_nan["measured"]["proc.manifest_schema_valid"] is False
+
+    # 5. Invalid halt on solvable task (`expect_halt == False`) -> reward == 0.0, invalid_abstention_or_halt
+    (ws / "stage_output.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2",
+                "stage": "image",
+                "status": "halted",
+                "halt_code": "insufficient_parallactic_angle",
+                "halt_reason": "Spurious halt on solvable continuum imaging task.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    rew_bad_halt, met_bad_halt = run_verification(
+        workspace_dir=ws,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_base,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert rew_bad_halt["reward"] == 0.0
+    assert rew_bad_halt["passed"] == 0
+    assert (
+        classify_failure(
+            passed=rew_bad_halt["passed"],
+            stage="image",
+            reward=float(rew_bad_halt["reward"]),
+            reward_dict=rew_bad_halt,
+            metrics_dict=met_bad_halt,
+        )
+        == "invalid_abstention_or_halt"
+    )
+
+    # 6. `expect_halt == True` stress rubric:
+    #    - Clean workspace WITHOUT downstream `.image` deliverables + valid halt -> scores 1.0!
+    #    - Workspace WITH fabricated downstream `.image` deliverables (`ws`) + halt -> hedged halt blocked (0.0)!
+    #    - Clean workspace with hedged downstream `image.dynamic_range` claim -> blocked (0.0)!
+    #    - Unhalted `"completed"` manifest -> blocked (0.0)!
+    rb_halt = rb_base.model_copy(
+        update={
+            "expect_halt": True,
+            "expected_halt_codes": ["insufficient_parallactic_angle"],
+        },
+        deep=True,
+    )
+    ws_clean_halt = tmp_path / "ws_clean_halt"
+    ws_clean_halt.mkdir()
+    (ws_clean_halt / "stage_output.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2",
+                "stage": "image",
+                "status": "halted",
+                "halt_code": "insufficient_parallactic_angle",
+                "halt_reason": "Parallactic angle coverage is insufficient for polarization solve.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    rew_good_halt, met_good_halt = run_verification(
+        workspace_dir=ws_clean_halt,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_halt,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert met_good_halt["measured"]["proc.abstention_correct"] is True
+    assert rew_good_halt["abstention_score"] == 1.0
+    assert rew_good_halt["reward"] == 1.0
+    assert rew_good_halt["passed"] == 1
+
+    # Hedged halt: `ws` has `.image` deliverables on disk alongside `status="halted"` -> 0.0!
+    rew_hedged_disk, met_hedged_disk = run_verification(
+        workspace_dir=ws,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_halt,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert met_hedged_disk["measured"]["proc.abstention_correct"] is False
+    assert rew_hedged_disk["reward"] == 0.0
+    assert rew_hedged_disk["passed"] == 0
+
+    # Hedged downstream claim on clean halted workspace -> 0.0!
+    (ws_clean_halt / "stage_output.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2",
+                "stage": "image",
+                "status": "halted",
+                "halt_code": "insufficient_parallactic_angle",
+                "halt_reason": "Halted before imaging.",
+                "reported_metrics": {"image.dynamic_range": {"value": 500.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    rew_hedged_claim, met_hedged_claim = run_verification(
+        workspace_dir=ws_clean_halt,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_halt,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert met_hedged_claim["measured"]["proc.abstention_correct"] is False
+    assert rew_hedged_claim["reward"] == 0.0
+    assert rew_hedged_claim["passed"] == 0
+
+    (ws_clean_halt / "stage_output.json").write_text(
+        json.dumps({"schema_version": "0.2", "stage": "image", "status": "completed"}),
+        encoding="utf-8",
+    )
+    rew_unhalted, met_unhalted = run_verification(
+        workspace_dir=ws_clean_halt,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_halt,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert met_unhalted["measured"]["proc.abstention_correct"] is False
+    assert rew_unhalted["reward"] == 0.0
+    assert rew_unhalted["passed"] == 0
+    assert (
+        classify_failure(
+            passed=rew_unhalted["passed"],
+            stage="image",
+            reward=float(rew_unhalted["reward"]),
+            reward_dict=rew_unhalted,
+            metrics_dict=met_unhalted,
+        )
+        == "invalid_abstention_or_halt"
+    )
+
+
+def test_wave2_extractor_and_repo_purity_invariants() -> None:
+    """Static verification of zero dataset branches, zero `j1331`/`j1822` keys in `grading/`,
+    and zero hardcoded host paths or em/en dashes across `src/`, `suites/`, `pixi.toml`, `images/`.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    extractors_dir = repo_root / "src" / "radio_bench" / "grading" / "extractors"
+    grading_dir = repo_root / "src" / "radio_bench" / "grading"
+
+    for py_p in sorted(extractors_dir.glob("*.py")):
+        txt = py_p.read_text(encoding="utf-8")
+        for forbidden in (
+            "ground_truth",
+            "is_suite_r",
+            "if suite",
+            "j1331",
+            "j1822",
+            "3c391",
+            "pass_reward_min",
+        ):
+            assert forbidden not in txt.lower(), (
+                f"{py_p.name} contains forbidden token {forbidden!r}"
+            )
+
+    for py_p in sorted(grading_dir.rglob("*.py")):
+        txt = py_p.read_text(encoding="utf-8")
+        for forbidden in ("is_suite_r", "j1331", "j1822"):
+            assert forbidden not in txt.lower(), (
+                f"{py_p} contains dataset-specific token {forbidden!r}"
+            )
+
+    scan_paths: list[Path] = [repo_root / "pixi.toml"]
+    for sub in ("src", "suites", "images"):
+        scan_paths.extend(
+            p for p in (repo_root / sub).rglob("*") if p.is_file() and "__pycache__" not in p.parts
+        )
+    forbidden_host_tokens = (
+        "/" + "/".join(("home", "pjaganna")),
+        "/" + "/".join(("var", "home")),
+        "/" + "/".join(("mnt", "fast")),
+    )
+    for p in scan_paths:
+        txt = p.read_text(encoding="utf-8")
+        for host_tok in forbidden_host_tokens:
+            assert host_tok not in txt, f"{p} contains hardcoded host path {host_tok!r}"
+        assert "\u2014" not in txt and "\u2013" not in txt, f"{p} contains em/en dash"
+
+
+def test_wave2_adversarial_review_regressions(synth_golden_image_dir: Path, tmp_path: Path) -> None:
+    """Post-build adversarial & code-review regression suite covering:
+    - `cal.coherent_vis_pearson_r` `0.25` parity (`0.30` passes, `0.20` fails).
+    - Compile-time `LeafRuleSpec` / `HardGateSpec` parameter-key and `op` validation.
+    - `ReportedMetric` `"+Infinity"` / `"1e500"` rejection & malformed `stage_output.json` forcing `passed == 0`.
+    - `reported_metrics: {}` missing-claim `passed == 0` & `claim_max_scale_err` non-zero/missing_artifact even without hard gates.
+    - HTML5 `<div style="display:none" />`, auto-closed `<p>`, `opacity:0`, `font-size:0px`, `aria-hidden="true"`,
+      Unicode micro (`&mu;Jy`, `&#181;Jy`), `deg/GHz` & `deg/MHz`, `mJy km/s`, incompatible units, trailing-garbage scalars,
+      and `list[float]` claims.
+    - Non-finite `1e200` pixel `float64` overflow (`1e200**2 -> inf`) safe `extractor_error` handling + `e2e` stage crash isolation.
+    - Zero `<frozen runpy>:128: RuntimeWarning` under `PYTHONWARNINGS=error python -m radio_bench.grading.runner --help`.
+    """
+    import subprocess
+    import sys
+
+    from pydantic import ValidationError
+
+    from radio_bench.grading.extractors import WorkspaceExtractionResult, extract_workspace
+    from radio_bench.grading.extractors.image import extract_image
+    from radio_bench.grading.inspect_metrics import resolve_task_configs
+    from radio_bench.grading.rubric import (
+        audit_claims,
+        evaluate_rubric,
+        extract_visible_html_claims,
+        normalize_claim_unit,
+    )
+    from radio_bench.grading.runner import run_verification
+    from radio_bench.grading.schema import (
+        HardGateSpec,
+        LeafRuleSpec,
+        ObservableRecord,
+        ReportedMetric,
+    )
+
+    # 1. Compile-time primitive parameter validation & ReportedMetric "+Infinity" / "1e500" rejection
+    with pytest.raises(ValidationError):
+        LeafRuleSpec(
+            observable="cal.phase_cal_corrected_amp_jy",
+            primitive="rel_err_ramp",
+            params={"pass_rel": 0.05},
+        )
+    with pytest.raises(ValidationError):
+        HardGateSpec(
+            id="bad_op",
+            observable="proc.missing_required_claim_count",
+            primitive="threshold_gate",
+            params={"op": "!=", "limit": 0},
+            failure_tag="unsupported_or_missing_claim",
+        )
+    for bad_inf in ("+Infinity", "-Infinity", "1e500", "-1e500"):
+        with pytest.raises(ValidationError):
+            ReportedMetric(value=bad_inf)
+
+    # 2. `cal.coherent_vis_pearson_r` 0.25 parity (`0.30` passes `target_fidelity_score`, `0.20` fails)
+    gt_cal = _load_gt(SYNTH_ROOT / "s1_calibrate" / "ground_truth.json")
+    _, rb_cal = resolve_task_configs("s1_calibrate", "calibrate", gt_cal)
+    base_cal_obs = {
+        "proc.table_locked": ObservableRecord(value=False, status="measured"),
+        "cal.dead_antenna_flagged_fraction": ObservableRecord(value=1.0, status="measured"),
+        "cal.target_row_retention": ObservableRecord(value=0.86, status="measured"),
+        "cal.corrected_distinct_from_data": ObservableRecord(value=True, status="measured"),
+        "cal.target_corrected_std_jy": ObservableRecord(value=0.08, status="measured", unit="Jy"),
+        "cal.rank1_logamp_rms_median": ObservableRecord(value=0.01, status="measured"),
+        "cal.bandpass_coh_phase_slope_deg_per_100mhz": ObservableRecord(
+            value=0.1, status="measured", unit="deg/100MHz"
+        ),
+        "cal.bandpass_med_bl_phase_slope_deg_per_100mhz": ObservableRecord(
+            value=0.2, status="measured", unit="deg/100MHz"
+        ),
+        "cal.bandpass_cal_calibrated": ObservableRecord(value=True, status="measured"),
+        "cal.bandpass_cal_unflagged_fraction": ObservableRecord(value=0.80, status="measured"),
+        "cal.phase_cal_corrected_amp_jy": ObservableRecord(
+            value=2.15, status="measured", unit="Jy"
+        ),
+        "cal.fluxscale_table_flux_jy": ObservableRecord(value=2.15, status="measured", unit="Jy"),
+        "cal.phase_cal_unflagged_fraction": ObservableRecord(value=0.80, status="measured"),
+        "cal.coherent_vis_amp_rel_err": ObservableRecord(value=0.01, status="measured"),
+        "cal.coherent_vis_phase_err_deg": ObservableRecord(
+            value=0.5, status="measured", unit="deg"
+        ),
+        "cal.clean_target_unflagged_fraction": ObservableRecord(value=0.99, status="measured"),
+        "cal.coherent_vis_pearson_r": ObservableRecord(value=0.30, status="measured"),
+    }
+    res_r030 = evaluate_rubric(
+        tmp_path, WorkspaceExtractionResult(observables=base_cal_obs), rb_cal, gt_cal
+    )
+    assert res_r030.subscores["target_fidelity_score"] == 1.0
+    assert res_r030.passed == 1
+
+    obs_r020 = dict(base_cal_obs)
+    obs_r020["cal.coherent_vis_pearson_r"] = ObservableRecord(value=0.20, status="measured")
+    res_r020 = evaluate_rubric(
+        tmp_path, WorkspaceExtractionResult(observables=obs_r020), rb_cal, gt_cal
+    )
+    assert res_r020.subscores["target_fidelity_score"] == 0.0
+    assert res_r020.passed == 0
+
+    # 3. `reported_metrics: {}` gaming WITHOUT explicit hard_gates + malformed `stage_output.json` forcing `passed == 0`
+    gt_img = _load_gt(SYNTH_ROOT / "s1_image" / "ground_truth.json")
+    ec_img, rb_img_base = resolve_task_configs("s1_image", "image", gt_img)
+    rb_req_no_hg = rb_img_base.model_copy(
+        update={"required_reported_metrics": ["image.dynamic_range"]}, deep=True
+    )
+
+    ws_claim_edge = tmp_path / "ws_claim_edge"
+    ws_claim_edge.mkdir()
+    for sfx in ("image", "image.pbcor", "pb", "residual", "model"):
+        os.symlink(
+            synth_golden_image_dir / f"synth_mosaic.{sfx}",
+            ws_claim_edge / f"synth_mosaic.{sfx}",
+        )
+    (ws_claim_edge / "stage_output.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2",
+                "stage": "image",
+                "status": "completed",
+                "reported_metrics": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    rew_empty_rep, met_empty_rep = run_verification(
+        workspace_dir=ws_claim_edge,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_req_no_hg,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert met_empty_rep["measurements"]["proc.claim_max_scale_err"]["status"] == "missing_artifact"
+    assert rew_empty_rep["passed"] == 0
+    assert "unsupported_or_missing_claim" in met_empty_rep["triggered_failure_tags"]
+
+    # Malformed `stage_output.json` (extra forbidden field + fabricated reported_metrics) forces `passed == 0`
+    # AND still audits `raw_manifest_dict["reported_metrics"]`!
+    (ws_claim_edge / "stage_output.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2",
+                "stage": "image",
+                "status": "completed",
+                "unexpected_extra_key": 123,
+                "reported_metrics": {"image.dynamic_range": {"value": 999999.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    rew_mal, met_mal = run_verification(
+        workspace_dir=ws_claim_edge,
+        tests_dir=SYNTH_ROOT / "s1_image",
+        log_dir=None,
+        extract_config=ec_img,
+        rubric=rb_img_base,
+        ground_truth=gt_img,
+        compute_raw_hash=False,
+    )
+    assert met_mal["measured"]["proc.manifest_schema_valid"] is False
+    assert met_mal["measured"]["proc.unsupported_claim_count"] == 1
+    assert rew_mal["passed"] == 0
+    assert "unsupported_or_missing_claim" in met_mal["triggered_failure_tags"]
+
+    # 4. HTML5 DOM anti-spoofing, Unicode micro units, deg/GHz, mJy km/s, incompatible units, & list[float] claims
+    html_file = tmp_path / "spoof_test.html"
+    html_file.write_text(
+        """<!doctype html><html><body>
+        <div style="display:none" /><span data-observable="image.dynamic_range">999999</span></div>
+        <span style="opacity: 0" data-observable="image.dynamic_range">888888</span>
+        <span style="font-size: 0px" data-observable="image.dynamic_range">777777</span>
+        <span aria-hidden="true" data-observable="image.dynamic_range">666666</span>
+        <p style="display:none">hidden para<p><span data-observable="cal.bandpass_coh_phase_slope_deg_per_100mhz">12.0 deg/GHz</span>
+        <span data-observable="image.offsource_residual_rms_jy">127.1 &mu;Jy/beam</span>
+        <span data-observable="cube.integrated_flux_jy_kms" data-unit="mJy km/s">2500.0</span>
+        </body></html>""",
+        encoding="utf-8",
+    )
+    spans = extract_visible_html_claims(html_file)
+    assert [s.observable for s in spans] == [
+        "cal.bandpass_coh_phase_slope_deg_per_100mhz",
+        "image.offsource_residual_rms_jy",
+        "cube.integrated_flux_jy_kms",
+    ]
+
+    assert normalize_claim_unit(100.0, "\u00b5Jy/beam", "Jy/beam") == (
+        True,
+        pytest.approx(1.0e-4),
+    )
+    assert normalize_claim_unit(5.0, "MHz", "Jy") == (False, 5.0)
+
+    ws_unit_check = tmp_path / "ws_unit_check"
+    ws_unit_check.mkdir()
+    shutil.copyfile(html_file, ws_unit_check / "report.html")
+    unit_obs = {
+        "cal.bandpass_coh_phase_slope_deg_per_100mhz": ObservableRecord(
+            value=1.2, status="measured", unit="deg/100MHz"
+        ),
+        "image.offsource_residual_rms_jy": ObservableRecord(
+            value=1.271e-4, status="measured", unit="Jy/beam"
+        ),
+        "cube.integrated_flux_jy_kms": ObservableRecord(
+            value=2.5, status="measured", unit="Jy km/s"
+        ),
+        "precal.flux_cal_model_spectrum_jy": ObservableRecord(
+            value=[7.60, 7.55, 7.50], status="measured", unit="Jy"
+        ),
+    }
+    c_obs_ok, _, _ = audit_claims(
+        ws_unit_check,
+        rb_img_base,
+        None,
+        unit_obs,
+        raw_manifest_dict={
+            "reported_metrics": {
+                "precal.flux_cal_model_spectrum_jy": {
+                    "value": [7600.0, 7550.0, 7500.0],
+                    "unit": "mJy",
+                }
+            }
+        },
+    )
+    assert c_obs_ok["proc.unsupported_claim_count"].value == 0
+
+    # Incompatible unit ("MHz" on Jy) and trailing-garbage string ("1.2 bogus 9.9") both fail
+    (ws_unit_check / "report.html").write_text(
+        '<html><body><span data-observable="image.offsource_residual_rms_jy" data-unit="MHz">0.0001271</span>'
+        '<span data-observable="cal.bandpass_coh_phase_slope_deg_per_100mhz">1.2 bogus 9.9</span></body></html>',
+        encoding="utf-8",
+    )
+    c_obs_bad, _, _ = audit_claims(ws_unit_check, rb_img_base, None, unit_obs)
+    assert c_obs_bad["proc.unsupported_claim_count"].value == 2
+
+    # 5. Non-finite `1e200` pixel overflow (`1e200**2 -> inf` in float64) safe `extractor_error` + `e2e` crash isolation
+    ws_inf_img = tmp_path / "ws_inf_img"
+    ws_inf_img.mkdir()
+    for sfx in ("image", "image.pbcor", "pb", "residual", "model"):
+        shutil.copytree(
+            synth_golden_image_dir / f"synth_mosaic.{sfx}",
+            ws_inf_img / f"synth_mosaic.{sfx}",
+        )
+    ia = casatools.image()
+    ia.open(str(ws_inf_img / "synth_mosaic.residual"))
+    try:
+        r_arr = ia.getchunk().astype(np.float64)
+        r_arr[:] = 1.0e200
+        # Write huge finite float32 max or float64 image to test overflow resilience
+        ia.putchunk(np.full_like(ia.getchunk(), 3.0e38))
+    finally:
+        ia.close()
+        ia.done()
+
+    # Directly verify `1e200**2 -> inf` overflow converts to `extractor_error` via `finite_observable`
+    from radio_bench.grading.schema import finite_observable
+
+    with np.errstate(over="ignore"):
+        ov_rec = finite_observable(float(np.float64(1e200) ** 2), unit="Jy/beam")
+    assert ov_rec.status == "extractor_error" and ov_rec.value is None
+    obs_huge, _ = extract_image(ws_inf_img, ec_img)
+    assert obs_huge["image.offsource_residual_rms_jy"].status == "measured"
+
+    # Verify `extract_workspace` stage crash isolation on `e2e`
+    import radio_bench.grading.extractors as ext_pkg
+
+    ec_e2e, _ = resolve_task_configs("s2_e2e_synth", "e2e", gt_img)
+    orig_cal_fn = ext_pkg.extract_calibrate
+    try:
+
+        def _boom(*_a: object, **_kw: object) -> tuple[dict[str, ObservableRecord], list[str]]:
+            raise RuntimeError("simulated calibrate crash")
+
+        ext_pkg.extract_calibrate = _boom  # type: ignore[assignment]
+        ext_iso = extract_workspace(ws_inf_img, ec_e2e, compute_raw_hash=False)
+        assert any("simulated calibrate crash" in e for e in ext_iso.errors)
+        assert ext_iso.observables["image.valid_product_count"].value == 5
+    finally:
+        ext_pkg.extract_calibrate = orig_cal_fn
+
+    # 6. `PYTHONWARNINGS=error python -m radio_bench.grading.runner --help` exits 0 cleanly!
+    env = os.environ.copy()
+    env["PYTHONWARNINGS"] = "error"
+    src_root = str(Path(__file__).resolve().parents[1] / "src")
+    env["PYTHONPATH"] = f"{src_root}:{env['PYTHONPATH']}" if env.get("PYTHONPATH") else src_root
+    proc_help = subprocess.run(
+        [sys.executable, "-m", "radio_bench.grading.runner", "--help"],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30.0,
+        check=False,
+    )
+    assert proc_help.returncode == 0, f"STDERR:\n{proc_help.stderr}"

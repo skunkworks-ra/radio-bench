@@ -1,0 +1,150 @@
+[suite]
+suite_id = "synth_vla_d"
+legacy_suite_alias = "synth"
+split = "dev"
+telescope = "VLA"
+band = "C-band"
+pol_basis = "circular"
+description = "Synthetic VLA D-configuration C-band 2-pointing mosaic continuum suite"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "vla", "interferometry"]
+
+[roles]
+flux_cal = ["J1331+3030"]
+bandpass_cal = ["J1331+3030"]
+phase_cal = ["J1822-0938"]
+pol_angle_cal = []
+pol_leakage_cal = []
+targets = ["SYNTH_MOSAIC_P1", "SYNTH_MOSAIC_P2"]
+dead_antennas = ["ea07"]
+missing_stations = []
+target_retention_excludes_dead_antenna = true
+
+[geometry]
+dish_diameter_m = 25.0
+pb_mask_min = 0.20
+offsource_inner_exclusion_beams = 5.0
+phasecenter = "J2000 18h24m00.000s -09d35m00.000s"
+
+[[geometry.source_apertures]]
+label = "extended_gaussian"
+kind = "extended"
+ra = "18h24m00.000s"
+dec = "-09d35m00.000s"
+radius_arcsec = 50.0
+offsource_exclusion_arcsec = 75.0
+fallback_exclusion_arcsec = 55.0
+
+[[geometry.source_apertures]]
+label = "point_source"
+kind = "point"
+ra = "18h24m08.200s"
+dec = "-09d34m20.000s"
+radius_arcsec = 20.0
+offsource_exclusion_arcsec = 35.0
+fallback_exclusion_arcsec = 25.0
+
+[resources]
+cpus = 4
+memory_mb = 8192
+n_concurrent_trials = 4
+
+[checkpoints]
+builder = "data_builders.build_synth_suite:main"
+
+[checkpoints.entries.s1_inspect_raw]
+input_ms = "synth/s1_inspect/input.ms"
+
+[checkpoints.entries.s1_precal_raw]
+input_ms = "synth/s1_precal/input.ms"
+
+[checkpoints.entries.s1_post_precal]
+input_ms = "synth/s1_calibrate/input.ms"
+input_calibrators_ms = "synth/s1_calibrate/calibrators.ms"
+
+[checkpoints.entries.s1_post_calibrate]
+input_ms = "synth/s1_image/input.ms"
+
+[checkpoints.entries.s2_e2e_raw]
+input_ms = "synth/s2_e2e_synth/input.ms"
+
+[tasks.s1_inspect]
+stages = ["inspect"]
+stage = "inspect"
+checkpoint_in = "s1_inspect_raw"
+data_dir = "synth/s1_inspect"
+input_ms = "synth/s1_inspect/input.ms"
+ground_truth = "synth/s1_inspect/ground_truth.json"
+extra_test_files = []
+difficulty = "easy"
+agent_timeout_sec = 900.0
+verifier_timeout_sec = 300.0
+instruction = "task_specs/s1_inspect/instruction.md"
+oracle_script = "task_specs/s1_inspect/solve.py"
+rubric = "rubrics/s1_inspect.json"
+
+[tasks.s1_precal]
+stages = ["precal"]
+stage = "precal"
+checkpoint_in = "s1_precal_raw"
+data_dir = "synth/s1_precal"
+input_ms = "synth/s1_precal/input.ms"
+ground_truth = "synth/s1_precal/ground_truth.json"
+extra_test_files = ["corruption_masks.npz"]
+ref_flags_file = "corruption_masks.npz"
+allow_virtual_model = false
+difficulty = "medium"
+agent_timeout_sec = 900.0
+verifier_timeout_sec = 300.0
+instruction = "task_specs/s1_precal/instruction.md"
+oracle_script = "task_specs/s1_precal/solve.py"
+rubric = "rubrics/s1_precal.json"
+
+[tasks.s1_calibrate]
+stages = ["calibrate"]
+stage = "calibrate"
+checkpoint_in = "s1_post_precal"
+data_dir = "synth/s1_calibrate"
+input_ms = "synth/s1_calibrate/input.ms"
+input_calibrators_ms = "synth/s1_calibrate/calibrators.ms"
+ground_truth = "synth/s1_calibrate/ground_truth.json"
+extra_test_files = ["true_target_vis.npz"]
+true_target_vis_file = "true_target_vis.npz"
+difficulty = "medium"
+agent_timeout_sec = 900.0
+verifier_timeout_sec = 300.0
+instruction = "task_specs/s1_calibrate/instruction.md"
+oracle_script = "task_specs/s1_calibrate/solve.py"
+rubric = "rubrics/s1_calibrate.json"
+
+[tasks.s1_image]
+stages = ["image"]
+stage = "image"
+checkpoint_in = "s1_post_calibrate"
+data_dir = "synth/s1_image"
+input_ms = "synth/s1_image/input.ms"
+ground_truth = "synth/s1_image/ground_truth.json"
+extra_test_files = []
+difficulty = "medium"
+agent_timeout_sec = 900.0
+verifier_timeout_sec = 300.0
+instruction = "task_specs/s1_image/instruction.md"
+oracle_script = "task_specs/s1_image/solve.py"
+rubric = "rubrics/s1_image.json"
+
+[tasks.s2_e2e_synth]
+stages = ["inspect", "precal", "calibrate", "image"]
+stage = "e2e"
+checkpoint_in = "s2_e2e_raw"
+data_dir = "synth/s2_e2e_synth"
+input_ms = "synth/s2_e2e_synth/input.ms"
+ground_truth = "synth/s2_e2e_synth/ground_truth.json"
+extra_test_files = ["corruption_masks.npz", "true_target_vis.npz"]
+ref_flags_file = "corruption_masks.npz"
+true_target_vis_file = "true_target_vis.npz"
+difficulty = "hard"
+agent_timeout_sec = 1800.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/s2_e2e_synth/instruction.md"
+oracle_script = "task_specs/s2_e2e_synth/solve.py"
+rubric = "rubrics/s2_e2e_synth.json"

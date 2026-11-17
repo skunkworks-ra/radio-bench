@@ -899,14 +899,15 @@ def test_failure_taxonomy_all_categories() -> None:
     assert fallback_cat in FAILURE_CATEGORIES
     assert fallback_cat == "beam_sampling_or_clean_bowl"
 
-    # Verify summarize_failure_taxonomy counts all 7 categories + none accurately.
+    # Verify summarize_failure_taxonomy counts all 14 v0.2 categories + none accurately.
+    assert len(FAILURE_CATEGORIES) == 14
     synth_records = [
         {"arm": "00_none", "model_name": "nrp/kimi", "failure_mode": cat}
         for cat in (FAILURE_NONE, *FAILURE_CATEGORIES)
     ]
     tax = summarize_failure_taxonomy(synth_records)
-    assert tax["n_trials"] == 8
-    assert tax["n_failed"] == 7
+    assert tax["n_trials"] == 15
+    assert tax["n_failed"] == 14
     for cat in (FAILURE_NONE, *FAILURE_CATEGORIES):
         assert tax["overall_counts"][cat] == 1
 
@@ -1866,26 +1867,37 @@ def test_wave5_taxonomy_diagnostics_and_scientific_overlays(tmp_path: Path) -> N
         },
     }
     assert tb.create(str(cal_path), col_desc)
-    tb.addrows(4)
-    tb.putcol("ANTENNA1", np.array([0, 1, 2, 3], dtype=np.int32))
-    tb.putcol("CPARAM", np.ones((2, 8, 4), dtype=np.complex128) * (1.02 + 0.15j))
-    tb.putcol("FLAG", np.zeros((2, 8, 4), dtype=bool))
-    tb.close()
+    try:
+        tb.addrows(4)
+        tb.putcol("ANTENNA1", np.array([0, 1, 2, 3], dtype=np.int32))
+        tb.putcol("CPARAM", np.ones((2, 8, 4), dtype=np.complex128) * (1.02 + 0.15j))
+        tb.putcol("FLAG", np.zeros((2, 8, 4), dtype=bool))
+    finally:
+        tb.close()
+        tb.done()
 
     ia = casatools.image()
     rng = np.random.default_rng(42)
-    ia.fromarray(
-        outfile=str(ws_dir / "clean_img.residual"),
-        pixels=rng.normal(0.0, 3.0e-5, size=(32, 32, 1, 1)),
-        overwrite=True,
-    )
-    ia.close()
-    ia.fromarray(
-        outfile=str(ws_dir / "clean_img.pb"),
-        pixels=np.ones((32, 32, 1, 1), dtype=np.float64) * 0.9,
-        overwrite=True,
-    )
-    ia.close()
+    try:
+        ia.fromarray(
+            outfile=str(ws_dir / "clean_img.residual"),
+            pixels=rng.normal(0.0, 3.0e-5, size=(32, 32, 1, 1)),
+            overwrite=True,
+        )
+    finally:
+        ia.close()
+        ia.done()
+
+    ia = casatools.image()
+    try:
+        ia.fromarray(
+            outfile=str(ws_dir / "clean_img.pb"),
+            pixels=np.ones((32, 32, 1, 1), dtype=np.float64) * 0.9,
+            overwrite=True,
+        )
+    finally:
+        ia.close()
+        ia.done()
 
     diag_records: list[dict[str, Any]] = [
         {
@@ -2091,3 +2103,537 @@ def test_wave6_pre_oracle_diagnostics_and_cli_no_runpy_warning() -> None:
     assert specs_r["verifier_tclean_dynamic_range"] == ">= 180.0"
     assert "coherent_amp_rel_err" not in specs_r
     assert "coherent_phase_deg" not in specs_r
+
+
+def test_v02_taxonomy_priorities_and_self_describing_diagnostics(tmp_path: Path) -> None:
+    """Verify v0.2 priorities 3/4/5, symptom_only ordering, e2e DAG order, and self-describing rubric_meta."""
+    from radio_bench.analysis.diagnostics import build_truth_vs_measured_table
+
+    # Priority 3: invalid_abstention_or_halt beats missing_deliverable -> script_or_casa_crash
+    assert (
+        classify_failure(
+            passed=0,
+            stage="image",
+            arm="11_full",
+            reward=0.0,
+            reward_dict={"reward": 0.0, "passed": 0, "products_score": 0.0},
+            metrics_dict={
+                "schema_version": "0.2",
+                "stage": "image",
+                "measurements": {
+                    "proc.manifest_status": {"value": "halted", "status": "measured"},
+                    "image.valid_product_count": {"value": 0, "status": "measured"},
+                },
+                "rubric_meta": {"expect_halt": False, "subscores": []},
+                "triggered_failure_tags": ["invalid_abstention_or_halt"],
+            },
+        )
+        == "invalid_abstention_or_halt"
+    )
+
+    # Priority 4: raw_data_or_calflag_mutation beats missing_deliverable and bash_nonzero_exits >= 3
+    assert (
+        classify_failure(
+            passed=0,
+            stage="calibrate",
+            arm="00_none",
+            reward=0.0,
+            bash_nonzero_exits=5,
+            reward_dict={"reward": 0.0, "passed": 0},
+            metrics_dict={
+                "schema_version": "0.2",
+                "stage": "calibrate",
+                "measurements": {
+                    "proc.raw_data_unmodified": {"value": False, "status": "measured"},
+                    "cal.corrected_distinct_from_data": {"value": False, "status": "measured"},
+                },
+                "rubric_meta": {"expect_halt": False, "subscores": []},
+            },
+        )
+        == "raw_data_or_calflag_mutation"
+    )
+
+    # Priority 5: unsupported_or_missing_claim fires on Claim Auditor failures, NEVER inspect triage
+    assert (
+        classify_failure(
+            passed=0,
+            stage="report",
+            arm="11_full",
+            reward=0.40,
+            reward_dict={"reward": 0.40, "passed": 0},
+            metrics_dict={
+                "schema_version": "0.2",
+                "stage": "report",
+                "measurements": {
+                    "report.html_valid": {"value": True, "status": "measured"},
+                    "proc.unsupported_claim_count": {"value": 2, "status": "measured"},
+                },
+                "rubric_meta": {
+                    "required_reported_metrics": ["image.dynamic_range"],
+                    "subscores": [],
+                },
+            },
+        )
+        == "unsupported_or_missing_claim"
+    )
+
+    # Inspect triage error (wrong elevation / dead antenna, zero reported_metrics) must NOT be unsupported_or_missing_claim!
+    insp_cat = classify_failure(
+        passed=0,
+        stage="inspect",
+        arm="00_none",
+        reward=0.65,
+        reward_dict={
+            "reward": 0.65,
+            "passed": 0,
+            "valid_json_score": 1.0,
+            "flux_bandpass_score": 1.0,
+            "phase_vs_target_score": 1.0,
+            "dead_antenna_score": 0.0,
+            "elevation_score": 0.0,
+        },
+        metrics_dict={
+            "schema_version": "0.2",
+            "stage": "inspect",
+            "measurements": {
+                "inspect.summary_valid": {"value": True, "status": "measured"},
+                "proc.unsupported_claim_count": {"value": None, "status": "not_applicable"},
+                "proc.missing_required_claim_count": {"value": 0, "status": "not_applicable"},
+            },
+            "rubric_meta": {
+                "required_reported_metrics": [],
+                "subscores": [
+                    {
+                        "id": "valid_json_score",
+                        "stage": "inspect",
+                        "weight": 0.20,
+                        "score": 1.0,
+                        "failure_tag": "script_or_casa_crash",
+                        "symptom_only": False,
+                    },
+                    {
+                        "id": "flux_bandpass_score",
+                        "stage": "inspect",
+                        "weight": 0.20,
+                        "score": 1.0,
+                        "failure_tag": "flux_model_or_fluxscale_error",
+                        "symptom_only": False,
+                    },
+                    {
+                        "id": "phase_vs_target_score",
+                        "stage": "inspect",
+                        "weight": 0.25,
+                        "score": 1.0,
+                        "failure_tag": "flagging_recall_or_overflag",
+                        "symptom_only": False,
+                    },
+                    {
+                        "id": "dead_antenna_score",
+                        "stage": "inspect",
+                        "weight": 0.15,
+                        "score": 0.0,
+                        "failure_tag": "flagging_recall_or_overflag",
+                        "symptom_only": False,
+                    },
+                    {
+                        "id": "elevation_score",
+                        "stage": "inspect",
+                        "weight": 0.20,
+                        "score": 0.0,
+                        "failure_tag": "skipped_delay_or_bandpass",
+                        "symptom_only": False,
+                    },
+                ],
+            },
+        },
+    )
+    assert insp_cat == "skipped_delay_or_bandpass"
+
+    # Root-cause (`symptom_only=False`) beats `symptom_only=True` (`target_fidelity_score == 0.0`),
+    # AND on `e2e`, Stage 1 (`calibrate`) physics failure beats missing Stage 2 (`image`) deliverable!
+    e2e_cat = classify_failure(
+        passed=0,
+        stage="e2e",
+        arm="10_tools",
+        reward=0.27,
+        reward_dict={
+            "reward": 0.27,
+            "passed": 0,
+            "calibration_score": 0.45,
+            "delivered_image_score": 0.0,
+            "cal_retention_and_dead_ant_score": 0.0,
+            "cal_bandpass_flatness_score": 1.0,
+            "cal_fluxscale_score": 0.80,
+            "cal_target_fidelity_score": 0.0,
+            "img_products_score": 0.0,
+        },
+        metrics_dict={
+            "schema_version": "0.2",
+            "stage": "e2e",
+            "measurements": {
+                "cal.corrected_distinct_from_data": {"value": True, "status": "measured"},
+                "image.valid_product_count": {"value": 0, "status": "measured"},
+            },
+            "rubric_meta": {
+                "subscores": [
+                    {
+                        "id": "cal_retention_and_dead_ant_score",
+                        "stage": "calibrate",
+                        "weight": 0.12,
+                        "score": 0.0,
+                        "failure_tag": "flagging_recall_or_overflag",
+                        "symptom_only": False,
+                    },
+                    {
+                        "id": "cal_bandpass_flatness_score",
+                        "stage": "calibrate",
+                        "weight": 0.15,
+                        "score": 1.0,
+                        "failure_tag": "skipped_delay_or_bandpass",
+                        "symptom_only": False,
+                    },
+                    {
+                        "id": "cal_fluxscale_score",
+                        "stage": "calibrate",
+                        "weight": 0.15,
+                        "score": 0.80,
+                        "failure_tag": "flux_model_or_fluxscale_error",
+                        "symptom_only": False,
+                    },
+                    {
+                        "id": "cal_target_fidelity_score",
+                        "stage": "calibrate",
+                        "weight": 0.18,
+                        "score": 0.0,
+                        "failure_tag": "skipped_delay_or_bandpass",
+                        "symptom_only": True,
+                    },
+                    {
+                        "id": "img_products_score",
+                        "stage": "image",
+                        "weight": 0.06,
+                        "score": 0.0,
+                        "failure_tag": "beam_sampling_or_clean_bowl",
+                        "symptom_only": False,
+                    },
+                ],
+            },
+        },
+    )
+    assert e2e_cat == "flagging_recall_or_overflag"
+
+    # Self-describing `rubric_meta.display_rows` on an unseen suite (`alma_twhya_band7`)
+    job_v02 = tmp_path / "twhya_job"
+    job_v02.mkdir()
+    t_dir = job_v02 / "twhya_image__11_full__1a2b3c4"
+    (t_dir / "verifier").mkdir(parents=True)
+    task_stub = tmp_path / "twhya_task_stub"
+    task_stub.mkdir()
+    (task_stub / "task.toml").write_text(
+        '[metadata]\nbase_task = "twhya_image"\nsuite = "alma_twhya_band7"\nstage = "image"\narm = "11_full"\n',
+        encoding="utf-8",
+    )
+    (t_dir / "config.json").write_text(
+        json.dumps({"task": {"path": str(task_stub)}, "agent": {"name": "oracle"}}),
+        encoding="utf-8",
+    )
+    (t_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "twhya_image__11_full",
+                "trial_name": t_dir.name,
+                "agent_info": {"name": "oracle"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (t_dir / "verifier" / "reward.json").write_text(
+        json.dumps({"reward": 1.0, "passed": 1, "products_score": 1.0}),
+        encoding="utf-8",
+    )
+    (t_dir / "verifier" / "metrics.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2",
+                "task_id": "twhya_image",
+                "suite_id": "alma_twhya_band7",
+                "split": "dev",
+                "stage": "image",
+                "stages": ["image"],
+                "reward": 1.0,
+                "passed": True,
+                "measurements": {
+                    "image.source_integrated_flux_jy": {
+                        "value": 1.482,
+                        "status": "measured",
+                        "unit": "Jy",
+                        "provenance": "twhya.image.pbcor",
+                    }
+                },
+                "measured": {"image.source_integrated_flux_jy": 1.482},
+                "truth": {"disk_flux_jy": 1.50},
+                "subscores": {"products_score": 1.0},
+                "rubric_meta": {
+                    "pass_reward_min": 0.85,
+                    "display_rows": [
+                        {
+                            "id": "image.source_integrated_flux_jy",
+                            "observable": "image.source_integrated_flux_jy",
+                            "stage": "image",
+                            "label": "TW Hya Disk Flux",
+                            "unit": "Jy",
+                            "truth_display": "1.5 +/-10.0%",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    v02_recs = collect_trials([job_v02])
+    assert len(v02_recs) == 1
+    assert v02_recs[0]["suite"] == "alma_twhya_band7"
+    tvm = build_truth_vs_measured_table(v02_recs)
+    flux_rows = [r for r in tvm if r["metric"] == "image.source_integrated_flux_jy"]
+    assert len(flux_rows) == 1
+    assert flux_rows[0]["truth"] == "1.5 +/-10.0% Jy"
+    assert flux_rows[0]["by_arm"]["11_full"] == pytest.approx(1.482)
+
+
+def test_v02_post_review_collect_stages_taxonomy_and_cli_regressions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify v0.2+ stage collection, suite_id fallback, custom precal/bowl taxonomy, spec.toml priority, and CLI run-job/socket guards."""
+    from radio_bench import cli as rb_cli
+    from radio_bench.analysis.collect import parse_task_variant_with_pack
+    from radio_bench.build_tasks import load_task_spec
+    from radio_bench.config import load_bench_config
+
+    for raw_st, expected_st in (
+        ("postcal", "postcal"),
+        ("polcal", "polcal"),
+        ("selfcal", "selfcal"),
+        ("image_cube", "image_cube"),
+        ("simulate", "simulate"),
+        ("report", "report"),
+        ("image_cont", "image"),
+    ):
+        _bt, _pk, arm, suite, st, is_e2e = parse_task_variant_with_pack(
+            f"custom_{raw_st}_task__11_full", metrics_stage=raw_st
+        )
+        assert arm == "11_full"
+        assert suite == "unknown"
+        assert st == expected_st
+        assert is_e2e is False
+
+    job_custom = tmp_path / "job_custom_v02"
+    t_custom = job_custom / "custom_polcal__11_full__abc1234"
+    (t_custom / "verifier").mkdir(parents=True)
+    (t_custom / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "custom_polcal__11_full",
+                "trial_name": t_custom.name,
+                "agent_info": {"name": "oracle"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (t_custom / "verifier" / "reward.json").write_text(
+        json.dumps({"reward": 1.0, "passed": 1}),
+        encoding="utf-8",
+    )
+    (t_custom / "verifier" / "metrics.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2",
+                "task_id": "custom_polcal",
+                "suite_id": "meerkat_pol_lband",
+                "stage": "polcal",
+                "stages": ["polcal"],
+                "reward": 1.0,
+                "passed": True,
+                "measurements": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    recs_custom = collect_trials([job_custom])
+    assert len(recs_custom) == 1
+    assert recs_custom[0]["stage"] == "polcal"
+    assert recs_custom[0]["suite"] == "meerkat_pol_lband"
+
+    # Custom precal rubric that does NOT grade calibrators.ms: missing calibrators.ms must NOT force missing_deliverable
+    precal_no_calms_metrics = {
+        "schema_version": "0.2",
+        "stage": "precal",
+        "reward": 0.30,
+        "passed": False,
+        "measurements": {
+            "precal.calibrators_ms_nrows": {
+                "value": None,
+                "status": "missing_artifact",
+                "unit": "count",
+                "provenance": "none",
+            },
+            "precal.merged_calibrator_rows": {
+                "value": 1200,
+                "status": "measured",
+                "unit": "count",
+                "provenance": "obs.ms",
+            },
+        },
+        "subscores": {"rfi_recall_score": 0.20},
+        "rubric_meta": {
+            "pass_reward_min": 0.85,
+            "display_rows": [
+                {
+                    "id": "precal.rfi_flag_f1",
+                    "observable": "precal.rfi_flag_f1",
+                    "stage": "precal",
+                }
+            ],
+            "subscores": [
+                {
+                    "id": "rfi_recall_score",
+                    "stage": "precal",
+                    "weight": 1.0,
+                    "failure_tag": "flagging_recall_or_overflag",
+                }
+            ],
+        },
+    }
+    cat_precal = classify_failure(
+        stage="precal",
+        passed=False,
+        reward=0.30,
+        reward_dict={"reward": 0.30, "passed": 0, "rfi_recall_score": 0.20},
+        metrics_dict=precal_no_calms_metrics,
+    )
+    assert cat_precal == "flagging_recall_or_overflag"
+
+    # Bowl classification via rubric_meta/deconv_and_bowl_score even when min_over_rms_pb > -8.0 (e.g. -6.5 on custom threshold)
+    bowl_metrics = {
+        "schema_version": "0.2",
+        "stage": "image",
+        "reward": 0.45,
+        "passed": False,
+        "measurements": {
+            "image.valid_product_count": {
+                "value": 1,
+                "status": "measured",
+                "unit": "count",
+                "provenance": "target.image",
+            },
+            "image.min_over_rms_pb": {
+                "value": -6.5,
+                "status": "measured",
+                "unit": "sigma",
+                "provenance": "target.image",
+            },
+        },
+        "subscores": {"deconv_and_bowl_score": 0.10, "flux_accuracy_score": 1.0},
+        "rubric_meta": {
+            "pass_reward_min": 0.85,
+            "subscores": [
+                {
+                    "id": "deconv_and_bowl_score",
+                    "stage": "image",
+                    "weight": 0.5,
+                    "failure_tag": "beam_sampling_or_clean_bowl",
+                },
+                {
+                    "id": "flux_accuracy_score",
+                    "stage": "image",
+                    "weight": 0.5,
+                    "failure_tag": "flux_model_or_fluxscale_error",
+                },
+            ],
+        },
+    }
+    cat_bowl = classify_failure(
+        stage="image",
+        passed=False,
+        reward=0.45,
+        reward_dict={"reward": 0.45, "passed": 0, "deconv_and_bowl_score": 0.10},
+        metrics_dict=bowl_metrics,
+    )
+    assert cat_bowl == "beam_sampling_or_clean_bowl"
+
+    # build_tasks.load_task_spec prefers explicit spec.toml even when suites/ directory is absent
+    synth_repo = tmp_path / "synth_repo_no_suites"
+    spec_dir = synth_repo / "task_specs" / "legacy_custom"
+    data_dir = synth_repo / "data"
+    (data_dir / "obs.ms").mkdir(parents=True)
+    (data_dir / "gt.json").write_text("{}", encoding="utf-8")
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "spec.toml").write_text(
+        'task_id = "legacy_custom"\n'
+        'suite = "custom"\n'
+        'stage = "inspect"\n'
+        "is_e2e = false\n"
+        'difficulty = "easy"\n'
+        'category = "radio"\n'
+        'tags = ["inspect"]\n'
+        'data_dir = "."\n'
+        'input_ms = "obs.ms"\n'
+        'ground_truth = "gt.json"\n'
+        "extra_test_files = []\n"
+        "agent_timeout_sec = 60\n"
+        "verifier_timeout_sec = 60\n"
+        "cpus = 2\n"
+        "memory_mb = 2048\n",
+        encoding="utf-8",
+    )
+    (spec_dir / "instruction.md").write_text("# Inspect\n", encoding="utf-8")
+    (spec_dir / "solve.py").write_text("print('ok')\n", encoding="utf-8")
+    deep_work = tmp_path / ("long_dir_segment_" * 7)
+    cfg_long = load_bench_config(repo_root=synth_repo, env={"RADIO_BENCH_WORK_DIR": str(deep_work)})
+    loaded_spec = load_task_spec(spec_dir, data_root=data_dir, cfg=cfg_long)
+    assert loaded_spec.task_id == "legacy_custom"
+    assert loaded_spec.stage == "inspect"
+
+    # CLI run-job parser/dispatch registration + long-path socket guard when svc fails to create socket
+    assert rb_cli.main(["--work-dir", str(tmp_path / "cli_w"), "run-job"]) == 2
+    assert (
+        rb_cli.main(
+            [
+                "--work-dir",
+                str(tmp_path / "cli_w"),
+                "run-job",
+                "--job-config",
+                str(tmp_path / "missing.yaml"),
+            ]
+        )
+        == 1
+    )
+
+    class _DummyProc:
+        pid = 999999
+
+        def poll(self) -> int:
+            return 1
+
+        def terminate(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 1
+
+    class _DummyCompleted:
+        returncode = 0
+        stdout = "999\n"
+
+    monkeypatch.setattr(rb_cli.subprocess, "run", lambda *a, **kw: _DummyCompleted())
+    monkeypatch.setattr(rb_cli.subprocess, "Popen", lambda *a, **kw: _DummyProc())
+    with (
+        pytest.raises(RuntimeError, match="podman system service failed to create socket"),
+        rb_cli._podman_exec_safe_socket_env(
+            cfg_long, {"DOCKER_HOST": "unix:///run/user/1000/podman/podman.sock"}
+        ),
+    ):
+        pass

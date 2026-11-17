@@ -426,18 +426,46 @@ def parse_task_variant_with_pack(
         else:
             suite = "unknown"
 
-        if metrics_stage in {"inspect", "precal", "calibrate", "image", "e2e"}:
-            stage = metrics_stage
+        norm_ms = metrics_stage.strip().lower() if isinstance(metrics_stage, str) else None
+        if norm_ms == "image_cont":
+            norm_ms = "image"
+        canonical_stages = {
+            "inspect",
+            "precal",
+            "calibrate",
+            "postcal",
+            "polcal",
+            "selfcal",
+            "image",
+            "image_cube",
+            "simulate",
+            "report",
+            "e2e",
+        }
+        if norm_ms in canonical_stages:
+            stage = norm_ms
         elif "e2e" in low:
             stage = "e2e"
         elif "inspect" in low:
             stage = "inspect"
+        elif "postcal" in low:
+            stage = "postcal"
+        elif "polcal" in low:
+            stage = "polcal"
+        elif "selfcal" in low:
+            stage = "selfcal"
         elif "precal" in low:
             stage = "precal"
         elif "calibrate" in low or low.endswith("_cal"):
             stage = "calibrate"
+        elif "cube" in low:
+            stage = "image_cube"
         elif "image" in low:
             stage = "image"
+        elif "simulat" in low:
+            stage = "simulate"
+        elif "report" in low:
+            stage = "report"
         else:
             stage = "unknown"
 
@@ -1045,8 +1073,21 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
                             if base_task in BASE_TASK_META:
                                 suite, stage = BASE_TASK_META[base_task]
                                 is_e2e = stage == "e2e"
+                            else:
+                                if isinstance(t_meta.get("suite"), str) and t_meta["suite"].strip():
+                                    suite = t_meta["suite"].strip()
+                                if isinstance(t_meta.get("stage"), str) and t_meta["stage"].strip():
+                                    stage = t_meta["stage"].strip()
+                                    is_e2e = stage == "e2e"
                 except (OSError, ValueError):
                     pass
+    if (
+        suite == "unknown"
+        and isinstance(metrics_dict, dict)
+        and isinstance(metrics_dict.get("suite_id"), str)
+        and metrics_dict["suite_id"].strip()
+    ):
+        suite = metrics_dict["suite_id"].strip()
     if pack_id is None:
         pack_id = "ra_00a11ea"
 
@@ -1115,8 +1156,21 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
 
     truth_block: dict[str, Any] = {}
     measured_block: dict[str, Any] = {}
+    measurements_block: dict[str, Any] = {}
+    rubric_meta_block: dict[str, Any] = {}
+    triggered_tags_list: list[str] = []
     if isinstance(metrics_dict, dict):
-        if stage == "e2e":
+        if isinstance(metrics_dict.get("measurements"), dict):
+            measurements_block = sanitize_json_tree(metrics_dict["measurements"])
+        if isinstance(metrics_dict.get("rubric_meta"), dict):
+            rubric_meta_block = sanitize_json_tree(metrics_dict["rubric_meta"])
+        if isinstance(metrics_dict.get("triggered_failure_tags"), list):
+            triggered_tags_list = [str(x) for x in metrics_dict["triggered_failure_tags"] if x]
+
+        if stage == "e2e" and (
+            isinstance(metrics_dict.get("calibration"), dict)
+            or isinstance(metrics_dict.get("image"), dict)
+        ):
             cal_b = metrics_dict.get("calibration")
             img_b = metrics_dict.get("image")
             truth_block = sanitize_json_tree(
@@ -1137,45 +1191,51 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
             if isinstance(metrics_dict.get("measured"), dict):
                 measured_block = sanitize_json_tree(metrics_dict["measured"])
 
-    return sanitize_json_tree(
-        {
-            "job_dir": str(job_dir),
-            "trial_dir": str(trial_dir),
-            "trial_name": trial_name,
-            "started_at": started_at_str,
-            "task_name": task_name,
-            "base_task": base_task,
-            "pack_id": pack_id,
-            "suite": suite,
-            "stage": stage,
-            "is_e2e": is_e2e,
-            "arm": arm,
-            "agent_name": agent_name,
-            "model_name": model_name,
-            "attempt_idx": 0,
-            "reward": raw_reward,
-            "passed": int(passed),
-            "failure_mode": failure_mode,
-            "exception_type": exception_type,
-            "exception_message": exception_message,
-            "total_wall_sec": total_wall_sec,
-            "agent_wall_sec": agent_wall_sec,
-            "verifier_wall_sec": verifier_wall_sec,
-            "n_turns": telemetry["n_turns"],
-            "mcp_calls_total": telemetry["mcp_calls_total"],
-            "mcp_calls_inspect": telemetry["mcp_calls_inspect"],
-            "mcp_calls_modify": telemetry["mcp_calls_modify"],
-            "mcp_calls_create": telemetry["mcp_calls_create"],
-            "bash_calls": telemetry["bash_calls"],
-            "bash_nonzero_exits": telemetry["bash_nonzero_exits"],
-            "tool_errors": telemetry["tool_errors"],
-            "protocol_errors": telemetry["protocol_errors"],
-            **pricing.to_dict(),
-            "subscores": subscores,
-            "truth": truth_block,
-            "measured": measured_block,
-        }
-    )
+    trial_out: dict[str, Any] = {
+        "job_dir": str(job_dir),
+        "trial_dir": str(trial_dir),
+        "trial_name": trial_name,
+        "started_at": started_at_str,
+        "task_name": task_name,
+        "base_task": base_task,
+        "pack_id": pack_id,
+        "suite": suite,
+        "stage": stage,
+        "is_e2e": is_e2e,
+        "arm": arm,
+        "agent_name": agent_name,
+        "model_name": model_name,
+        "attempt_idx": 0,
+        "reward": raw_reward,
+        "passed": int(passed),
+        "failure_mode": failure_mode,
+        "exception_type": exception_type,
+        "exception_message": exception_message,
+        "total_wall_sec": total_wall_sec,
+        "agent_wall_sec": agent_wall_sec,
+        "verifier_wall_sec": verifier_wall_sec,
+        "n_turns": telemetry["n_turns"],
+        "mcp_calls_total": telemetry["mcp_calls_total"],
+        "mcp_calls_inspect": telemetry["mcp_calls_inspect"],
+        "mcp_calls_modify": telemetry["mcp_calls_modify"],
+        "mcp_calls_create": telemetry["mcp_calls_create"],
+        "bash_calls": telemetry["bash_calls"],
+        "bash_nonzero_exits": telemetry["bash_nonzero_exits"],
+        "tool_errors": telemetry["tool_errors"],
+        "protocol_errors": telemetry["protocol_errors"],
+        **pricing.to_dict(),
+        "subscores": subscores,
+        "truth": truth_block,
+        "measured": measured_block,
+    }
+    if measurements_block:
+        trial_out["measurements"] = measurements_block
+    if rubric_meta_block:
+        trial_out["rubric_meta"] = rubric_meta_block
+    if triggered_tags_list:
+        trial_out["triggered_failure_tags"] = triggered_tags_list
+
+    return sanitize_json_tree(trial_out)
 
 
 def _atomic_write_text(target_path: Path, text: str) -> None:

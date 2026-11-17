@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
-from collections.abc import Sequence
+import time
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 from radio_bench.config import (
     BenchConfig,
@@ -37,6 +41,96 @@ def _prepare_env_with_compose(
     cur_pypath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{src_dir}:{cur_pypath}" if cur_pypath else src_dir
     return env
+
+
+@contextlib.contextmanager
+def _podman_exec_safe_socket_env(
+    cfg: BenchConfig, base_env: dict[str, str]
+) -> Iterator[dict[str, str]]:
+    """Provide a rootless Podman API socket safe against systemd `OOMScoreAdjust > 0` `crun` exec errors."""
+    env = dict(base_env)
+    env.setdefault("PODMAN_COMPOSE_WARNING_LOGS", "false")
+    needs_local_svc = False
+    try:
+        self_oom = int(Path("/proc/self/oom_score_adj").read_text(encoding="utf-8").strip())
+        proc_oom = subprocess.run(
+            ["systemctl", "--user", "show", "podman.service", "-p", "OOMScoreAdjust", "--value"],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+        if proc_oom.returncode == 0 and proc_oom.stdout.strip():
+            svc_oom = int(proc_oom.stdout.strip())
+            if svc_oom > self_oom and "/podman/podman.sock" in env.get("DOCKER_HOST", ""):
+                needs_local_svc = True
+    except Exception:
+        needs_local_svc = False
+
+    if not needs_local_svc:
+        yield env
+        return
+
+    cfg.tmp_dir.mkdir(parents=True, exist_ok=True)
+    sock = cfg.tmp_dir / f"podman_api_{os.getpid()}.sock"
+    if len(str(sock)) > 100:
+        run_user = Path(f"/run/user/{os.getuid()}")
+        if run_user.is_dir() and os.access(run_user, os.W_OK):
+            sock = run_user / f"rb_podman_{os.getpid()}.sock"
+    sock.unlink(missing_ok=True)
+
+    svc = subprocess.Popen(
+        ["podman", "system", "service", "--time=0", f"unix://{sock}"],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    prev_sigterm: Any = None
+    installed_sigterm = False
+
+    def _handle_sigterm(signum: int, _frame: Any) -> None:
+        raise KeyboardInterrupt(f"Received signal {signum}")
+
+    try:
+        with contextlib.suppress(Exception):
+            prev_sigterm = signal.getsignal(signal.SIGTERM)
+            signal.signal(signal.SIGTERM, _handle_sigterm)
+            installed_sigterm = True
+
+        for _ in range(40):
+            if sock.exists():
+                break
+            if svc.poll() is not None:
+                break
+            time.sleep(0.1)
+        if not sock.exists():
+            rc_poll = svc.poll()
+            raise RuntimeError(
+                f"podman system service failed to create socket {sock} (poll={rc_poll})"
+            )
+        env["DOCKER_HOST"] = f"unix://{sock}"
+        env["CONTAINER_HOST"] = f"unix://{sock}"
+        yield env
+    finally:
+        if installed_sigterm:
+            with contextlib.suppress(Exception):
+                signal.signal(signal.SIGTERM, prev_sigterm)
+        if svc.poll() is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(svc.pid, signal.SIGTERM)
+            svc.terminate()
+        try:
+            svc.wait(timeout=10.0)
+        except Exception:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(svc.pid, signal.SIGKILL)
+            svc.kill()
+            with contextlib.suppress(Exception):
+                svc.wait(timeout=3.0)
+        sock.unlink(missing_ok=True)
 
 
 def _run_child(cmd: list[str], *, cfg: BenchConfig, env: dict[str, str]) -> int:
@@ -153,6 +247,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Benchmark suite to run with Harbor oracle agent (default: all).",
     )
 
+    job_parser = subparsers.add_parser(
+        "run-job",
+        help="Execute a Harbor job YAML config with rootless Podman socket preflight.",
+    )
+    job_parser.add_argument(
+        "--job-config",
+        type=Path,
+        default=None,
+        help="Path to rendered Harbor job YAML config.",
+    )
+    job_parser.add_argument(
+        "job_yaml",
+        nargs="?",
+        type=Path,
+        default=None,
+        help="Positional path to rendered Harbor job YAML config.",
+    )
+
     subparsers.add_parser("test-unit", help="Run pytest unit suite with work_dir scratch/cache.")
 
     args, extra = parser.parse_known_args(argv)
@@ -241,14 +353,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             ["oracle_synth", "oracle_3c391"] if args.suite == "all" else [f"oracle_{args.suite}"]
         )
         harbor_bin = shutil.which("harbor", path=env.get("PATH")) or "harbor"
-        for preset_name in presets:
-            job_yaml = render_preset_job(preset_name, cfg=cfg, env=env)
-            rc_job = _run_child(
-                [harbor_bin, "run", "--config", str(job_yaml), *extra], cfg=cfg, env=env
-            )
-            if rc_job != 0:
-                return rc_job
+        with _podman_exec_safe_socket_env(cfg, env) as oracle_env:
+            for preset_name in presets:
+                job_yaml = render_preset_job(preset_name, cfg=cfg, env=oracle_env)
+                rc_job = _run_child(
+                    [harbor_bin, "run", "--config", str(job_yaml), *extra], cfg=cfg, env=oracle_env
+                )
+                if rc_job != 0:
+                    return rc_job
         return 0
+    if cmd == "run-job":
+        raw_job = args.job_config or args.job_yaml
+        if raw_job is None:
+            print(
+                "error: run-job requires a job YAML path (--job-config or positional)",
+                file=sys.stderr,
+            )
+            return 2
+        resolved_job = (
+            raw_job.resolve() if raw_job.is_absolute() else (caller_cwd / raw_job).resolve()
+        )
+        if not resolved_job.is_file():
+            print(f"error: job YAML not found: {resolved_job}", file=sys.stderr)
+            return 1
+        rc_chk = _run_child(
+            [sys.executable, "-B", "-m", "radio_bench.podman_env"], cfg=cfg, env=env
+        )
+        if rc_chk != 0:
+            return rc_chk
+        harbor_bin = shutil.which("harbor", path=env.get("PATH")) or "harbor"
+        with _podman_exec_safe_socket_env(cfg, env) as job_env:
+            return _run_child(
+                [harbor_bin, "run", "--config", str(resolved_job), *extra],
+                cfg=cfg,
+                env=job_env,
+            )
     if cmd == "test-unit":
         pytest_args = [
             sys.executable,

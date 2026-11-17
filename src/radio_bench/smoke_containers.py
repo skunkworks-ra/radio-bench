@@ -538,7 +538,9 @@ def check_agent_base_offline_and_isolation(env: dict[str, str]) -> dict[str, Any
 def check_verifier_offline(env: dict[str, str]) -> dict[str, Any]:
     """Verify isolated verifier image runs CASA + measures/ephemeris + radio_bench offline."""
     code = (
-        f"{OFFLINE_CASA_SNIPPET}; import radio_bench; print('verifier_ok', radio_bench.__version__)"
+        f"{OFFLINE_CASA_SNIPPET}; "
+        "import radio_bench, radio_bench.grading.runner; "
+        "print('verifier_ok', radio_bench.__version__)"
     )
     proc = run_offline_container(
         VERIFIER_IMAGE,

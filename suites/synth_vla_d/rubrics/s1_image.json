@@ -1,0 +1,205 @@
+{
+  "schema_version": "0.2",
+  "task_id": "s1_image",
+  "stages": ["image"],
+  "pass_reward_min": 0.85,
+  "expect_halt": false,
+  "required_reported_metrics": [],
+  "hard_gates": [
+    {
+      "id": "unlocked_tables",
+      "observable": "proc.table_locked",
+      "primitive": "bool_pass",
+      "params": { "expected": false },
+      "zero_reward_on_fail": true,
+      "zero_subscores_on_fail": true,
+      "failure_tag": "lock_or_timeout"
+    },
+    {
+      "id": "raw_data_unmodified",
+      "observable": "proc.raw_data_unmodified",
+      "primitive": "bool_pass",
+      "params": { "expected": true },
+      "zero_reward_on_fail": true,
+      "optional_when_truth_missing": true,
+      "failure_tag": "raw_data_or_calflag_mutation"
+    }
+  ],
+  "core_subscore_floors": {},
+  "subscores": [
+    {
+      "id": "products_score",
+      "weight": 0.15,
+      "failure_tag": "beam_sampling_or_clean_bowl",
+      "label": "CASA Image Products & Primary Beam Consistency",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "observable": "image.valid_product_count",
+            "primitive": "discrete_map",
+            "label": "Valid Image Product Count",
+            "params": {
+              "mapping": { "5": 1.0, "4": 0.6, "3": 0.4, "2": 0.2, "1": 0.0, "0": 0.0 },
+              "default": 0.0
+            }
+          },
+          {
+            "observable": "image.shapes_and_wcs_valid",
+            "primitive": "bool_pass",
+            "label": "Image WCS & Spatial Shapes Valid",
+            "params": { "expected": true }
+          },
+          {
+            "observable": "image.pb_taper_consistent",
+            "primitive": "bool_pass",
+            "label": "Primary Beam Taper & PBcor Consistent",
+            "params": { "expected": true }
+          }
+        ]
+      }
+    },
+    {
+      "id": "beam_sampling_score",
+      "weight": 0.20,
+      "failure_tag": "beam_sampling_or_clean_bowl",
+      "label": "Restoring Beam Pixel Sampling",
+      "expr": {
+        "observable": "image.pixels_per_beam",
+        "primitive": "window_ramp",
+        "label": "Pixels Per Beam",
+        "params": {
+          "min_key": "tolerances.min_pixels_per_beam",
+          "max_key": "tolerances.max_pixels_per_beam",
+          "low_zero_at": 1.5,
+          "pad_high": 5.0
+        }
+      }
+    },
+    {
+      "id": "residual_rms_score",
+      "weight": 0.25,
+      "failure_tag": "beam_sampling_or_clean_bowl",
+      "label": "Off-Source Residual RMS",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "observable": "image.offsource_residual_rms_jy",
+            "primitive": "upper_ramp",
+            "label": "Off-Source Residual RMS (Jy/beam)",
+            "unit": "Jy/beam",
+            "params": {
+              "strict_pass": true,
+              "pass_max_key": "noise.sigma_th_jy_per_beam",
+              "pass_max_mult_key": "tolerances.max_offsource_rms_sigma_th_mult",
+              "decay_span_mult_of_pass_max": 1.7
+            }
+          },
+          {
+            "observable": "image.offsource_residual_rms_jy",
+            "primitive": "threshold_gate",
+            "params": {
+              "op": ">=",
+              "limit_key": "noise.sigma_th_jy_per_beam",
+              "scale": 0.35
+            }
+          },
+          {
+            "observable": "image.offsource_residual_mad_over_rms",
+            "primitive": "threshold_gate",
+            "label": "Off-Source Residual MAD/RMS",
+            "params": { "op": ">=", "limit": 0.50 }
+          }
+        ]
+      }
+    },
+    {
+      "id": "deconv_and_bowl_score",
+      "weight": 0.40,
+      "failure_tag": "beam_sampling_or_clean_bowl",
+      "label": "Extended Flux, Point SNR & Clean Bowl Guard",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "combine": "weighted_sum",
+            "weights": [0.40, 0.35, 0.25],
+            "children": [
+              {
+                "observable": "image.source_integrated_flux_jy",
+                "primitive": "rel_err_ramp",
+                "label": "Extended Gaussian Integrated Flux (Jy)",
+                "unit": "Jy",
+                "params": {
+                  "truth_key": "sky_model.extended_gaussian.flux_jy",
+                  "pass_rel_tol_key": "tolerances.max_ext_flux_rel_err",
+                  "decay_span": 0.30
+                }
+              },
+              {
+                "observable": "image.point_source_snr",
+                "primitive": "lower_ramp",
+                "label": "Point Source SNR",
+                "params": {
+                  "pass_min_key": "tolerances.min_point_source_snr",
+                  "zero_at": 2.0
+                }
+              },
+              {
+                "observable": "image.negative_bowl_ratio",
+                "primitive": "threshold_gate",
+                "label": "Negative Model Bowl Ratio",
+                "params": {
+                  "op": "<",
+                  "limit_key": "tolerances.max_negative_bowl_ratio"
+                }
+              }
+            ]
+          },
+          {
+            "observable": "image.negative_bowl_ratio",
+            "primitive": "upper_ramp",
+            "params": {
+              "strict_pass": true,
+              "pass_max_key": "tolerances.max_negative_bowl_ratio",
+              "decay_span_mult_of_pass_max": 1.0,
+              "scale_above_pass": 0.25
+            }
+          },
+          {
+            "observable": "image.pb_taper_consistent",
+            "primitive": "bool_pass",
+            "params": { "expected": true }
+          },
+          {
+            "observable": "image.offsource_residual_rms_jy",
+            "primitive": "threshold_gate",
+            "params": {
+              "op": ">=",
+              "limit_key": "noise.sigma_th_jy_per_beam",
+              "scale": 0.35
+            }
+          },
+          {
+            "observable": "image.offsource_residual_mad_over_rms",
+            "primitive": "threshold_gate",
+            "params": { "op": ">=", "limit": 0.50 }
+          }
+        ]
+      }
+    },
+    {
+      "id": "convolved_sky_ncc_score",
+      "weight": 0.0,
+      "failure_tag": "beam_sampling_or_clean_bowl",
+      "label": "Convolved Sky Normalized Cross-Correlation",
+      "expr": {
+        "observable": "image.convolved_sky_ncc",
+        "primitive": "lower_ramp",
+        "label": "Convolved Sky NCC",
+        "params": { "pass_min": 0.90, "zero_at": 0.50 }
+      }
+    }
+  ]
+}

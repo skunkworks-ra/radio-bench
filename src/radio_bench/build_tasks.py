@@ -1,7 +1,8 @@
 """Compile Harbor 0.25.0 task variants across capability arms and tool/skill packs.
 
-Reads canonical task specs in ``task_specs/<task_id>/`` plus exported skill/agent trees in
-``<work_dir>/exported_skills/`` and emits Harbor task directories under ``<work_dir>/tasks/``:
+Loads declarative suite manifests in ``suites/<suite_id>/suite.toml`` plus exported skill/agent
+trees in ``<work_dir>/exported_skills/`` and emits Harbor task directories under
+``<work_dir>/tasks/``:
 - Single pack (default): ``<task_id>__<arm>``
 - Multi-pack (``--packs id1,id2`` or ``--force-pack-in-name``): ``<task_id>__<pack_id>__<arm>``
 """
@@ -9,6 +10,7 @@ Reads canonical task specs in ``task_specs/<task_id>/`` plus exported skill/agen
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import json
 import logging
@@ -34,18 +36,32 @@ from radio_bench.config import (
     load_bench_config,
     materialize_pack_source,
     reject_slash_tmp,
+    resolve_repo_root,
+)
+from radio_bench.grading.schema import (
+    RubricSpec,
+    SuiteManifest,
+    loads_strict_json,
 )
 
 logger = logging.getLogger(__name__)
 
 
 def __getattr__(name: str) -> Any:
-    if name in {"REPO_ROOT", "DEFAULT_SPECS_DIR", "DEFAULT_TASKS_DIR", "RADIO_ANALYST_SHA"}:
+    if name in {
+        "REPO_ROOT",
+        "DEFAULT_SPECS_DIR",
+        "DEFAULT_SUITES_DIR",
+        "DEFAULT_TASKS_DIR",
+        "RADIO_ANALYST_SHA",
+    }:
         cfg = load_bench_config()
         if name == "REPO_ROOT":
             return cfg.repo_root
         if name == "DEFAULT_SPECS_DIR":
             return cfg.repo_root / "task_specs"
+        if name == "DEFAULT_SUITES_DIR":
+            return cfg.repo_root / "suites"
         if name == "DEFAULT_TASKS_DIR":
             return cfg.tasks_dir
         if name == "RADIO_ANALYST_SHA":
@@ -113,7 +129,7 @@ REQUIRED_SPEC_KEYS = frozenset(
 
 @dataclass(frozen=True)
 class TaskSpec:
-    """Parsed and validated task_specs/<task_id>/spec.toml."""
+    """Resolved task definition ready for Harbor compilation."""
 
     spec_dir: Path
     task_id: str
@@ -134,6 +150,14 @@ class TaskSpec:
     input_calibrators_ms: Path | None = None
     verifier_cpus: int | None = None
     instruction_path: Path | None = None
+    solve_path: Path | None = None
+    rubric_path: Path | None = None
+    extract_config_json: str | None = None
+    ref_flags_file: str | None = None
+    true_target_vis_file: str | None = None
+    suite_id: str | None = None
+    split: str = "dev"
+    stages: tuple[str, ...] = ()
 
     @property
     def effective_verifier_cpus(self) -> int:
@@ -147,10 +171,210 @@ class TaskSpec:
             else (self.spec_dir / "instruction.md")
         )
 
+    @property
+    def effective_solve_path(self) -> Path:
+        return self.solve_path if self.solve_path is not None else (self.spec_dir / "solve.py")
+
 
 def _resolve_spec_data_path(raw_val: str, data_root: Path) -> Path:
     p = Path(raw_val)
     return p if p.is_absolute() else (data_root / p)
+
+
+def _resolve_suite_asset_path(raw_rel: str, suite_dir: Path, repo_roots: list[Path]) -> Path:
+    cand = Path(raw_rel)
+    if cand.is_absolute():
+        return cand
+    if (suite_dir / cand).exists():
+        return suite_dir / cand
+    for root in repo_roots:
+        if (root / cand).exists():
+            return root / cand
+    return suite_dir / cand
+
+
+def load_suite_tasks(
+    *,
+    suites_dir: Path | None = None,
+    data_root: Path | None = None,
+    prompts_dir: Path | None = None,
+    only_task_ids: set[str] | None = None,
+    spec_dir_overrides: dict[str, Path] | None = None,
+    cfg: BenchConfig | None = None,
+) -> list[TaskSpec]:
+    """Load and validate all tasks across `suites/*/suite.toml`."""
+    resolved_cfg = cfg if cfg is not None else load_bench_config()
+    eff_data_root = data_root if data_root is not None else resolved_cfg.data_dir
+    eff_prompts_dir = prompts_dir if prompts_dir is not None else resolved_cfg.prompts_dir
+
+    fallback_repo_root = resolve_repo_root()
+    repo_roots = [resolved_cfg.repo_root]
+    if fallback_repo_root.resolve() != resolved_cfg.repo_root.resolve():
+        repo_roots.append(fallback_repo_root)
+
+    if suites_dir is not None:
+        eff_suites_dir = suites_dir
+    elif (resolved_cfg.repo_root / "suites").is_dir():
+        eff_suites_dir = resolved_cfg.repo_root / "suites"
+    else:
+        eff_suites_dir = fallback_repo_root / "suites"
+
+    if not eff_suites_dir.is_dir():
+        raise FileNotFoundError(f"Suites directory not found: {eff_suites_dir}")
+
+    suite_tomls = sorted(eff_suites_dir.glob("*/suite.toml"))
+    if not suite_tomls:
+        raise FileNotFoundError(f"No suite.toml files found under {eff_suites_dir}")
+
+    default_prompts = (resolved_cfg.repo_root / "task_specs").resolve()
+    prompts_overridden = prompts_dir is not None or eff_prompts_dir.resolve() != default_prompts
+
+    specs: list[TaskSpec] = []
+    for toml_path in suite_tomls:
+        suite_dir = toml_path.parent
+        manifest = SuiteManifest.model_validate(
+            tomllib.loads(toml_path.read_text(encoding="utf-8"))
+        )
+        suite_id = manifest.suite.suite_id
+        suite_alias = manifest.suite.legacy_suite_alias or suite_id
+
+        for task_id, tspec in manifest.tasks.items():
+            if only_task_ids is not None and task_id not in only_task_ids:
+                continue
+
+            override_sdir = (spec_dir_overrides or {}).get(task_id)
+            spec_dir = (
+                override_sdir
+                if override_sdir is not None
+                else (resolved_cfg.repo_root / "task_specs" / task_id)
+            )
+
+            # Resolve instruction.md honoring prompts_dir override
+            prompt_cand = eff_prompts_dir / task_id / "instruction.md"
+            manifest_inst = _resolve_suite_asset_path(tspec.instruction, suite_dir, repo_roots)
+            override_inst = (override_sdir / "instruction.md") if override_sdir else None
+
+            inst_candidates: list[Path] = []
+            if prompts_overridden:
+                inst_candidates.append(prompt_cand)
+            if override_inst is not None:
+                inst_candidates.append(override_inst)
+            inst_candidates.extend([manifest_inst, prompt_cand])
+
+            instruction_path = next((c for c in inst_candidates if c.is_file()), None)
+            if instruction_path is None:
+                raise FileNotFoundError(
+                    f"{task_id}: Missing instruction.md (checked {manifest_inst} and {prompt_cand})"
+                )
+
+            solve_candidates: list[Path] = []
+            if override_sdir is not None:
+                solve_candidates.append(override_sdir / "solve.py")
+            solve_candidates.append(
+                _resolve_suite_asset_path(tspec.oracle_script, suite_dir, repo_roots)
+            )
+            solve_path = next((c for c in solve_candidates if c.is_file()), None)
+            if solve_path is None:
+                raise FileNotFoundError(
+                    f"{task_id}: Missing oracle script {tspec.oracle_script} in {suite_dir}"
+                )
+
+            rubric_path = _resolve_suite_asset_path(tspec.rubric, suite_dir, repo_roots)
+            if not rubric_path.is_file():
+                raise FileNotFoundError(f"{task_id}: Missing rubric file {rubric_path}")
+            parsed_rubric = RubricSpec.model_validate(
+                loads_strict_json(rubric_path.read_text(encoding="utf-8"))
+            )
+            if parsed_rubric.task_id != task_id:
+                raise ValueError(
+                    f"{rubric_path}: rubric task_id={parsed_rubric.task_id!r} != {task_id!r}"
+                )
+
+            extract_cfg = manifest.to_extract_config(task_id)
+            extract_cfg_json = (
+                json.dumps(
+                    extract_cfg.model_dump(mode="json"),
+                    indent=2,
+                    allow_nan=False,
+                )
+                + "\n"
+            )
+
+            # Resolve checkpoint / MS / ground_truth paths
+            ckpt_entry = manifest.checkpoints.entries.get(tspec.checkpoint_in)
+            raw_in_ms = tspec.input_ms or (ckpt_entry.input_ms if ckpt_entry else None)
+            if not raw_in_ms:
+                raise ValueError(
+                    f"{task_id}: Missing input_ms or checkpoint {tspec.checkpoint_in!r}"
+                )
+            raw_cal_ms = tspec.input_calibrators_ms or (
+                ckpt_entry.input_calibrators_ms if ckpt_entry else None
+            )
+
+            t_data_dir = _resolve_spec_data_path(tspec.data_dir, eff_data_root)
+            in_ms_path = _resolve_spec_data_path(raw_in_ms, eff_data_root)
+            in_cal_ms_path = (
+                _resolve_spec_data_path(raw_cal_ms, eff_data_root) if raw_cal_ms else None
+            )
+            gt_path = _resolve_spec_data_path(tspec.ground_truth, eff_data_root)
+
+            if not in_ms_path.is_dir():
+                raise FileNotFoundError(f"{task_id}: input_ms directory not found: {in_ms_path}")
+            if in_cal_ms_path is not None and not in_cal_ms_path.is_dir():
+                raise FileNotFoundError(
+                    f"{task_id}: input_calibrators_ms directory not found: {in_cal_ms_path}"
+                )
+            if not gt_path.is_file():
+                raise FileNotFoundError(f"{task_id}: ground_truth file not found: {gt_path}")
+            for extra in tspec.extra_test_files:
+                extra_path = t_data_dir / extra
+                if not extra_path.is_file():
+                    raise FileNotFoundError(f"{task_id}: extra test file not found: {extra_path}")
+
+            eff_cpus = tspec.cpus if tspec.cpus is not None else manifest.resources.cpus
+            eff_ver_cpus = (
+                tspec.verifier_cpus
+                if tspec.verifier_cpus is not None
+                else manifest.resources.verifier_cpus
+            )
+            eff_mem = (
+                tspec.memory_mb if tspec.memory_mb is not None else manifest.resources.memory_mb
+            )
+
+            specs.append(
+                TaskSpec(
+                    spec_dir=spec_dir,
+                    task_id=task_id,
+                    suite=suite_alias,
+                    stage=tspec.canonical_stage,
+                    is_e2e=tspec.is_e2e,
+                    difficulty=tspec.difficulty,
+                    category=manifest.suite.category,
+                    tags=list(manifest.suite.tags),
+                    data_dir=t_data_dir,
+                    input_ms=in_ms_path,
+                    ground_truth=gt_path,
+                    extra_test_files=list(tspec.extra_test_files),
+                    agent_timeout_sec=float(tspec.agent_timeout_sec),
+                    verifier_timeout_sec=float(tspec.verifier_timeout_sec),
+                    cpus=int(eff_cpus),
+                    memory_mb=int(eff_mem),
+                    input_calibrators_ms=in_cal_ms_path,
+                    verifier_cpus=int(eff_ver_cpus) if eff_ver_cpus is not None else None,
+                    instruction_path=instruction_path,
+                    solve_path=solve_path,
+                    rubric_path=rubric_path,
+                    extract_config_json=extract_cfg_json,
+                    ref_flags_file=tspec.ref_flags_file,
+                    true_target_vis_file=tspec.true_target_vis_file,
+                    suite_id=suite_id,
+                    split=manifest.suite.split,
+                    stages=tuple(tspec.stages),
+                )
+            )
+
+    specs.sort(key=lambda s: s.task_id)
+    return specs
 
 
 def load_task_spec(
@@ -160,12 +384,29 @@ def load_task_spec(
     prompts_dir: Path | None = None,
     cfg: BenchConfig | None = None,
 ) -> TaskSpec:
-    """Load and validate one task spec directory, resolving relative data paths via BenchConfig."""
-    spec_path = spec_dir / "spec.toml"
-    if not spec_path.is_file():
-        raise FileNotFoundError(f"Missing spec.toml in {spec_dir}")
-
+    """Load one task spec by `task_id` from `suites/*/suite.toml` (with `spec.toml` fallback)."""
     resolved_cfg = cfg if cfg is not None else load_bench_config()
+    task_id = spec_dir.name
+    spec_path = spec_dir / "spec.toml"
+
+    # Prefer explicit `spec.toml` when present (e.g. synthetic unit-test task fixtures),
+    # otherwise load from `suites/*/suite.toml`.
+    if not spec_path.is_file():
+        suite_matches: list[TaskSpec] = []
+        with contextlib.suppress(FileNotFoundError):
+            suite_matches = load_suite_tasks(
+                data_root=data_root,
+                prompts_dir=prompts_dir,
+                only_task_ids={task_id},
+                spec_dir_overrides={task_id: spec_dir},
+                cfg=resolved_cfg,
+            )
+        if suite_matches:
+            return suite_matches[0]
+        raise FileNotFoundError(
+            f"Task {task_id!r} not found in suites/*/suite.toml and no spec.toml in {spec_dir}"
+        )
+
     eff_data_root = data_root if data_root is not None else resolved_cfg.data_dir
     eff_prompts_dir = prompts_dir if prompts_dir is not None else resolved_cfg.prompts_dir
 
@@ -174,37 +415,23 @@ def load_task_spec(
     if missing:
         raise ValueError(f"{spec_path} missing required keys: {missing}")
 
-    task_id = str(raw["task_id"])
-    if task_id != spec_dir.name:
-        raise ValueError(f"{spec_path} task_id={task_id!r} != directory name {spec_dir.name!r}")
-
-    suite = str(raw["suite"])
-    if suite not in {"synth", "3c391"}:
-        raise ValueError(f"{spec_path} invalid suite={suite!r}")
-
-    stage = str(raw["stage"])
-    if stage not in {"inspect", "precal", "calibrate", "image", "e2e"}:
-        raise ValueError(f"{spec_path} invalid stage={stage!r}")
+    if str(raw["task_id"]) != task_id:
+        raise ValueError(f"{spec_path} task_id={raw['task_id']!r} != directory name {task_id!r}")
 
     prompt_cand = eff_prompts_dir / task_id / "instruction.md"
     spec_inst = spec_dir / "instruction.md"
     default_prompts = (resolved_cfg.repo_root / "task_specs").resolve()
     prompts_overridden = prompts_dir is not None or eff_prompts_dir.resolve() != default_prompts
     candidates = (prompt_cand, spec_inst) if prompts_overridden else (spec_inst, prompt_cand)
-    instruction_path: Path | None = None
-    for cand in candidates:
-        if cand.is_file():
-            instruction_path = cand
-            break
+    instruction_path = next((c for c in candidates if c.is_file()), None)
     if instruction_path is None:
         raise FileNotFoundError(f"Missing instruction.md in {spec_dir} (and {prompt_cand})")
 
-    for required_file in ("solve.py", "verify.py"):
-        p = spec_dir / required_file
-        if not p.is_file():
-            raise FileNotFoundError(f"Missing {required_file} in {spec_dir}")
+    solve_path = spec_dir / "solve.py"
+    if not solve_path.is_file():
+        raise FileNotFoundError(f"Missing solve.py in {spec_dir}")
 
-    data_dir = _resolve_spec_data_path(str(raw["data_dir"]), eff_data_root)
+    t_data_dir = _resolve_spec_data_path(str(raw["data_dir"]), eff_data_root)
     input_ms = _resolve_spec_data_path(str(raw["input_ms"]), eff_data_root)
     raw_cal_ms = str(raw.get("input_calibrators_ms", "")).strip()
     input_calibrators_ms = (
@@ -222,20 +449,20 @@ def load_task_spec(
     if not ground_truth.is_file():
         raise FileNotFoundError(f"{task_id}: ground_truth file not found: {ground_truth}")
     for extra in extra_test_files:
-        extra_path = data_dir / extra
+        extra_path = t_data_dir / extra
         if not extra_path.is_file():
             raise FileNotFoundError(f"{task_id}: extra test file not found: {extra_path}")
 
     return TaskSpec(
         spec_dir=spec_dir,
         task_id=task_id,
-        suite=suite,
-        stage=stage,
+        suite=str(raw["suite"]),
+        stage=str(raw["stage"]),
         is_e2e=bool(raw["is_e2e"]),
         difficulty=str(raw["difficulty"]),
         category=str(raw["category"]),
         tags=[str(t) for t in raw["tags"]],
-        data_dir=data_dir,
+        data_dir=t_data_dir,
         input_ms=input_ms,
         ground_truth=ground_truth,
         extra_test_files=extra_test_files,
@@ -246,6 +473,8 @@ def load_task_spec(
         input_calibrators_ms=input_calibrators_ms,
         verifier_cpus=int(raw["verifier_cpus"]) if "verifier_cpus" in raw else None,
         instruction_path=instruction_path,
+        solve_path=solve_path,
+        rubric_path=(spec_dir / "rubric.json") if (spec_dir / "rubric.json").is_file() else None,
     )
 
 
@@ -300,6 +529,7 @@ def _hardlink_file(src: Path, dst: Path) -> None:
         return
 
     try:
+        dst.unlink(missing_ok=True)
         os.link(src, dst)
     except OSError as exc:
         if exc.errno != errno.EXDEV:
@@ -438,22 +668,27 @@ def _build_task_toml_dict(
     if arm in TOOL_ARMS:
         env_cfg["mcp_servers"] = _mcp_servers_for_ports(mcp_ports)
 
+    meta_dict: dict[str, Any] = {
+        "task_id": variant_id,
+        "base_task": spec.task_id,
+        "pack_id": pack_id,
+        "analyst_sha": analyst_sha,
+        "suite": spec.suite,
+        "suite_id": spec.suite_id or spec.suite,
+        "split": spec.split,
+        "stage": spec.stage,
+        "stages": list(spec.stages) if spec.stages else [spec.stage],
+        "arm": arm,
+        "difficulty": spec.difficulty,
+        "category": spec.category,
+        "tags": list(spec.tags),
+        "radio_analyst_sha": analyst_sha,
+    }
+
     data: dict[str, Any] = {
         "schema_version": "1.4",
         "artifacts": ["/workspace"],
-        "metadata": {
-            "task_id": variant_id,
-            "base_task": spec.task_id,
-            "pack_id": pack_id,
-            "analyst_sha": analyst_sha,
-            "suite": spec.suite,
-            "stage": spec.stage,
-            "arm": arm,
-            "difficulty": spec.difficulty,
-            "category": spec.category,
-            "tags": list(spec.tags),
-            "radio_analyst_sha": analyst_sha,
-        },
+        "metadata": meta_dict,
         "agent": {
             "user": "analyst",
             "timeout_sec": spec.agent_timeout_sec,
@@ -833,11 +1068,11 @@ def compile_variant(
         yaml.safe_dump(env_compose, sort_keys=False),
     )
 
-    # 4. solution/ (oracle only; zero ground truth or verifier files)
+    # 4. solution/ (oracle only; zero ground truth, rubric, or verifier files)
     sol_dir = variant_dir / "solution"
     sol_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(sol_dir, 0o755)
-    _copy_regular_file(spec.spec_dir / "solve.py", sol_dir / "solve.py")
+    _copy_regular_file(spec.effective_solve_path, sol_dir / "solve.py")
     solve_sh = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
@@ -851,14 +1086,41 @@ def compile_variant(
     )
     _write_text_file(sol_dir / "solve.sh", solve_sh, mode=0o755)
 
-    # 5. tests/ (isolated verifier bundle)
+    # 5. tests/ (isolated declarative verifier bundle: extract_config.json + rubric.json + ground_truth.json)
     tests_dir = variant_dir / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(tests_dir, 0o755)
-    _copy_regular_file(spec.spec_dir / "verify.py", tests_dir / "verify.py")
+
+    if spec.extract_config_json is not None and spec.rubric_path is not None:
+        _write_text_file(tests_dir / "extract_config.json", spec.extract_config_json)
+        _copy_regular_file(spec.rubric_path, tests_dir / "rubric.json")
+    else:
+        from radio_bench.grading.inspect_metrics import resolve_task_configs
+
+        gt_dict = loads_strict_json(spec.ground_truth.read_text(encoding="utf-8"))
+        ec_fb, rb_fb = resolve_task_configs(spec.task_id, spec.stage, gt_dict)
+        _write_text_file(
+            tests_dir / "extract_config.json",
+            json.dumps(ec_fb.model_dump(mode="json"), indent=2, allow_nan=False) + "\n",
+        )
+        _write_text_file(
+            tests_dir / "rubric.json",
+            json.dumps(rb_fb.model_dump(mode="json"), indent=2, allow_nan=False) + "\n",
+        )
+
     _hardlink_file(spec.ground_truth, tests_dir / "ground_truth.json")
     for extra_name in spec.extra_test_files:
         _hardlink_file(spec.data_dir / extra_name, tests_dir / extra_name)
+
+    if spec.ref_flags_file:
+        src_flags = spec.data_dir / spec.ref_flags_file
+        if src_flags.is_file() and not (tests_dir / "ref_flags.npz").exists():
+            _hardlink_file(src_flags, tests_dir / "ref_flags.npz")
+
+    if spec.true_target_vis_file:
+        src_tvis = spec.data_dir / spec.true_target_vis_file
+        if src_tvis.is_file() and not (tests_dir / "true_target_vis.npz").exists():
+            _hardlink_file(src_tvis, tests_dir / "true_target_vis.npz")
 
     test_sh = (
         "#!/usr/bin/env bash\n"
@@ -868,7 +1130,7 @@ def compile_variant(
         'export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"\n'
         'export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"\n'
         'export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"\n'
-        "/opt/casa-venv/bin/python /tests/verify.py "
+        "/opt/casa-venv/bin/python -m radio_bench.grading.runner "
         "--workspace /workspace --tests-dir /tests --log-dir /logs/verifier\n"
     )
     _write_text_file(tests_dir / "test.sh", test_sh, mode=0o755)
@@ -884,6 +1146,7 @@ def compile_variant(
 def build_all_tasks(
     *,
     specs_dir: Path | None = None,
+    suites_dir: Path | None = None,
     skills_dir: Path | None = None,
     output_dir: Path | None = None,
     skills_mode: str = "both",
@@ -897,7 +1160,6 @@ def build_all_tasks(
     _WARNED_CROSS_DEVICE_PAIRS.clear()
     resolved_cfg = cfg if cfg is not None else load_bench_config()
 
-    eff_specs_dir = specs_dir if specs_dir is not None else (resolved_cfg.repo_root / "task_specs")
     eff_skills_dir = skills_dir if skills_dir is not None else resolved_cfg.exported_skills_dir
     eff_output_dir = output_dir if output_dir is not None else resolved_cfg.tasks_dir
     reject_slash_tmp(eff_output_dir, label="output_dir")
@@ -926,19 +1188,24 @@ def build_all_tasks(
         )
         pack_bundles.append((p, p_skills_dir, p_sha))
 
-    spec_dirs = sorted(
-        p for p in eff_specs_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
-    )
-    if not spec_dirs:
-        raise FileNotFoundError(f"No task spec directories found under {eff_specs_dir}")
+    if specs_dir is not None:
+        spec_dirs = sorted(
+            p for p in specs_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
+        )
+        if not spec_dirs:
+            raise FileNotFoundError(f"No task spec directories found under {specs_dir}")
+        specs = [load_task_spec(d, cfg=resolved_cfg) for d in spec_dirs]
+    else:
+        specs = load_suite_tasks(suites_dir=suites_dir, cfg=resolved_cfg)
+        if not specs:
+            raise FileNotFoundError("No tasks loaded from suites/*/suite.toml")
 
-    specs = [load_task_spec(d, cfg=resolved_cfg) for d in spec_dirs]
     eff_output_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(eff_output_dir, 0o755)
 
     known_prefixes = tuple(f"{s.task_id}__" for s in specs)
     emitted: list[str] = []
-    by_suite: dict[str, int] = {"synth": 0, "3c391": 0}
+    by_suite: dict[str, int] = {}
     by_arm: dict[str, int] = {}
     by_pack: dict[str, int] = {}
 
@@ -1010,10 +1277,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Include <pack_id> in directory names even when compiling a single pack.",
     )
     parser.add_argument(
+        "--suites-dir",
+        type=Path,
+        default=None,
+        help="Path to suites/ directory containing suite.toml manifests.",
+    )
+    parser.add_argument(
         "--specs-dir",
         type=Path,
         default=None,
-        help="Path to task_specs/ directory.",
+        help="Optional subset directory of task folders.",
     )
     parser.add_argument(
         "--skills-dir",
@@ -1045,6 +1318,7 @@ def main(argv: list[str] | None = None) -> int:
     parsed_packs = [p.strip() for p in args.packs.split(",") if p.strip()] if args.packs else None
     summary = build_all_tasks(
         specs_dir=args.specs_dir,
+        suites_dir=args.suites_dir,
         skills_dir=args.skills_dir,
         output_dir=args.output_dir,
         skills_mode=args.skills_mode,

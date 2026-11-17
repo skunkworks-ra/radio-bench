@@ -7,15 +7,22 @@ from typing import Any
 
 FAILURE_NONE = "none"
 
-# Exact SPEC.md Section 5.3 categories in strict deterministic evaluation priority order.
+# Exact v0.2 SPEC-output-and-metrics Section 3.1 categories in strict evaluation priority order.
 FAILURE_CATEGORIES: tuple[str, ...] = (
     "lock_or_timeout",
     "tool_protocol_error",
+    "invalid_abstention_or_halt",
+    "raw_data_or_calflag_mutation",
+    "unsupported_or_missing_claim",
     "script_or_casa_crash",
     "flux_model_or_fluxscale_error",
     "skipped_delay_or_bandpass",
     "flagging_recall_or_overflag",
     "beam_sampling_or_clean_bowl",
+    "postcal_clip_or_uv_bias",
+    "polcal_feed_or_parang_error",
+    "cube_baseline_or_frame_error",
+    "selfcal_divergence_or_shift",
 )
 
 ALL_OUTCOME_LABELS: tuple[str, ...] = (FAILURE_NONE, *FAILURE_CATEGORIES)
@@ -49,7 +56,7 @@ _MCP_EXC_PHRASES: tuple[str, ...] = (
     "mcp_",
 )
 
-# Deterministic fallback map from stage subscore keys -> SPEC.md category.
+# Deterministic v0.1 fallback map from stage subscore keys -> failure category.
 _SUBSCORE_TO_CATEGORY: dict[str, str] = {
     "valid_json_score": "script_or_casa_crash",
     "calibrators_ms_score": "script_or_casa_crash",
@@ -91,6 +98,19 @@ def _as_float(val: Any) -> float | None:
         fval = float(val)
         if math.isfinite(fval):
             return fval
+    return None
+
+
+def _get_measurement_record(
+    metrics_dict: dict[str, Any] | None, obs_id: str
+) -> dict[str, Any] | None:
+    if not isinstance(metrics_dict, dict):
+        return None
+    measurements = metrics_dict.get("measurements")
+    if isinstance(measurements, dict):
+        rec = measurements.get(obs_id)
+        if isinstance(rec, dict):
+            return rec
     return None
 
 
@@ -144,6 +164,12 @@ def _is_table_locked(metrics_dict: dict[str, Any] | None, exc_msg_low: str = "")
         return False
     if metrics_dict.get("table_locked") is True:
         return True
+    lk_rec = _get_measurement_record(metrics_dict, "proc.table_locked")
+    if lk_rec is not None and lk_rec.get("value") is True:
+        return True
+    tags = metrics_dict.get("triggered_failure_tags")
+    if isinstance(tags, list) and "lock_or_timeout" in tags:
+        return True
     errors = metrics_dict.get("errors")
     if isinstance(errors, list):
         for err in errors:
@@ -162,7 +188,100 @@ def _is_table_locked(metrics_dict: dict[str, Any] | None, exc_msg_low: str = "")
     return False
 
 
-def _image_set_missing(img_measured: dict[str, Any]) -> bool:
+def _is_invalid_abstention_or_halt(metrics_dict: dict[str, Any] | None) -> bool:
+    if not isinstance(metrics_dict, dict):
+        return False
+    tags = metrics_dict.get("triggered_failure_tags")
+    if isinstance(tags, list) and "invalid_abstention_or_halt" in tags:
+        return True
+
+    rubric_meta = metrics_dict.get("rubric_meta")
+    expect_halt = bool(rubric_meta.get("expect_halt")) if isinstance(rubric_meta, dict) else False
+    st_rec = _get_measurement_record(metrics_dict, "proc.manifest_status")
+    st_val = str(st_rec.get("value") or "").strip().lower() if st_rec is not None else ""
+    ab_rec = _get_measurement_record(metrics_dict, "proc.abstention_correct")
+
+    if expect_halt:
+        if (
+            ab_rec is not None
+            and ab_rec.get("status") == "measured"
+            and ab_rec.get("value") is False
+        ):
+            return True
+        if st_val and st_val != "halted":
+            return True
+    elif st_val == "halted":
+        return True
+    return False
+
+
+def _is_raw_data_or_calflag_mutation(metrics_dict: dict[str, Any] | None) -> bool:
+    if not isinstance(metrics_dict, dict):
+        return False
+    tags = metrics_dict.get("triggered_failure_tags")
+    if isinstance(tags, list) and "raw_data_or_calflag_mutation" in tags:
+        return True
+
+    raw_rec = _get_measurement_record(metrics_dict, "proc.raw_data_unmodified")
+    if (
+        raw_rec is not None
+        and raw_rec.get("status") == "measured"
+        and raw_rec.get("value") is False
+    ):
+        return True
+
+    cal_flg_rec = _get_measurement_record(metrics_dict, "postcal.calibrator_flag_mutation")
+    if (
+        cal_flg_rec is not None
+        and cal_flg_rec.get("status") == "measured"
+        and (_as_float(cal_flg_rec.get("value")) or 0.0) > 0.0
+    ):
+        return True
+
+    vis_unmod_rec = _get_measurement_record(metrics_dict, "postcal.vis_data_unmodified")
+    return bool(
+        vis_unmod_rec is not None
+        and vis_unmod_rec.get("status") == "measured"
+        and vis_unmod_rec.get("value") is False
+    )
+
+
+def _is_unsupported_or_missing_claim(metrics_dict: dict[str, Any] | None) -> bool:
+    """Return True strictly on Layer B Claim Auditor (`reported_metrics` / `report.html`) failures."""
+    if not isinstance(metrics_dict, dict):
+        return False
+    tags = metrics_dict.get("triggered_failure_tags")
+    if isinstance(tags, list) and "unsupported_or_missing_claim" in tags:
+        return True
+
+    unsup_rec = _get_measurement_record(metrics_dict, "proc.unsupported_claim_count")
+    if (
+        unsup_rec is not None
+        and unsup_rec.get("status") == "measured"
+        and int(_as_float(unsup_rec.get("value")) or 0) > 0
+    ):
+        return True
+
+    rubric_meta = metrics_dict.get("rubric_meta")
+    req_claims = (
+        rubric_meta.get("required_reported_metrics") if isinstance(rubric_meta, dict) else None
+    )
+    miss_rec = _get_measurement_record(metrics_dict, "proc.missing_required_claim_count")
+    return bool(
+        isinstance(req_claims, list)
+        and len(req_claims) > 0
+        and miss_rec is not None
+        and miss_rec.get("status") == "measured"
+        and int(_as_float(miss_rec.get("value")) or 0) > 0
+    )
+
+
+def _image_set_missing(
+    img_measured: dict[str, Any], metrics_dict: dict[str, Any] | None = None
+) -> bool:
+    vp_rec = _get_measurement_record(metrics_dict, "image.valid_product_count")
+    if vp_rec is not None and vp_rec.get("status") == "measured":
+        return int(_as_float(vp_rec.get("value")) or 0) == 0
     chosen_prefix = img_measured.get("chosen_prefix")
     if isinstance(chosen_prefix, str) and chosen_prefix.strip():
         return False
@@ -170,6 +289,61 @@ def _image_set_missing(img_measured: dict[str, Any]) -> bool:
     if isinstance(sets_found, (int, float)) and not isinstance(sets_found, bool):
         return int(sets_found) == 0
     return False
+
+
+def _stage_deliverable_missing_v02(stage: str, metrics_dict: dict[str, Any]) -> bool | None:
+    """Check whether primary stage deliverable is missing using `v0.2` `measurements`."""
+    measurements = metrics_dict.get("measurements")
+    if not isinstance(measurements, dict):
+        return None
+
+    st = stage.strip().lower()
+    if st == "inspect":
+        sv = measurements.get("inspect.summary_valid")
+        if isinstance(sv, dict) and sv.get("status") == "measured":
+            return bool(sv.get("value") is False)
+        return None
+
+    if st == "precal":
+        rm = metrics_dict.get("rubric_meta")
+        grades_cal_ms = True
+        if isinstance(rm, dict) and isinstance(rm.get("display_rows"), list):
+            obs_set = {
+                str(r.get("observable") or "") for r in rm["display_rows"] if isinstance(r, dict)
+            }
+            if obs_set:
+                grades_cal_ms = any(k.startswith("precal.calibrators_ms_") for k in obs_set)
+        if not grades_cal_ms:
+            in_rec = measurements.get("precal.merged_calibrator_rows")
+            return bool(isinstance(in_rec, dict) and in_rec.get("status") == "missing_artifact")
+        nr = measurements.get("precal.calibrators_ms_nrows")
+        if isinstance(nr, dict):
+            if nr.get("status") == "missing_artifact":
+                return True
+            return bool(
+                nr.get("status") == "measured" and int(_as_float(nr.get("value")) or 0) == 0
+            )
+        return None
+
+    if st == "calibrate":
+        cd = measurements.get("cal.corrected_distinct_from_data")
+        if isinstance(cd, dict):
+            return bool(cd.get("status") == "missing_artifact" or cd.get("value") is False)
+        return None
+
+    if st in ("image", "image_cont"):
+        vp = measurements.get("image.valid_product_count")
+        if isinstance(vp, dict) and vp.get("status") == "measured":
+            return int(_as_float(vp.get("value")) or 0) == 0
+        return None
+
+    if st == "report":
+        rh = measurements.get("report.html_valid")
+        if isinstance(rh, dict) and rh.get("status") == "measured":
+            return bool(rh.get("value") is False)
+        return None
+
+    return None
 
 
 def _deliverable_missing(
@@ -182,6 +356,22 @@ def _deliverable_missing(
         return True
 
     m = metrics_dict if isinstance(metrics_dict, dict) else {}
+    st_rec = _get_measurement_record(m, "proc.manifest_status")
+    if st_rec is not None and str(st_rec.get("value") or "").strip().lower() == "failed":
+        return True
+
+    if stage == "e2e":
+        # Only treat e2e deliverable as immediately missing at Priority 6 when Stage 1 (calibrate)
+        # deliverable is missing; if calibration exists, evaluate Stage 1 physics tags before
+        # checking whether Stage 2 (image) deliverable is missing.
+        v02_cal_miss = _stage_deliverable_missing_v02("calibrate", m)
+        if v02_cal_miss is not None:
+            return v02_cal_miss
+    else:
+        v02_miss = _stage_deliverable_missing_v02(stage, m)
+        if v02_miss is not None:
+            return v02_miss
+
     measured = m.get("measured") if isinstance(m.get("measured"), dict) else {}
 
     if stage == "inspect":
@@ -210,14 +400,9 @@ def _deliverable_missing(
         return bool(has_corr is False or corr_dist is False)
 
     if stage == "image":
-        # Only treat deliverable as missing when NO CASA image set was produced,
-        # NOT when products_score == 0.0 due to gridder='standard' or missing pbcor.
-        return _image_set_missing(measured)
+        return _image_set_missing(measured, m)
 
     if stage == "e2e":
-        # In Rule 3, only treat e2e deliverable as immediately missing when calibration
-        # deliverable is missing; if calibration exists, evaluate calibration physics
-        # rules (Rules 4-6) before falling back to missing image deliverable.
         cal_m = m.get("calibration") if isinstance(m.get("calibration"), dict) else {}
         meas_cal = (
             measured.get("calibration") if isinstance(measured.get("calibration"), dict) else {}
@@ -242,13 +427,115 @@ def _deliverable_missing(
 def _e2e_image_deliverable_missing(metrics_dict: dict[str, Any] | None) -> bool:
     if not isinstance(metrics_dict, dict):
         return False
+    v02_img_miss = _stage_deliverable_missing_v02("image", metrics_dict)
+    if v02_img_miss is not None:
+        return v02_img_miss
     img_m = metrics_dict.get("image")
     if isinstance(img_m, dict) and isinstance(img_m.get("measured"), dict):
-        return _image_set_missing(img_m["measured"])
+        return _image_set_missing(img_m["measured"], metrics_dict)
     meas = metrics_dict.get("measured")
     if isinstance(meas, dict) and isinstance(meas.get("image"), dict):
-        return _image_set_missing(meas["image"])
+        return _image_set_missing(meas["image"], metrics_dict)
     return False
+
+
+def _classify_physics_from_rubric_meta(
+    metrics_dict: dict[str, Any],
+    subscores: dict[str, float],
+) -> str | None:
+    """Self-describing physics failure classification from `metrics_dict["rubric_meta"]`."""
+    rubric_meta = metrics_dict.get("rubric_meta")
+    if not isinstance(rubric_meta, dict):
+        return None
+    meta_subs = rubric_meta.get("subscores")
+    if not isinstance(meta_subs, list) or not meta_subs:
+        return None
+
+    stages_in_order: list[str] = []
+    for entry in meta_subs:
+        if isinstance(entry, dict) and isinstance(entry.get("stage"), str):
+            st = entry["stage"]
+            if st not in stages_in_order:
+                stages_in_order.append(st)
+
+    for stage_idx, st in enumerate(stages_in_order):
+        # On multi-stage pipelines (e.g. e2e), if downstream Stage > 0 deliverable is completely
+        # absent after upstream Stage 0 passed physics checks, classify as script_or_casa_crash.
+        if stage_idx > 0:
+            st_missing = _stage_deliverable_missing_v02(st, metrics_dict)
+            if st_missing is True:
+                return "script_or_casa_crash"
+
+        st_entries: list[dict[str, Any]] = []
+        for e in meta_subs:
+            if not isinstance(e, dict) or e.get("stage") != st:
+                continue
+            w = _as_float(e.get("weight")) or 0.0
+            if w <= 0.0:
+                continue
+            sid = str(e.get("id") or "")
+            sc = subscores.get(sid, _as_float(e.get("score")))
+            if sc is None:
+                continue
+            tag = str(e.get("failure_tag") or "")
+            if tag not in _CATEGORY_PRIORITY:
+                continue
+            st_entries.append(
+                {
+                    "id": sid,
+                    "score": sc,
+                    "weight": w,
+                    "tag": tag,
+                    "symptom_only": bool(e.get("symptom_only")),
+                }
+            )
+
+        # Evaluate severe (< 0.5) root-cause (`symptom_only == False`) subscores first in category
+        # priority order, before falling back to `symptom_only == True` subscores.
+        severe_roots = [x for x in st_entries if not x["symptom_only"] and x["score"] < 0.5]
+        if severe_roots:
+            severe_roots.sort(key=lambda x: (_CATEGORY_PRIORITY[x["tag"]], x["score"]))
+            return str(severe_roots[0]["tag"])
+
+        severe_symp = [x for x in st_entries if x["symptom_only"] and x["score"] < 0.5]
+        if severe_symp:
+            severe_symp.sort(key=lambda x: (_CATEGORY_PRIORITY[x["tag"]], x["score"]))
+            return str(severe_symp[0]["tag"])
+
+    # Clean-bowl override when rubric display trace marks `image.negative_bowl_ratio` failed
+    rm_disp = rubric_meta.get("display_rows")
+    if isinstance(rm_disp, list):
+        for r_row in rm_disp:
+            if (
+                isinstance(r_row, dict)
+                and r_row.get("observable") == "image.negative_bowl_ratio"
+                and r_row.get("status") == "measured"
+            ):
+                r_sc = _as_float(r_row.get("score"))
+                if r_sc is not None and r_sc <= 0.0:
+                    return "beam_sampling_or_clean_bowl"
+
+    # Moderate failure fallback (all subscores >= 0.5, composite < pass_reward_min or floor failed)
+    all_pos: list[tuple[int, float, int, str]] = []
+    for e in meta_subs:
+        if not isinstance(e, dict):
+            continue
+        w = _as_float(e.get("weight")) or 0.0
+        if w <= 0.0:
+            continue
+        sid = str(e.get("id") or "")
+        sc = subscores.get(sid, _as_float(e.get("score")))
+        tag = str(e.get("failure_tag") or "")
+        if sc is None or sc >= 1.0 - 1e-9 or tag not in _CATEGORY_PRIORITY:
+            continue
+        symp_rank = 1 if bool(e.get("symptom_only")) else 0
+        all_pos.append((symp_rank, sc, _CATEGORY_PRIORITY[tag], tag))
+
+    if all_pos:
+        all_pos.sort(key=lambda item: (item[1], item[0], item[2]))
+        return all_pos[0][3]
+
+    return None
 
 
 def classify_failure(
@@ -267,7 +554,7 @@ def classify_failure(
     bash_nonzero_exits: int = 0,
     severe_casa_errors: int = 0,
 ) -> str:
-    """Deterministically classify a trial into `'none'` or one of the 7 SPEC.md failure modes."""
+    """Deterministically classify a trial into `'none'` or one of the 14 `FAILURE_CATEGORIES`."""
     if bool(passed):
         return FAILURE_NONE
 
@@ -297,7 +584,19 @@ def classify_failure(
     ):
         return "tool_protocol_error"
 
-    # 3. script_or_casa_crash
+    # 3. invalid_abstention_or_halt (evaluated BEFORE missing_deliverable -> script_or_casa_crash)
+    if _is_invalid_abstention_or_halt(metrics_dict):
+        return "invalid_abstention_or_halt"
+
+    # 4. raw_data_or_calflag_mutation (evaluated BEFORE missing_deliverable / bash_nonzero_exits)
+    if _is_raw_data_or_calflag_mutation(metrics_dict):
+        return "raw_data_or_calflag_mutation"
+
+    # 5. unsupported_or_missing_claim (strictly Layer B Claim Auditor failures, never inspect triage)
+    if _is_unsupported_or_missing_claim(metrics_dict):
+        return "unsupported_or_missing_claim"
+
+    # 6. script_or_casa_crash
     if (
         bool(exc_type)
         or missing_deliverable
@@ -306,7 +605,13 @@ def classify_failure(
     ):
         return "script_or_casa_crash"
 
-    # 4. flux_model_or_fluxscale_error
+    # 7+. Self-describing v0.2 `rubric_meta` physics tags (zero dataset branches)
+    if isinstance(metrics_dict, dict):
+        v02_cat = _classify_physics_from_rubric_meta(metrics_dict, subscores)
+        if v02_cat is not None:
+            return v02_cat
+
+    # Legacy v0.1 read-compat fallback when `rubric_meta` is absent
     model_data_sc = subscores.get("model_data_score")
     flux_bp_sc = subscores.get("flux_bandpass_score")
     fluxscale_sc = _get_first_float(subscores, "cal_fluxscale_score", "fluxscale_score")
@@ -317,7 +622,6 @@ def classify_failure(
     ):
         return "flux_model_or_fluxscale_error"
 
-    # 5. skipped_delay_or_bandpass
     elev_sc = subscores.get("elevation_score")
     bp_flat_sc = _get_first_float(
         subscores, "cal_bandpass_flatness_score", "bandpass_flatness_score"
@@ -339,7 +643,6 @@ def classify_failure(
         ):
             return "skipped_delay_or_bandpass"
 
-    # 6. flagging_recall_or_overflag
     recall_sc = _get_first_float(subscores, "flag_recall_score", "recall_score")
     fpr_sc = subscores.get("clean_fpr_score")
     dead_ant_sc = subscores.get("dead_antenna_score")
@@ -352,12 +655,9 @@ def classify_failure(
     if stage in ("calibrate", "e2e") and ret_sc is not None and ret_sc < 0.5:
         return "flagging_recall_or_overflag"
 
-    # On e2e, if calibration physics passed Rules 4-6 but no CASA image set was produced,
-    # classify as script_or_casa_crash before checking image quality rules.
     if stage == "e2e" and _e2e_image_deliverable_missing(metrics_dict):
         return "script_or_casa_crash"
 
-    # 7. beam_sampling_or_clean_bowl
     beam_sc = _get_first_float(subscores, "img_beam_sampling_score", "beam_sampling_score")
     rms_sc = _get_first_float(subscores, "img_residual_rms_score", "residual_rms_score")
     deconv_sc = _get_first_float(subscores, "img_deconv_and_bowl_score", "deconv_and_bowl_score")
@@ -372,7 +672,12 @@ def classify_failure(
     bowl_max = _get_first_float(img_truth, "bowl_max", "max_negative_bowl_ratio")
     if bowl_max is None:
         bowl_max = 0.12
-    bowl_ratio = _get_first_float(img_meas, "negative_bowl_ratio", "negative_model_bowl_ratio")
+    bowl_ratio = _get_first_float(
+        img_meas,
+        "image.negative_bowl_ratio",
+        "negative_bowl_ratio",
+        "negative_model_bowl_ratio",
+    )
 
     if stage in ("image", "e2e") and (
         (beam_sc is not None and beam_sc < 0.5)
@@ -382,7 +687,6 @@ def classify_failure(
     ):
         return "beam_sampling_or_clean_bowl"
 
-    # Deterministic fallback: map lowest-scoring leaf stage subscore to its SPEC.md category.
     has_cal_leaves = any(k.startswith("cal_") for k in subscores)
     has_img_leaves = any(k.startswith("img_") for k in subscores)
     candidates: list[tuple[float, int, str]] = []

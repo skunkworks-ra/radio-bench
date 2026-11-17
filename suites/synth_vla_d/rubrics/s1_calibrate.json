@@ -1,0 +1,239 @@
+{
+  "schema_version": "0.2",
+  "task_id": "s1_calibrate",
+  "stages": ["calibrate"],
+  "pass_reward_min": 0.85,
+  "expect_halt": false,
+  "required_reported_metrics": [],
+  "hard_gates": [
+    {
+      "id": "unlocked_tables",
+      "observable": "proc.table_locked",
+      "primitive": "bool_pass",
+      "params": { "expected": false },
+      "zero_reward_on_fail": true,
+      "zero_subscores_on_fail": true,
+      "failure_tag": "lock_or_timeout"
+    },
+    {
+      "id": "raw_data_unmodified",
+      "observable": "proc.raw_data_unmodified",
+      "primitive": "bool_pass",
+      "params": { "expected": true },
+      "zero_reward_on_fail": true,
+      "optional_when_truth_missing": true,
+      "failure_tag": "raw_data_or_calflag_mutation"
+    }
+  ],
+  "core_subscore_floors": {},
+  "subscores": [
+    {
+      "id": "retention_and_dead_ant_score",
+      "weight": 0.20,
+      "failure_tag": "flagging_recall_or_overflag",
+      "label": "Dead Antenna Flagging & Target Retention",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "combine": "zero_if_any_zero",
+            "weights": [0.5, 0.5],
+            "children": [
+              {
+                "observable": "cal.dead_antenna_flagged_fraction",
+                "primitive": "lower_ramp",
+                "label": "Dead Antenna Flagged Fraction",
+                "params": {
+                  "pass_min_key": "tolerances.dead_antenna_flagged_min",
+                  "zero_at": 0.50
+                }
+              },
+              {
+                "observable": "cal.target_row_retention",
+                "primitive": "window_ramp",
+                "label": "Target Unflagged Retention",
+                "params": {
+                  "min_key": "tolerances.min_clean_target_row_retention",
+                  "low_zero_at": 0.40,
+                  "strict_positive": true
+                }
+              }
+            ]
+          },
+          {
+            "observable": "cal.corrected_distinct_from_data",
+            "primitive": "bool_pass",
+            "label": "CORRECTED_DATA Populated & Distinct",
+            "params": { "expected": true }
+          },
+          {
+            "observable": "cal.target_corrected_std_jy",
+            "primitive": "threshold_gate",
+            "params": { "op": ">", "limit": 0.00001 }
+          },
+          {
+            "observable": "cal.rank1_logamp_rms_median",
+            "primitive": "threshold_gate",
+            "label": "Rank-1 Gain Closure Log-Amp RMS",
+            "params": { "op": "<=", "limit": 0.12 }
+          }
+        ]
+      }
+    },
+    {
+      "id": "bandpass_flatness_score",
+      "weight": 0.25,
+      "failure_tag": "skipped_delay_or_bandpass",
+      "label": "Bandpass & Delay Phase Flatness",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "combine": "min_of",
+            "children": [
+              {
+                "observable": "cal.bandpass_coh_phase_slope_deg_per_100mhz",
+                "primitive": "upper_ramp",
+                "label": "Bandpass Coherent Phase Slope (deg/100MHz)",
+                "unit": "deg/100MHz",
+                "params": {
+                  "strict_pass": true,
+                  "pass_max_key": "tolerances.max_j1331_phase_slope_deg_per_100mhz",
+                  "decay_span": 20.0
+                }
+              },
+              {
+                "observable": "cal.bandpass_med_bl_phase_slope_deg_per_100mhz",
+                "primitive": "upper_ramp",
+                "label": "Bandpass Med-Baseline Phase Slope (deg/100MHz)",
+                "unit": "deg/100MHz",
+                "params": {
+                  "strict_pass": true,
+                  "pass_max_key": "tolerances.max_j1331_phase_slope_deg_per_100mhz",
+                  "decay_span": 20.0
+                }
+              }
+            ]
+          },
+          {
+            "observable": "cal.bandpass_cal_calibrated",
+            "primitive": "bool_pass",
+            "params": { "expected": true }
+          },
+          {
+            "observable": "cal.bandpass_cal_unflagged_fraction",
+            "primitive": "threshold_gate",
+            "params": { "op": ">=", "limit": 0.50 }
+          }
+        ]
+      }
+    },
+    {
+      "id": "fluxscale_score",
+      "weight": 0.25,
+      "failure_tag": "flux_model_or_fluxscale_error",
+      "label": "Phase Calibrator Fluxscale Accuracy",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "combine": "max_of",
+            "children": [
+              {
+                "observable": "cal.phase_cal_corrected_amp_jy",
+                "primitive": "rel_err_ramp",
+                "label": "Phase Cal Corrected Amp (Jy)",
+                "unit": "Jy",
+                "params": {
+                  "truth_key": "phase_calibrator_truth.spw_mean_flux_jy",
+                  "pass_rel_tol_key": "tolerances.max_fluxscale_rel_err",
+                  "decay_span_mult_of_tol": 2.0
+                }
+              },
+              {
+                "observable": "cal.fluxscale_table_flux_jy",
+                "primitive": "rel_err_ramp",
+                "label": "Phase Cal Bootstrapped Table Flux (Jy)",
+                "unit": "Jy",
+                "params": {
+                  "truth_key": "phase_calibrator_truth.spw_mean_flux_jy",
+                  "pass_rel_tol_key": "tolerances.max_fluxscale_rel_err",
+                  "decay_span_mult_of_tol": 2.0
+                }
+              }
+            ]
+          },
+          {
+            "observable": "cal.phase_cal_unflagged_fraction",
+            "primitive": "threshold_gate",
+            "params": { "op": ">=", "limit": 0.50 }
+          }
+        ]
+      }
+    },
+    {
+      "id": "target_fidelity_score",
+      "weight": 0.30,
+      "failure_tag": "skipped_delay_or_bandpass",
+      "symptom_only": true,
+      "label": "Target Coherent Visibility Fidelity",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "combine": "zero_if_any_zero",
+            "weights": [0.5, 0.5],
+            "children": [
+              {
+                "observable": "cal.coherent_vis_amp_rel_err",
+                "primitive": "upper_ramp",
+                "label": "Target Coherent Amp Rel Error",
+                "params": {
+                  "pass_max_key": "tolerances.max_target_coherent_amp_rel_err",
+                  "decay_span": 0.22
+                }
+              },
+              {
+                "observable": "cal.coherent_vis_phase_err_deg",
+                "primitive": "abs_err_ramp",
+                "label": "Target Coherent Phase Offset (deg)",
+                "unit": "deg",
+                "params": {
+                  "target": 0.0,
+                  "pass_abs_tol_key": "tolerances.max_target_coherent_phase_deg",
+                  "decay_span": 35.0
+                }
+              }
+            ]
+          },
+          {
+            "observable": "cal.clean_target_unflagged_fraction",
+            "primitive": "threshold_gate",
+            "label": "Clean Target Unflagged Fraction",
+            "params": { "op": ">=", "limit": 0.75 }
+          },
+          {
+            "observable": "cal.coherent_vis_pearson_r",
+            "primitive": "threshold_gate",
+            "label": "Target Complex Pearson r",
+            "params": {
+              "op": ">=",
+              "limit_key": "tolerances.min_target_coherent_pearson_r",
+              "limit": 0.25
+            }
+          },
+          {
+            "observable": "cal.target_corrected_std_jy",
+            "primitive": "threshold_gate",
+            "params": { "op": ">", "limit": 0.00001 }
+          },
+          {
+            "observable": "cal.rank1_logamp_rms_median",
+            "primitive": "threshold_gate",
+            "params": { "op": "<=", "limit": 0.12 }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -210,6 +210,7 @@ if [ "$SIDECAR_ONLY" -eq 0 ]; then
     cp -L "$REPO_ROOT/README.md" "$STAGE_ROOT/verifier_ctx/radio-bench-src/README.md"
     cp "$REPO_ROOT/bench.toml" "$STAGE_ROOT/verifier_ctx/radio-bench-src/bench.toml"
     cp -r "$REPO_ROOT/configs" "$STAGE_ROOT/verifier_ctx/radio-bench-src/configs"
+    cp -rL "$REPO_ROOT/suites" "$STAGE_ROOT/verifier_ctx/radio-bench-src/suites"
     cp -r "$REPO_ROOT/src" "$STAGE_ROOT/verifier_ctx/radio-bench-src/src"
     chmod -R a+rX "$STAGE_ROOT/verifier_ctx/radio-bench-src"
 

@@ -70,7 +70,9 @@ E2E_TASKS = (
 )
 CALIBRATE_TASKS = frozenset({"s1_calibrate", "r1_3c391_calibrate"})
 ALL_BASE_TASKS = STAGE_TASKS + E2E_TASKS
-FORBIDDEN_AGENT_FILENAMES = frozenset({"ground_truth.json", "verify.py"})
+FORBIDDEN_AGENT_FILENAMES = frozenset(
+    {"ground_truth.json", "verify.py", "rubric.json", "extract_config.json"}
+)
 MS_TOOL_TOKEN_RE = re.compile(r"\bms_[a-z0-9_]+\b")
 EM_OR_EN_DASH_RE = re.compile(r"[\u2013\u2014]")
 
@@ -464,10 +466,23 @@ def test_zero_verifier_leakage_permissions_symlinks_and_calibrators_ms() -> None
                 assert p.name not in FORBIDDEN_AGENT_FILENAMES, f"Leaked {p.name} inside {p}"
                 assert p.suffix != ".npz", f"Leaked .npz file inside {p}"
 
-        # 3. Verify tests/ contains ground_truth.json, verify.py, and all extra_test_files
+        # 3. Verify tests/ contains extract_config.json, rubric.json, ground_truth.json, and all extra_test_files
         tests_dir = task_dir / "tests"
         assert (tests_dir / "ground_truth.json").is_file()
-        assert (tests_dir / "verify.py").is_file()
+        assert (tests_dir / "extract_config.json").is_file()
+        assert (tests_dir / "rubric.json").is_file()
+        assert not (tests_dir / "verify.py").exists()
+        test_sh_text = (tests_dir / "test.sh").read_text(encoding="utf-8")
+        assert "radio_bench.grading.runner" in test_sh_text
+        ec_payload = json.loads((tests_dir / "extract_config.json").read_text(encoding="utf-8"))
+        for forbidden_ec_key in (
+            "expected_pcal_flux_jy",
+            "j1822_expected_flux_jy",
+            "sigma_th_jy_per_beam",
+            "raw_data_blake2b",
+            "tolerances",
+        ):
+            assert forbidden_ec_key not in ec_payload
         for extra in spec.extra_test_files:
             assert (tests_dir / extra).is_file(), f"Missing {extra} in {tests_dir}"
 

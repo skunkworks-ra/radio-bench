@@ -1,0 +1,162 @@
+{
+  "schema_version": "0.2",
+  "task_id": "s1_inspect",
+  "stages": ["inspect"],
+  "pass_reward_min": 0.85,
+  "expect_halt": false,
+  "required_reported_metrics": [],
+  "hard_gates": [
+    {
+      "id": "unlocked_tables",
+      "observable": "proc.table_locked",
+      "primitive": "bool_pass",
+      "params": { "expected": false },
+      "zero_reward_on_fail": true,
+      "zero_subscores_on_fail": true,
+      "failure_tag": "lock_or_timeout"
+    },
+    {
+      "id": "raw_data_unmodified",
+      "observable": "proc.raw_data_unmodified",
+      "primitive": "bool_pass",
+      "params": { "expected": true },
+      "zero_reward_on_fail": true,
+      "optional_when_truth_missing": true,
+      "failure_tag": "raw_data_or_calflag_mutation"
+    }
+  ],
+  "core_subscore_floors": {
+    "flux_bandpass_score": 0.5,
+    "phase_part": 0.5,
+    "target_part": 0.5,
+    "dead_antenna_score": 0.5,
+    "elevation_score": 0.5
+  },
+  "subscores": [
+    {
+      "id": "valid_json_score",
+      "weight": 0.20,
+      "failure_tag": "script_or_casa_crash",
+      "label": "Summary JSON Valid & Populated",
+      "expr": {
+        "observable": "inspect.valid_sections_count",
+        "primitive": "piecewise_floor_ramp",
+        "label": "Populated Triage Sections",
+        "params": { "base_floor": 0.20, "denom": 4.0 }
+      }
+    },
+    {
+      "id": "flux_bandpass_score",
+      "weight": 0.20,
+      "failure_tag": "flux_model_or_fluxscale_error",
+      "label": "Flux & Bandpass Calibrator ID",
+      "expr": {
+        "combine": "weighted_sum",
+        "weights": [0.5, 0.5],
+        "children": [
+          {
+            "observable": "inspect.flux_cal_list",
+            "primitive": "exact_set",
+            "label": "Flux Calibrator",
+            "params": {
+              "truth_key": ["fields.flux_calibrator", "flux_calibrator"],
+              "norm": "field"
+            }
+          },
+          {
+            "observable": "inspect.bandpass_cal_list",
+            "primitive": "exact_set",
+            "label": "Bandpass Calibrator",
+            "params": {
+              "truth_key": ["fields.bandpass_calibrator", "bandpass_calibrator", "fields.flux_calibrator", "flux_calibrator"],
+              "norm": "field"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "phase_vs_target_score",
+      "weight": 0.25,
+      "failure_tag": "flagging_recall_or_overflag",
+      "label": "Phase Calibrator vs Target Separation",
+      "expr": {
+        "combine": "weighted_sum",
+        "weights": [0.5, 0.5],
+        "children": [
+          {
+            "id": "phase_part",
+            "observable": "inspect.phase_cal_list",
+            "primitive": "exact_set",
+            "label": "Phase Calibrator",
+            "params": {
+              "truth_key": ["fields.phase_calibrator", "phase_calibrator"],
+              "norm": "field",
+              "partial_match_sets": [
+                {
+                  "truth_keys": ["phase_calibrator", "pol_leakage_calibrator"],
+                  "score": 0.85
+                }
+              ],
+              "forbid_overlap_truth_keys": ["fields.target_fields", "target_fields", "mosaic_target_fields"],
+              "overlap_penalty_factor": 0.0
+            }
+          },
+          {
+            "id": "target_part",
+            "observable": "inspect.target_fields_list",
+            "primitive": "set_jaccard",
+            "label": "Science Target Pointings",
+            "params": {
+              "truth_key": ["fields.target_fields", "target_fields", "mosaic_target_fields"],
+              "norm": "field",
+              "forbid_overlap_truth_keys": [
+                "fields.flux_calibrator",
+                "flux_calibrator",
+                "fields.bandpass_calibrator",
+                "bandpass_calibrator",
+                "fields.phase_calibrator",
+                "phase_calibrator",
+                "pol_leakage_calibrator"
+              ],
+              "overlap_penalty_factor": 0.25
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "dead_antenna_score",
+      "weight": 0.15,
+      "failure_tag": "flagging_recall_or_overflag",
+      "label": "Dead Antenna Identification",
+      "expr": {
+        "observable": "inspect.dead_antennas_list",
+        "primitive": "set_jaccard",
+        "label": "Dead Antennas",
+        "params": {
+          "truth_key": ["dead_antennas", "dead_antenna"],
+          "ignore_truth_key": ["missing_vla_pads", "observation.missing_vla_pads"],
+          "norm": "ant"
+        }
+      }
+    },
+    {
+      "id": "elevation_score",
+      "weight": 0.20,
+      "failure_tag": "skipped_delay_or_bandpass",
+      "label": "Bandpass Min Elevation Accuracy",
+      "expr": {
+        "observable": "inspect.bandpass_min_el_deg",
+        "primitive": "abs_err_ramp",
+        "label": "Bandpass Min Elevation (deg)",
+        "unit": "deg",
+        "params": {
+          "truth_key": ["bandpass_min_elevation_deg", "bp_min_elevation_deg"],
+          "pass_abs_tol_key": ["tolerances.elevation_tol_deg", "tolerances.elevation_abs_deg", "bp_min_elevation_tolerance_deg"],
+          "decay_span": 1.25
+        }
+      }
+    }
+  ]
+}

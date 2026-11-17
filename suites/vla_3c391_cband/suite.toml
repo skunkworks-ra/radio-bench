@@ -1,0 +1,159 @@
+[suite]
+suite_id = "vla_3c391_cband"
+legacy_suite_alias = "3c391"
+split = "dev"
+telescope = "VLA"
+band = "C-band"
+pol_basis = "circular"
+description = "VLA D-configuration C-band 7-pointing mosaic of supernova remnant 3C391"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "vla", "interferometry"]
+
+[roles]
+flux_cal = ["J1331+3030"]
+bandpass_cal = ["J1331+3030"]
+phase_cal = ["J1822-0938"]
+pol_angle_cal = ["J1331+3030"]
+pol_leakage_cal = ["J0319+4130"]
+targets = ["3C391 C1", "3C391 C2", "3C391 C3", "3C391 C4", "3C391 C5", "3C391 C6", "3C391 C7"]
+dead_antennas = ["ea13"]
+missing_stations = ["ea06", "ea10"]
+target_retention_excludes_dead_antenna = false
+
+[geometry]
+dish_diameter_m = 25.0
+pb_mask_min = 0.20
+offsource_inner_exclusion_beams = 5.0
+phasecenter = "J2000 282.35101667deg -0.92793889deg"
+off_source_min_radius_arcsec = 220.0
+
+[geometry.verifier_tclean_recipe]
+field = "2~8"
+spw = "0:4~59"
+phasecenter = "J2000 282.35101667deg -0.92793889deg"
+specmode = "mfs"
+gridder = "mosaic"
+deconvolver = "multiscale"
+scales = [0, 5, 15, 30]
+smallscalebias = 0.6
+imsize = [640, 640]
+cell_arcsec = 2.5
+weighting = "briggs"
+robust = 0.5
+pblimit = 0.2
+usemask = "auto-multithresh"
+pbmask = 0.2
+sidelobethreshold = 1.25
+noisethreshold = 2.75
+lownoisethreshold = 1.35
+negativethreshold = 0.0
+minbeamfrac = 0.1
+growiterations = 25
+dogrowprune = false
+niter = 18000
+cycleniter = 4500
+nmajor = 12
+threshold = "0.30mJy"
+pbcor = true
+off_source_min_radius_arcsec = 220.0
+timeout_sec = 900.0
+
+[resources]
+cpus = 8
+verifier_cpus = 8
+memory_mb = 12288
+n_concurrent_trials = 1
+
+[checkpoints]
+builder = "data_builders.build_3c391_checkpoints:main"
+
+[checkpoints.entries.raw]
+input_ms = "checkpoints/3c391/raw/input.ms"
+
+[checkpoints.entries.post_precal]
+input_ms = "checkpoints/3c391/post_precal/input.ms"
+input_calibrators_ms = "checkpoints/3c391/post_precal/calibrators.ms"
+
+[checkpoints.entries.post_calibrate]
+input_ms = "checkpoints/3c391/post_calibrate/input.ms"
+
+[tasks.r1_3c391_inspect]
+stages = ["inspect"]
+stage = "inspect"
+checkpoint_in = "raw"
+data_dir = "checkpoints/3c391/r1_3c391_inspect"
+input_ms = "checkpoints/3c391/raw/input.ms"
+ground_truth = "checkpoints/3c391/r1_3c391_inspect/ground_truth.json"
+extra_test_files = []
+difficulty = "easy"
+agent_timeout_sec = 900.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/r1_3c391_inspect/instruction.md"
+oracle_script = "task_specs/r1_3c391_inspect/solve.py"
+rubric = "rubrics/r1_3c391_inspect.json"
+
+[tasks.r1_3c391_precal]
+stages = ["precal"]
+stage = "precal"
+checkpoint_in = "raw"
+data_dir = "checkpoints/3c391/r1_3c391_precal"
+input_ms = "checkpoints/3c391/raw/input.ms"
+ground_truth = "checkpoints/3c391/r1_3c391_precal/ground_truth.json"
+extra_test_files = ["precal_masks.npz"]
+ref_flags_file = "precal_masks.npz"
+allow_virtual_model = false
+difficulty = "medium"
+agent_timeout_sec = 1800.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/r1_3c391_precal/instruction.md"
+oracle_script = "task_specs/r1_3c391_precal/solve.py"
+rubric = "rubrics/r1_3c391_precal.json"
+
+[tasks.r1_3c391_calibrate]
+stages = ["calibrate"]
+stage = "calibrate"
+checkpoint_in = "post_precal"
+data_dir = "checkpoints/3c391/r1_3c391_calibrate"
+input_ms = "checkpoints/3c391/post_precal/input.ms"
+input_calibrators_ms = "checkpoints/3c391/post_precal/calibrators.ms"
+ground_truth = "checkpoints/3c391/r1_3c391_calibrate/ground_truth.json"
+extra_test_files = []
+use_verifier_tclean_recipe = true
+difficulty = "medium"
+agent_timeout_sec = 1800.0
+verifier_timeout_sec = 1200.0
+instruction = "task_specs/r1_3c391_calibrate/instruction.md"
+oracle_script = "task_specs/r1_3c391_calibrate/solve.py"
+rubric = "rubrics/r1_3c391_calibrate.json"
+
+[tasks.r1_3c391_image]
+stages = ["image"]
+stage = "image"
+checkpoint_in = "post_calibrate"
+data_dir = "checkpoints/3c391/r1_3c391_image"
+input_ms = "checkpoints/3c391/post_calibrate/input.ms"
+ground_truth = "checkpoints/3c391/r1_3c391_image/ground_truth.json"
+extra_test_files = []
+difficulty = "medium"
+agent_timeout_sec = 1800.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/r1_3c391_image/instruction.md"
+oracle_script = "task_specs/r1_3c391_image/solve.py"
+rubric = "rubrics/r1_3c391_image.json"
+
+[tasks.r2_3c391_e2e]
+stages = ["inspect", "precal", "calibrate", "image"]
+stage = "e2e"
+checkpoint_in = "raw"
+data_dir = "checkpoints/3c391/r2_3c391_e2e"
+input_ms = "checkpoints/3c391/raw/input.ms"
+ground_truth = "checkpoints/3c391/r2_3c391_e2e/ground_truth.json"
+extra_test_files = ["precal_masks.npz"]
+ref_flags_file = "precal_masks.npz"
+use_verifier_tclean_recipe = true
+difficulty = "hard"
+agent_timeout_sec = 3600.0
+verifier_timeout_sec = 1200.0
+instruction = "task_specs/r2_3c391_e2e/instruction.md"
+oracle_script = "task_specs/r2_3c391_e2e/solve.py"
+rubric = "rubrics/r2_3c391_e2e.json"

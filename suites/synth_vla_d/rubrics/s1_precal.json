@@ -1,0 +1,154 @@
+{
+  "schema_version": "0.2",
+  "task_id": "s1_precal",
+  "stages": ["precal"],
+  "pass_reward_min": 0.85,
+  "expect_halt": false,
+  "required_reported_metrics": [],
+  "hard_gates": [
+    {
+      "id": "unlocked_tables",
+      "observable": "proc.table_locked",
+      "primitive": "bool_pass",
+      "params": { "expected": false },
+      "zero_reward_on_fail": true,
+      "zero_subscores_on_fail": true,
+      "failure_tag": "lock_or_timeout"
+    },
+    {
+      "id": "raw_data_unmodified",
+      "observable": "proc.raw_data_unmodified",
+      "primitive": "bool_pass",
+      "params": { "expected": true },
+      "zero_reward_on_fail": true,
+      "optional_when_truth_missing": true,
+      "failure_tag": "raw_data_or_calflag_mutation"
+    }
+  ],
+  "core_subscore_floors": {},
+  "subscores": [
+    {
+      "id": "calibrators_ms_score",
+      "weight": 0.20,
+      "failure_tag": "script_or_casa_crash",
+      "label": "Calibrators MS & Scan Intents",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "combine": "weighted_sum",
+            "weights": [0.5, 0.5],
+            "children": [
+              {
+                "observable": "precal.calibrators_ms_struct_ok",
+                "primitive": "bool_pass",
+                "label": "Calibrators MS Valid",
+                "params": { "expected": true }
+              },
+              {
+                "combine": "weighted_sum",
+                "weights": [0.5, 0.5],
+                "children": [
+                  {
+                    "observable": "precal.calibrator_intents_ok",
+                    "primitive": "bool_pass",
+                    "label": "Calibrator Scan Intents",
+                    "params": { "expected": true }
+                  },
+                  {
+                    "observable": "precal.target_intents_ok",
+                    "primitive": "bool_pass",
+                    "label": "Target Scan Intents",
+                    "params": { "expected": true }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "observable": "precal.calibrators_ms_struct_ok",
+            "primitive": "bool_pass",
+            "params": { "expected": true }
+          }
+        ]
+      }
+    },
+    {
+      "id": "model_data_score",
+      "weight": 0.25,
+      "failure_tag": "flux_model_or_fluxscale_error",
+      "label": "Flux Calibrator MODEL_DATA Amplitude",
+      "expr": {
+        "observable": "precal.flux_cal_model_amp_jy",
+        "primitive": "rel_err_ramp",
+        "label": "Flux Cal MODEL_DATA Mean Amp (Jy)",
+        "unit": "Jy",
+        "params": {
+          "truth_key": ["j1331_model_parallel_mean_jy", "j1331_pb2017.mean_parallel_amp_jy"],
+          "pass_rel_tol_key": ["tolerances.j1331_model_rel_tol", "tolerances.model_amp_rel_tol", "j1331_pb2017.rel_tolerance"],
+          "zero_at_rel_err": 0.05
+        }
+      }
+    },
+    {
+      "id": "model_spec_nrmse_score",
+      "weight": 0.0,
+      "failure_tag": "flux_model_or_fluxscale_error",
+      "label": "Flux Calibrator Spectral Shape NRMSE",
+      "expr": {
+        "observable": "precal.flux_cal_model_spec_nrmse",
+        "primitive": "upper_ramp",
+        "label": "Flux Cal Spectral NRMSE",
+        "params": {
+          "spectrum_truth_key": ["j1331_pb2017.per_chan_parallel_amp_jy", "j1331_model_parallel_per_chan_jy"],
+          "pass_max": 0.01,
+          "zero_at": 0.05
+        }
+      }
+    },
+    {
+      "id": "flag_recall_score",
+      "weight": 0.30,
+      "failure_tag": "flagging_recall_or_overflag",
+      "label": "Corrupted RFI / Quack Flag Recall",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "observable": "precal.must_flag_recall",
+            "primitive": "lower_ramp",
+            "label": "Must-Flag Recall",
+            "params": {
+              "pass_min_key": ["tolerances.min_corrupted_recall", "tolerances.flag_recall_min"],
+              "zero_at": 0.50
+            }
+          },
+          {
+            "observable": "precal.clean_false_positive_rate",
+            "primitive": "upper_ramp",
+            "params": {
+              "pass_max": 0.25,
+              "zero_at": 0.75
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "clean_fpr_score",
+      "weight": 0.25,
+      "failure_tag": "flagging_recall_or_overflag",
+      "label": "Clean Visibility False-Positive Guard",
+      "expr": {
+        "observable": "precal.clean_false_positive_rate",
+        "primitive": "upper_ramp",
+        "label": "Clean False-Positive Rate",
+        "params": {
+          "strict_pass": true,
+          "pass_max_key": ["tolerances.max_clean_false_positive_rate", "tolerances.clean_false_positive_max"],
+          "decay_span": 0.15
+        }
+      }
+    }
+  ]
+}

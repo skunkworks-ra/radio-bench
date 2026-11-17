@@ -21,6 +21,9 @@ _INSPECT_SCALAR_CAL_FIELDS: frozenset[str] = frozenset(
         "bandpass_calibrator",
         "phase_calibrator",
         "pol_leakage_calibrator",
+        "inspect.flux_cal_list",
+        "inspect.bandpass_cal_list",
+        "inspect.phase_cal_list",
     }
 )
 
@@ -370,8 +373,34 @@ def _summarize_measured_values(values: list[Any]) -> Any:
     return best
 
 
+def _lookup_v02_observable_value(rec: dict[str, Any], obs_id: str) -> Any:
+    measurements = rec.get("measurements")
+    if isinstance(measurements, dict):
+        obs_rec = measurements.get(obs_id)
+        if isinstance(obs_rec, dict):
+            if obs_rec.get("status") == "measured":
+                return obs_rec.get("value")
+            return None
+    measured = rec.get("measured")
+    if isinstance(measured, dict) and obs_id in measured:
+        return measured[obs_id]
+    return None
+
+
+def _format_v02_truth_str(drow: dict[str, Any]) -> str:
+    t_disp = str(drow.get("truth_display") or "").strip()
+    unit = str(drow.get("unit") or "").strip()
+    if unit and t_disp and unit.lower() not in t_disp.lower():
+        return f"{t_disp} {unit}"
+    return t_disp
+
+
 def build_truth_vs_measured_table(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build Truth-vs-Measured comparison rows per task across all present arms."""
+    """Build Truth-vs-Measured comparison rows per task across all present arms.
+
+    Reads self-describing `v0.2` `rubric_meta["display_rows"]` + `measurements` directly
+    without dataset branches, falling back to `_extract_stage_metric_specs` for `v0.1` records.
+    """
     arms = _ordered_arms(records)
     tasks = sorted({str(r.get("base_task")) for r in records if r.get("base_task")})
     rows: list[dict[str, Any]] = []
@@ -383,21 +412,27 @@ def build_truth_vs_measured_table(records: list[dict[str, Any]]) -> list[dict[st
         stage = str(t_recs[0].get("stage") or "unknown")
         suite = str(t_recs[0].get("suite") or "unknown")
 
-        # Find first non-empty truth dict across trials of this task.
-        ref_truth: dict[str, Any] = {}
+        # Check for self-describing v0.2 `rubric_meta.display_rows` first (zero dataset branches).
+        v02_meta: dict[str, Any] | None = None
         for r in t_recs:
-            tb = r.get("truth")
-            if isinstance(tb, dict) and tb:
-                ref_truth = tb
+            rm = r.get("rubric_meta")
+            if (
+                isinstance(rm, dict)
+                and isinstance(rm.get("display_rows"), list)
+                and rm["display_rows"]
+            ):
+                v02_meta = rm
                 break
 
-        specs = _extract_stage_metric_specs(stage, ref_truth)
-        if not specs and ref_truth:
-            # Generic fallback for custom truth keys in synthetic fixtures.
-            for k in sorted(ref_truth):
-                val = ref_truth[k]
-                if isinstance(val, (int, float, str)):
-                    specs.append((k, _fmt_num(val, 4), (k,)))
+        pass_min = (
+            float(v02_meta["pass_reward_min"])
+            if (
+                v02_meta is not None
+                and isinstance(v02_meta.get("pass_reward_min"), (int, float))
+                and not isinstance(v02_meta.get("pass_reward_min"), bool)
+            )
+            else PASS_REWARD_MIN
+        )
 
         # Always include composite reward vs pass threshold so every task has >= 1 row.
         reward_by_arm: dict[str, Any] = {}
@@ -410,13 +445,66 @@ def build_truth_vs_measured_table(records: list[dict[str, Any]]) -> list[dict[st
                 "suite": suite,
                 "stage": stage,
                 "metric": "composite_reward",
-                "truth": f">= {PASS_REWARD_MIN:.2f}",
+                "truth": f">= {pass_min:.2f}",
                 "by_arm": reward_by_arm,
             }
         )
 
+        if v02_meta is not None:
+            for drow in v02_meta["display_rows"]:
+                if not isinstance(drow, dict):
+                    continue
+                obs_id = str(drow.get("observable") or drow.get("id") or "")
+                if not obs_id:
+                    continue
+                d_stage = str(drow.get("stage") or stage)
+                truth_str = _format_v02_truth_str(drow)
+                by_arm_val: dict[str, Any] = {}
+                any_present = False
+                for arm in arms:
+                    arm_vals = [
+                        _normalize_measured_entry(
+                            d_stage,
+                            obs_id,
+                            _lookup_v02_observable_value(r, obs_id),
+                        )
+                        for r in t_recs
+                        if str(r.get("arm")) == arm
+                    ]
+                    summ = _summarize_measured_values(arm_vals)
+                    if summ is not None:
+                        any_present = True
+                    by_arm_val[arm] = summ
+                if any_present or truth_str:
+                    rows.append(
+                        {
+                            "base_task": task_id,
+                            "suite": suite,
+                            "stage": stage,
+                            "metric": obs_id,
+                            "truth": truth_str,
+                            "by_arm": by_arm_val,
+                        }
+                    )
+            continue
+
+        # Legacy v0.1 read-compat fallback when `rubric_meta` is absent.
+        ref_truth: dict[str, Any] = {}
+        for r in t_recs:
+            tb = r.get("truth")
+            if isinstance(tb, dict) and tb:
+                ref_truth = tb
+                break
+
+        specs = _extract_stage_metric_specs(stage, ref_truth)
+        if not specs and ref_truth:
+            for k in sorted(ref_truth):
+                val = ref_truth[k]
+                if isinstance(val, (int, float, str)):
+                    specs.append((k, _fmt_num(val, 4), (k,)))
+
         for metric_label, truth_str, lookup_path in specs:
-            by_arm_val: dict[str, Any] = {}
+            by_arm_val = {}
             any_present = False
             for arm in arms:
                 arm_vals = [
@@ -760,13 +848,24 @@ def _collect_caltable_profiles(
             tb = casatools.table()
             opened = False
             try:
-                opened = bool(tb.open(str(tbl_path), nomodify=True))
+                opened = bool(
+                    tb.open(
+                        str(tbl_path),
+                        nomodify=True,
+                        lockoptions={"option": "usernoread"},
+                    )
+                )
                 if not opened:
                     continue
                 cols = set(tb.colnames())
-                if not (
-                    ("CPARAM" in cols or "FPARAM" in cols) and "FLAG" in cols and "ANTENNA1" in cols
-                ):
+                kw = tb.getkeywords()
+                viscal = str(kw.get("VisCal") or "").strip() if isinstance(kw, dict) else ""
+                # Prefer VisCal keyword inspection; fall back to caltable column signature
+                # when synthetic test tables omit VisCal.
+                has_cal_cols = ("CPARAM" in cols or "FPARAM" in cols) and "ANTENNA1" in cols
+                if not viscal and not (has_cal_cols and "FLAG" in cols):
+                    continue
+                if not has_cal_cols or "FLAG" not in cols:
                     continue
                 if int(tb.nrows()) <= 0:
                     continue
@@ -928,20 +1027,29 @@ def _collect_trial_residual_rms_mjy(records: list[dict[str, Any]]) -> dict[str, 
             else meas
         )
         val_mjy: float | None = None
-        for key, scale in (
-            ("offsource_residual_rms_mjy_per_beam", 1.0),
-            ("off_source_residual_rms_mjy_per_beam", 1.0),
-            ("offsource_residual_rms_jy_per_beam", 1e3),
-            ("off_source_residual_rms", 1e3),
+        v02_rms = _lookup_v02_observable_value(rec, "image.offsource_residual_rms_jy")
+        if (
+            isinstance(v02_rms, (int, float))
+            and not isinstance(v02_rms, bool)
+            and math.isfinite(float(v02_rms))
         ):
-            raw = img_meas.get(key)
-            if (
-                isinstance(raw, (int, float))
-                and not isinstance(raw, bool)
-                and math.isfinite(float(raw))
+            val_mjy = float(v02_rms) * 1e3
+        else:
+            for key, scale in (
+                ("image.offsource_residual_rms_jy", 1e3),
+                ("offsource_residual_rms_mjy_per_beam", 1.0),
+                ("off_source_residual_rms_mjy_per_beam", 1.0),
+                ("offsource_residual_rms_jy_per_beam", 1e3),
+                ("off_source_residual_rms", 1e3),
             ):
-                val_mjy = float(raw) * scale
-                break
+                raw = img_meas.get(key)
+                if (
+                    isinstance(raw, (int, float))
+                    and not isinstance(raw, bool)
+                    and math.isfinite(float(raw))
+                ):
+                    val_mjy = float(raw) * scale
+                    break
         if val_mjy is not None:
             arm = str(rec.get("arm") or "00_none")
             rms_by_arm.setdefault(arm, []).append(val_mjy)
