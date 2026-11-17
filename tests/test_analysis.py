@@ -78,7 +78,7 @@ def _write_harbor_trial(
         agent_cfg_dict["model_name"] = model_name
 
     tcfg = TrialConfig(
-        task={"path": f"/var/mnt/fast/radio-bench/tasks/{task_name}"},
+        task={"path": f"/mnt/fast/radio-bench/tasks/{task_name}"},
         agent=agent_cfg_dict,
     )
     trial_dir = job_dir / tcfg.trial_name
@@ -99,7 +99,7 @@ def _write_harbor_trial(
         task_name=task_name,
         trial_name=tcfg.trial_name,
         trial_uri=f"file://{trial_dir}",
-        task_id=LocalTaskId(path=Path(f"/var/mnt/fast/radio-bench/tasks/{task_name}")),
+        task_id=LocalTaskId(path=Path(f"/mnt/fast/radio-bench/tasks/{task_name}")),
         task_checksum="deadbeef00112233",
         config=tcfg,
         agent_info=AgentInfo(name=agent_name, version="0.25.0", model_info=model_info),
@@ -1818,7 +1818,7 @@ def test_wave5_taxonomy_diagnostics_and_scientific_overlays(tmp_path: Path) -> N
         == "flux_model_or_fluxscale_error"
     )
 
-    cfg_file = Path("/var/mnt/fast/radio-bench/casaconfig_local.py")
+    cfg_file = Path("/mnt/fast/radio-bench/casaconfig_local.py")
     if cfg_file.is_file():
         os.environ.setdefault("CASASITECONFIG", str(cfg_file))
     import casatools

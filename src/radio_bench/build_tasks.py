@@ -1,8 +1,8 @@
 """Compile Harbor 0.25.0 task variants across capability arms for radio-bench.
 
 Reads the 10 canonical task specs in ``task_specs/<task_id>/`` plus the exported
-skill/agent trees in ``/var/mnt/fast/radio-bench/exported_skills/`` and emits up
-to 52 Harbor task directories under ``/var/mnt/fast/radio-bench/tasks/``:
+skill/agent trees in ``/mnt/fast/radio-bench/exported_skills/`` and emits up
+to 52 Harbor task directories under ``/mnt/fast/radio-bench/tasks/``:
 - 8 stage tasks x 5 arms (00_none, 01_skills_raw, 01_skills_casa, 10_tools, 11_full) = 40
 - 2 end-to-end tasks x 6 arms (+ 11_orchestrated when --include-orchestrated) = 12
 """
@@ -26,9 +26,9 @@ from harbor.models.task.config import TaskConfig
 from radio_bench.export_skills import DEFAULT_EXPORT_DIR as DEFAULT_SKILLS_DIR
 from radio_bench.export_skills import RADIO_ANALYST_SHA
 
-REPO_ROOT = Path("/var/home/pjaganna/Software/radio-bench")
+REPO_ROOT = Path("/home/pjaganna/Software/radio-bench")
 DEFAULT_SPECS_DIR = REPO_ROOT / "task_specs"
-DEFAULT_TASKS_DIR = Path("/var/mnt/fast/radio-bench/tasks")
+DEFAULT_TASKS_DIR = Path("/mnt/fast/radio-bench/tasks")
 
 ARM_NONE = "00_none"
 ARM_SKILLS_RAW = "01_skills_raw"

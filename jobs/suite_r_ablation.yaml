@@ -1,5 +1,5 @@
 job_name: suite_r_ablation
-jobs_dir: /var/mnt/fast/radio_bench_runs
+jobs_dir: /mnt/fast/radio_bench_runs
 n_attempts: 5
 n_concurrent_trials: 1
 retry:
@@ -36,23 +36,23 @@ agents:
     version: 1.19.5
     disable_web_search: true
 tasks:
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_inspect__00_none
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_inspect__01_skills_raw
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_inspect__01_skills_casa
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_inspect__10_tools
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_inspect__11_full
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_precal__00_none
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_precal__01_skills_raw
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_precal__01_skills_casa
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_precal__10_tools
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_precal__11_full
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_calibrate__00_none
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_calibrate__01_skills_raw
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_calibrate__01_skills_casa
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_calibrate__10_tools
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_calibrate__11_full
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_image__00_none
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_image__01_skills_raw
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_image__01_skills_casa
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_image__10_tools
-- path: /var/mnt/fast/radio-bench/tasks/r1_3c391_image__11_full
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_inspect__00_none
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_inspect__01_skills_raw
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_inspect__01_skills_casa
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_inspect__10_tools
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_inspect__11_full
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_precal__00_none
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_precal__01_skills_raw
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_precal__01_skills_casa
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_precal__10_tools
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_precal__11_full
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_calibrate__00_none
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_calibrate__01_skills_raw
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_calibrate__01_skills_casa
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_calibrate__10_tools
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_calibrate__11_full
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_image__00_none
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_image__01_skills_raw
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_image__01_skills_casa
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_image__10_tools
+- path: /mnt/fast/radio-bench/tasks/r1_3c391_image__11_full

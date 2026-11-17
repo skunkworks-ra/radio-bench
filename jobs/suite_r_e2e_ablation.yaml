@@ -1,5 +1,5 @@
 job_name: suite_r_e2e_ablation
-jobs_dir: /var/mnt/fast/radio_bench_runs
+jobs_dir: /mnt/fast/radio_bench_runs
 n_attempts: 3
 n_concurrent_trials: 1
 retry:
@@ -36,9 +36,9 @@ agents:
     version: 1.19.5
     disable_web_search: true
 tasks:
-- path: /var/mnt/fast/radio-bench/tasks/r2_3c391_e2e__00_none
-- path: /var/mnt/fast/radio-bench/tasks/r2_3c391_e2e__01_skills_raw
-- path: /var/mnt/fast/radio-bench/tasks/r2_3c391_e2e__01_skills_casa
-- path: /var/mnt/fast/radio-bench/tasks/r2_3c391_e2e__10_tools
-- path: /var/mnt/fast/radio-bench/tasks/r2_3c391_e2e__11_full
-- path: /var/mnt/fast/radio-bench/tasks/r2_3c391_e2e__11_orchestrated
+- path: /mnt/fast/radio-bench/tasks/r2_3c391_e2e__00_none
+- path: /mnt/fast/radio-bench/tasks/r2_3c391_e2e__01_skills_raw
+- path: /mnt/fast/radio-bench/tasks/r2_3c391_e2e__01_skills_casa
+- path: /mnt/fast/radio-bench/tasks/r2_3c391_e2e__10_tools
+- path: /mnt/fast/radio-bench/tasks/r2_3c391_e2e__11_full
+- path: /mnt/fast/radio-bench/tasks/r2_3c391_e2e__11_orchestrated

@@ -16,13 +16,13 @@ from typing import Any
 
 _cur_tmp = os.environ.get("TMPDIR", "").strip()
 if not _cur_tmp or _cur_tmp == "/tmp" or _cur_tmp.startswith("/tmp/"):
-    os.environ["TMPDIR"] = "/var/mnt/fast/radio-bench/tmp"
+    os.environ["TMPDIR"] = "/mnt/fast/radio-bench/tmp"
 
 _cur_mpl = os.environ.get("MPLCONFIGDIR", "").strip()
 if not _cur_mpl or _cur_mpl == "/tmp" or _cur_mpl.startswith("/tmp/"):
-    os.environ["MPLCONFIGDIR"] = "/var/mnt/fast/radio-bench/mplconfig"
+    os.environ["MPLCONFIGDIR"] = "/mnt/fast/radio-bench/mplconfig"
 
-os.environ.setdefault("CASASITECONFIG", "/var/mnt/fast/radio-bench/casaconfig_local.py")
+os.environ.setdefault("CASASITECONFIG", "/mnt/fast/radio-bench/casaconfig_local.py")
 
 import casatasks  # noqa: E402
 import casatools  # noqa: E402
@@ -40,8 +40,8 @@ from radio_bench.grading import (  # noqa: E402
     write_verifier_outputs,
 )
 
-SYNTH_ROOT = Path("/var/mnt/fast/radio_bench_data/synth")
-R3C391_ROOT = Path("/var/mnt/fast/radio_bench_data/checkpoints/3c391")
+SYNTH_ROOT = Path("/mnt/fast/radio_bench_data/synth")
+R3C391_ROOT = Path("/mnt/fast/radio_bench_data/checkpoints/3c391")
 
 
 def _parse_with_harbor(reward_json_path: Path) -> dict[str, float | int]:
@@ -871,14 +871,14 @@ def _run_py_script(script_path: Path, args: list[str]) -> None:
     import sys
 
     env = os.environ.copy()
-    env["TMPDIR"] = "/var/mnt/fast/radio-bench/tmp"
-    env["MPLCONFIGDIR"] = "/var/mnt/fast/radio-bench/mplconfig"
-    env.setdefault("CASASITECONFIG", "/var/mnt/fast/radio-bench/casaconfig_local.py")
+    env["TMPDIR"] = "/mnt/fast/radio-bench/tmp"
+    env["MPLCONFIGDIR"] = "/mnt/fast/radio-bench/mplconfig"
+    env.setdefault("CASASITECONFIG", "/mnt/fast/radio-bench/casaconfig_local.py")
     src_root = str(Path(__file__).resolve().parents[1] / "src")
     env["PYTHONPATH"] = f"{src_root}:{env['PYTHONPATH']}" if env.get("PYTHONPATH") else src_root
     proc = subprocess.run(
         [sys.executable, str(script_path), *args],
-        cwd="/var/mnt/fast/radio-bench/tmp",
+        cwd="/mnt/fast/radio-bench/tmp",
         env=env,
         capture_output=True,
         text=True,

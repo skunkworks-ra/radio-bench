@@ -1,6 +1,6 @@
 """Export `raw`, `orchestrated_skills`, and CASA-native (`casa`) skill trees + stage subagents.
 
-Reads strictly read-only via `git archive` from `/var/home/pjaganna/Software/radio-analyst` at
+Reads strictly read-only via `git archive` from `/home/pjaganna/Software/radio-analyst` at
 `RADIO_ANALYST_SHA = "00a11ea"`, never modifying `radio-analyst` and never touching `/tmp`.
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 
 from radio_bench import RADIO_ANALYST_SHA, TEST_ROOT
 
-DEFAULT_RADIO_ANALYST_REPO = Path("/var/home/pjaganna/Software/radio-analyst")
+DEFAULT_RADIO_ANALYST_REPO = Path("/home/pjaganna/Software/radio-analyst")
 DEFAULT_EXPORT_DIR = TEST_ROOT / "exported_skills"
 
 MS_TOKEN_RE = re.compile(r"\bms_[a-z0-9_]+\b")
@@ -1738,7 +1738,7 @@ def main(argv: list[str] | None = None) -> int:
         "--output-dir",
         type=Path,
         default=DEFAULT_EXPORT_DIR,
-        help="Destination directory on /var/mnt/fast/radio-bench.",
+        help="Destination directory on /mnt/fast/radio-bench.",
     )
     args = parser.parse_args(argv)
     summary = export_skills(

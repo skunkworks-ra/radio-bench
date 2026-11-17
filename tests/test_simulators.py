@@ -11,8 +11,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-# Configure CASA and scratch paths inside /var/mnt/fast/radio-bench before importing casatools.
-FAST_BENCH_ROOT = Path("/var/mnt/fast/radio-bench")
+# Configure CASA and scratch paths inside /mnt/fast/radio-bench before importing casatools.
+FAST_BENCH_ROOT = Path("/mnt/fast/radio-bench")
 
 
 def _ensure_non_tmp_env(var_name: str, fallback: Path) -> None:
@@ -69,10 +69,10 @@ from data_builders.sim_common import (  # noqa: E402
     load_vla_d_subset,
 )
 
-PRISTINE_3C391_MS = Path("/var/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms")
-PRISTINE_3C391_TGZ = Path("/var/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms.tgz")
-SYNTH_ROOT = Path("/var/mnt/fast/radio_bench_data/synth")
-CHECKPOINTS_3C391_ROOT = Path("/var/mnt/fast/radio_bench_data/checkpoints/3c391")
+PRISTINE_3C391_MS = Path("/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms")
+PRISTINE_3C391_TGZ = Path("/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms.tgz")
+SYNTH_ROOT = Path("/mnt/fast/radio_bench_data/synth")
+CHECKPOINTS_3C391_ROOT = Path("/mnt/fast/radio_bench_data/checkpoints/3c391")
 
 SUITE_S_TASKS = (
     "s1_inspect",
@@ -103,7 +103,7 @@ FORBIDDEN_HISTORY_SUBSTRINGS = (
     "Perley-Butler",
     "phase_cal.cl",
     "!ea13",
-    "/var/mnt/fast/",
+    "/mnt/fast/",
     "cal.K",
     "cal.B",
     "3c391_run",
@@ -311,7 +311,7 @@ class TestSimCommonUnit:
 
 
 class TestPristine3C391Source:
-    """Read-only non-modification checks on external `/var/mnt/fast/datasets/3c391_fresh/`."""
+    """Read-only non-modification checks on external `/mnt/fast/datasets/3c391_fresh/`."""
 
     def test_pristine_3c391_source_integrity(self) -> None:
         assert PRISTINE_3C391_TGZ.is_file(), f"Missing 3C391 archival tarball: {PRISTINE_3C391_TGZ}"

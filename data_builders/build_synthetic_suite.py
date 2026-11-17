@@ -14,13 +14,13 @@ from typing import Any
 
 _cur_tmpdir = os.environ.get("TMPDIR", "").strip()
 if not _cur_tmpdir or _cur_tmpdir == "/tmp" or _cur_tmpdir.startswith("/tmp/"):
-    os.environ["TMPDIR"] = "/var/mnt/fast/radio-bench/tmp"
+    os.environ["TMPDIR"] = "/mnt/fast/radio-bench/tmp"
 
 _cur_mpldir = os.environ.get("MPLCONFIGDIR", "").strip()
 if not _cur_mpldir or _cur_mpldir == "/tmp" or _cur_mpldir.startswith("/tmp/"):
-    os.environ["MPLCONFIGDIR"] = "/var/mnt/fast/radio-bench/mplconfig"
+    os.environ["MPLCONFIGDIR"] = "/mnt/fast/radio-bench/mplconfig"
 
-os.environ.setdefault("CASASITECONFIG", "/var/mnt/fast/radio-bench/casaconfig_local.py")
+os.environ.setdefault("CASASITECONFIG", "/mnt/fast/radio-bench/casaconfig_local.py")
 
 Path(os.environ["TMPDIR"]).mkdir(parents=True, exist_ok=True)
 Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
@@ -74,8 +74,8 @@ from data_builders.sim_common import (  # noqa: E402
     verify_ms_unlocked,
 )
 
-DEFAULT_OUT_DIR = Path("/var/mnt/fast/radio_bench_data/synth")
-DEFAULT_SCRATCH_ROOT = Path("/var/mnt/fast/radio-bench/tmp")
+DEFAULT_OUT_DIR = Path("/mnt/fast/radio_bench_data/synth")
+DEFAULT_SCRATCH_ROOT = Path("/mnt/fast/radio-bench/tmp")
 SYNTH_SEED = 20261113
 SIGMA_VIS_JY = 0.0527
 PT_SOURCE_SIGMA_MULT = 10.0
@@ -1594,7 +1594,7 @@ def main() -> None:
         "--out-dir",
         type=Path,
         default=DEFAULT_OUT_DIR,
-        help="Output root for Suite S tasks (default: /var/mnt/fast/radio_bench_data/synth)",
+        help="Output root for Suite S tasks (default: /mnt/fast/radio_bench_data/synth)",
     )
     parser.add_argument(
         "--scratch-root",

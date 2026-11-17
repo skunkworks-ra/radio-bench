@@ -23,7 +23,7 @@ CASA_BASE_IMAGE = "localhost/radio-bench-casa-base:latest"
 AGENT_IMAGE = "localhost/radio-bench-agent-base:latest"
 SIDECAR_IMAGE = "localhost/radio-bench-mcp-sidecar:latest"
 VERIFIER_IMAGE = "localhost/radio-bench-verifier:latest"
-RADIO_ANALYST_REPO = Path("/var/home/pjaganna/Software/radio-analyst")
+RADIO_ANALYST_REPO = Path("/home/pjaganna/Software/radio-analyst")
 
 OFFLINE_CASA_SNIPPET = (
     "import importlib.metadata as m, os, casatools, casatasks; "
@@ -976,7 +976,7 @@ def main(argv: list[str] | None = None) -> int:
         "--smoke-dir",
         type=Path,
         default=TEST_ROOT / "smoke",
-        help="Directory on /var/mnt/fast/radio-bench for smoke artifacts.",
+        help="Directory on /mnt/fast/radio-bench for smoke artifacts.",
     )
     args = parser.parse_args(argv)
     report = run_all_smoke_checks(args.smoke_dir)

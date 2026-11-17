@@ -152,7 +152,7 @@ def build_podman_env(
     test_root: Path = TEST_ROOT,
     data_root: Path = DATA_ROOT,
 ) -> dict[str, str]:
-    """Construct environment dictionary wired to rootless podman.sock and /var/mnt/fast."""
+    """Construct environment dictionary wired to rootless podman.sock and /mnt/fast."""
     env = dict(os.environ if base_env is None else base_env)
     sock = default_podman_socket(uid=uid)
     env.setdefault("DOCKER_HOST", f"unix://{sock}")
@@ -210,7 +210,7 @@ def check_podman_env(
     base_env: Mapping[str, str] | None = None,
     runner: CommandRunner = _default_runner,
 ) -> PodmanEnvReport:
-    """Verify rootless podman.sock, Compose v2, Harbor CLI, and /var/mnt/fast storage."""
+    """Verify rootless podman.sock, Compose v2, Harbor CLI, and /mnt/fast storage."""
     resolved_uid = os.getuid() if uid is None else uid
     sock = socket_path if socket_path is not None else default_podman_socket(resolved_uid)
     env = build_podman_env(base_env, uid=resolved_uid, test_root=test_root, data_root=data_root)

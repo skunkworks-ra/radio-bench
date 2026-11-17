@@ -19,11 +19,11 @@ def _configure_temp_env() -> Path:
     os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     cur_tmp = os.environ.get("TMPDIR", "").strip()
     if not cur_tmp or cur_tmp == "/tmp" or cur_tmp.startswith("/tmp/"):
-        fast_tmp = Path("/var/mnt/fast/radio-bench/tmp")
+        fast_tmp = Path("/mnt/fast/radio-bench/tmp")
         var_tmp = Path("/var/tmp")
         if fast_tmp.parent.exists() and os.access(fast_tmp.parent, os.W_OK):
             scratch = fast_tmp / f"verifier_{TASK_ID}_{os.getpid()}"
-            os.environ.setdefault("CASASITECONFIG", "/var/mnt/fast/radio-bench/casaconfig_local.py")
+            os.environ.setdefault("CASASITECONFIG", "/mnt/fast/radio-bench/casaconfig_local.py")
         else:
             scratch = var_tmp / f"verifier_{TASK_ID}_{os.getpid()}"
     else:

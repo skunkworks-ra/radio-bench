@@ -1,9 +1,9 @@
 """Deterministic builder for Suite R golden 3C391 checkpoints and ground-truth JSONs.
 
 Extracts the untouched archival tarball
-`/var/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms.tgz` strictly read-only
+`/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms.tgz` strictly read-only
 (falling back to copying `.ms` + resetting scratch/flags/STATE/HISTORY if only `.ms` exists) and
-generates under `/var/mnt/fast/radio_bench_data/checkpoints/3c391/`:
+generates under `/mnt/fast/radio_bench_data/checkpoints/3c391/`:
   - `raw/input.ms` (clean uncalibrated MS with zero scratch columns or prior-run history)
   - `post_precal/input.ms`, `post_precal/calibrators.ms`, `post_precal/precal_masks.npz`
   - `post_calibrate/input.ms`, `post_calibrate/caltables/{G0,K,B,G,fluxscale}.cal`
@@ -27,7 +27,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-FAST_BENCH_ROOT = Path("/var/mnt/fast/radio-bench")
+FAST_BENCH_ROOT = Path("/mnt/fast/radio-bench")
 
 
 def _ensure_non_tmp_env(var_name: str, fallback: Path) -> None:
@@ -54,16 +54,16 @@ import casatasks  # noqa: E402
 import casatools  # noqa: E402
 import numpy as np  # noqa: E402
 
-DEFAULT_SOURCE_MS = Path("/var/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms")
-DEFAULT_SOURCE_TGZ = Path("/var/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms.tgz")
-DEFAULT_OUT_DIR = Path("/var/mnt/fast/radio_bench_data/checkpoints/3c391")
+DEFAULT_SOURCE_MS = Path("/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms")
+DEFAULT_SOURCE_TGZ = Path("/mnt/fast/datasets/3c391_fresh/3c391_ctm_mosaic_10s_spw0.ms.tgz")
+DEFAULT_OUT_DIR = Path("/mnt/fast/radio_bench_data/checkpoints/3c391")
 RAW_SCRATCH_COLUMNS = ("CORRECTED_DATA", "MODEL_DATA", "IMAGING_WEIGHT")
 ARCHIVAL_HISTORY_ROWS = 14
 FORBIDDEN_HISTORY_SUBSTRINGS = (
     "Perley-Butler",
     "phase_cal.cl",
     "!ea13",
-    "/var/mnt/fast/",
+    "/mnt/fast/",
     "cal.K",
     "cal.B",
     "3c391_run",
@@ -723,7 +723,7 @@ def build_post_precal_checkpoint(
         datacolumn="all",
     )
 
-    # Purge leaked builder HISTORY rows (!ea13, Perley-Butler, /var/mnt/fast/...)
+    # Purge leaked builder HISTORY rows (!ea13, Perley-Butler, /mnt/fast/...)
     sanitize_ms_history(post_precal_ms, keep_rows=ARCHIVAL_HISTORY_ROWS)
     sanitize_ms_history(calibrators_ms, keep_rows=0)
 

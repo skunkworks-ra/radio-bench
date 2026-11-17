@@ -42,7 +42,7 @@ Goal: make the existing 4 stages + end-to-end continuum workflow (`inspect`, `pr
 | `radio_analyst_src` | `RADIO_BENCH_ANALYST_SRC` | git URL or local path | Source repo + pinned ref (`radio_analyst_ref`) for `mcp-sidecar` build and `export-skills` |
 | `casa_data_dir` | `RADIO_BENCH_CASA_DATA` | `~/.casa/data` | Host CASA measures table staged once into `casa-base` |
 
-All `pixi.toml` tasks call `python -m radio_bench.<cmd>` with relative paths and read `bench.toml` (with `bench.local.toml` gitignored for machine-specific overrides such as `/var/mnt/fast`).
+All `pixi.toml` tasks call `python -m radio_bench.<cmd>` with relative paths and read `bench.toml` (with `bench.local.toml` gitignored for machine-specific overrides such as `/mnt/fast`).
 
 ### 2.2 Dataset Manifest (`suites/<suite_id>/suite.toml`)
 

@@ -40,7 +40,7 @@ def resolve_scratch_root(scratch_root: Path | None = None) -> Path:
             cand.mkdir(parents=True, exist_ok=True)
             return cand
 
-    fast_tmp = Path("/var/mnt/fast/radio-bench/tmp")
+    fast_tmp = Path("/mnt/fast/radio-bench/tmp")
     if fast_tmp.parent.exists() and os.access(fast_tmp.parent, os.W_OK):
         fast_tmp.mkdir(parents=True, exist_ok=True)
         return fast_tmp
@@ -1522,7 +1522,7 @@ def _run_verifier_tclean_recipe(
         if not child_env.get("CASASITECONFIG", "").strip():
             for cand_cfg in (
                 Path("/etc/casa/config.py"),
-                Path("/var/mnt/fast/radio-bench/casaconfig_local.py"),
+                Path("/mnt/fast/radio-bench/casaconfig_local.py"),
             ):
                 if cand_cfg.is_file():
                     child_env["CASASITECONFIG"] = str(cand_cfg)

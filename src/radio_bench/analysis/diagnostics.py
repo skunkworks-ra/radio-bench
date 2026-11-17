@@ -722,7 +722,7 @@ def _discover_workspace_casa_tables(workspace_dir: Path, max_depth: int = 2) -> 
 
 
 def _import_casatools() -> Any | None:
-    cfg = Path("/var/mnt/fast/radio-bench/casaconfig_local.py")
+    cfg = Path("/mnt/fast/radio-bench/casaconfig_local.py")
     if cfg.is_file():
         os.environ.setdefault("CASASITECONFIG", str(cfg))
     try:

@@ -52,5 +52,5 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-cache_dir = "/var/mnt/fast/radio-bench/pytest_cache"
+cache_dir = "/mnt/fast/radio-bench/pytest_cache"
 testpaths = ["tests"]

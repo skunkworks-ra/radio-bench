@@ -49,8 +49,8 @@ from radio_bench.export_skills import (
 )
 from radio_bench.podman_env import ensure_docker_compose_plugin
 
-REPO_ROOT = Path("/var/home/pjaganna/Software/radio-bench")
-VAULT_SPECS_ROOT = Path("/var/home/pjaganna/Documents/Crypt/20-Projects/radio-bench/task_specs")
+REPO_ROOT = Path("/home/pjaganna/Software/radio-bench")
+VAULT_SPECS_ROOT = Path("/home/pjaganna/Documents/Crypt/20-Projects/radio-bench/task_specs")
 JOBS_DIR = REPO_ROOT / "jobs"
 
 STAGE_TASKS = (
@@ -587,7 +587,7 @@ def test_job_yaml_configs_and_opencode_nrp_provider(
     assert "00_vanilla" not in raw_text
 
     cfg = JobConfig.model_validate(yaml.safe_load(raw_text))
-    assert cfg.jobs_dir == Path("/var/mnt/fast/radio_bench_runs")
+    assert cfg.jobs_dir == Path("/mnt/fast/radio_bench_runs")
     assert cfg.environment.type == EnvironmentType.PODMAN
     assert cfg.environment.delete is True
     assert cfg.n_attempts == expected_attempts
