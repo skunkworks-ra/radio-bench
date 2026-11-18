@@ -92,17 +92,17 @@ MCP_SERVERS: list[dict[str, str]] = [
     {
         "name": "ms-inspect",
         "transport": "streamable-http",
-        "url": "http://mcp-servers:8000/mcp",
+        "url": "http://127.0.0.1:8000/mcp",
     },
     {
         "name": "ms-modify",
         "transport": "streamable-http",
-        "url": "http://mcp-servers:8001/mcp",
+        "url": "http://127.0.0.1:8001/mcp",
     },
     {
         "name": "ms-create",
         "transport": "streamable-http",
-        "url": "http://mcp-servers:8002/mcp",
+        "url": "http://127.0.0.1:8002/mcp",
     },
 ]
 
@@ -616,7 +616,7 @@ def _mcp_servers_for_ports(mcp_ports: dict[str, int]) -> list[dict[str, str]]:
                 {
                     "name": srv_name,
                     "transport": "streamable-http",
-                    "url": f"http://mcp-servers:{int(mcp_ports[srv_name])}/mcp",
+                    "url": f"http://127.0.0.1:{int(mcp_ports[srv_name])}/mcp",
                 }
             )
     return out

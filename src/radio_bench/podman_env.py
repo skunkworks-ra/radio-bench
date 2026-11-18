@@ -671,16 +671,22 @@ def smoke_compose_teardown(
                 main_cid = f"{proj_tools}-main-1"
 
             probe_snippet = (
-                "import socket, sys, time\n"
+                "import json, sys, time, urllib.request\n"
+                'payload = json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize",'
+                '"params":{"protocolVersion":"2025-03-26","capabilities":{},'
+                '"clientInfo":{"name":"smoke","version":"1.0"}}}).encode()\n'
                 f"for port in {ports_tuple!r}:\n"
                 "    for _ in range(150):\n"
                 "        try:\n"
-                "            with socket.create_connection(('mcp-servers', port), timeout=1.0):\n"
-                "                break\n"
-                "        except OSError:\n"
+                '            req = urllib.request.Request(f"http://127.0.0.1:{port}/mcp", data=payload, '
+                'headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"})\n'
+                "            with urllib.request.urlopen(req, timeout=2.0) as resp:\n"
+                "                if resp.status == 200:\n"
+                "                    break\n"
+                "        except Exception:\n"
                 "            time.sleep(0.2)\n"
                 "    else:\n"
-                "        sys.exit(f'Timed out waiting for mcp-servers:{port}')\n"
+                "        sys.exit(f'Timed out waiting for HTTP 200 on http://127.0.0.1:{port}/mcp')\n"
             )
             exec_proc = runner(
                 [

@@ -522,9 +522,9 @@ def test_single_vs_multipack_task_compilation_lint_and_collector_roundtrip(
     assert rescue_toml["metadata"]["arm"] == ARM_ORCHESTRATED
     urls = [s["url"] for s in rescue_toml["environment"]["mcp_servers"]]
     assert urls == [
-        "http://mcp-servers:9000/mcp",
-        "http://mcp-servers:9001/mcp",
-        "http://mcp-servers:9002/mcp",
+        "http://127.0.0.1:9000/mcp",
+        "http://127.0.0.1:9001/mcp",
+        "http://127.0.0.1:9002/mcp",
     ]
 
     rescue_compose = yaml.safe_load(

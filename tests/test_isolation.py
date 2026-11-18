@@ -312,6 +312,7 @@ def test_arm_skill_and_mcp_isolation() -> None:
             mcp_names = [s.name for s in cfg.environment.mcp_servers]
             assert mcp_names == ["ms-inspect", "ms-modify", "ms-create"]
             assert all(s.transport == "streamable-http" for s in cfg.environment.mcp_servers)
+            assert all(s.url.startswith("http://127.0.0.1:") for s in cfg.environment.mcp_servers)
         else:
             assert arm in {ARM_NONE, ARM_SKILLS_RAW, ARM_SKILLS_CASA}
             assert "mcp-servers" not in services, f"{task_dir.name} leaked mcp-servers service"
