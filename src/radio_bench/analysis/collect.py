@@ -9,7 +9,7 @@ import math
 import os
 import re
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -59,7 +59,11 @@ except ImportError:
             return self.trial_dir / "exception.txt"
 
 
-from radio_bench.analysis._trace import classify_mcp_server, safe_nonneg_int
+from radio_bench.analysis._trace import (
+    classify_mcp_server,
+    extract_agent_runtime_diagnostics,
+    safe_nonneg_int,
+)
 from radio_bench.analysis.pricing import (
     TrialExecutionAnalysis,
     analyze_trial_execution,
@@ -71,6 +75,31 @@ from radio_bench.config import reject_slash_tmp
 from radio_bench.grading import PASS_REWARD_MIN
 
 _classify_mcp_server = classify_mcp_server
+
+
+class TrialRecord(dict[str, Any]):
+    """Dict-backed trial record with default runtime health & provider diagnostics fields."""
+
+    def __init__(self, mapping: Mapping[str, Any] | None = None, **kwargs: Any) -> None:
+        super().__init__()
+        if mapping is not None:
+            self.update(mapping)
+        if kwargs:
+            self.update(kwargs)
+        self.setdefault("agent_exit_status", "ok")
+        self.setdefault("provider_error_kind", None)
+        self.setdefault("provider_status_code", None)
+        self.setdefault("provider_error_count", 0)
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(f"{type(self).__name__!r} has no attribute {name!r}") from exc
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+
 
 CANONICAL_ARMS: tuple[str, ...] = (
     "00_none",
@@ -126,6 +155,10 @@ CSV_BASE_COLUMNS: tuple[str, ...] = (
     "failure_mode",
     "exception_type",
     "exception_message",
+    "agent_exit_status",
+    "provider_error_kind",
+    "provider_status_code",
+    "provider_error_count",
     "total_wall_sec",
     "agent_wall_sec",
     "verifier_wall_sec",
@@ -1236,6 +1269,11 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         claude_txt_path=cc_txt_p,
     )
 
+    runtime_diag = extract_agent_runtime_diagnostics(oc_p, exception_type, exception_message)
+    eff_protocol_errors = int(telemetry["protocol_errors"])
+    if runtime_diag["provider_error_kind"] == "tool_call_parse_400":
+        eff_protocol_errors = max(1, eff_protocol_errors + 1)
+
     failure_mode = classify_failure(
         passed=passed,
         stage=stage,
@@ -1246,7 +1284,7 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         exception_type=exception_type,
         exception_message=exception_message,
         tool_errors=telemetry["tool_errors"],
-        protocol_errors=telemetry["protocol_errors"],
+        protocol_errors=eff_protocol_errors,
         mcp_calls_total=telemetry["mcp_calls_total"],
         bash_nonzero_exits=telemetry["bash_nonzero_exits"],
         severe_casa_errors=telemetry["severe_casa_errors"],
@@ -1313,6 +1351,10 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         "failure_mode": failure_mode,
         "exception_type": exception_type,
         "exception_message": exception_message,
+        "agent_exit_status": runtime_diag["agent_exit_status"],
+        "provider_error_kind": runtime_diag["provider_error_kind"],
+        "provider_status_code": runtime_diag["provider_status_code"],
+        "provider_error_count": runtime_diag["provider_error_count"],
         "total_wall_sec": total_wall_sec,
         "agent_wall_sec": agent_wall_sec,
         "verifier_wall_sec": verifier_wall_sec,
@@ -1324,7 +1366,7 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         "bash_calls": telemetry["bash_calls"],
         "bash_nonzero_exits": telemetry["bash_nonzero_exits"],
         "tool_errors": telemetry["tool_errors"],
-        "protocol_errors": telemetry["protocol_errors"],
+        "protocol_errors": eff_protocol_errors,
         **pricing.to_dict(),
         "trace_events_expected": trace_expected,
         "trace_events_observed": trace_observed,
@@ -1343,7 +1385,113 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
     if triggered_tags_list:
         trial_out["triggered_failure_tags"] = triggered_tags_list
 
-    return sanitize_json_tree(trial_out)
+    return TrialRecord(sanitize_json_tree(trial_out))
+
+
+collect_trial = collect_single_trial
+
+
+def summarize_run_health(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Summarize agent exit statuses, benign EPIPE exits, upstream API errors, and timeouts."""
+    clean_completions = 0
+    benign_epipe_exits = 0
+    provider_api_errors = 0
+    recovered_provider_errors = 0
+    agent_timeouts = 0
+    agent_errors = 0
+    provider_error_trials: list[dict[str, Any]] = []
+    recovered_provider_error_trials: list[dict[str, Any]] = []
+    timeout_trials: list[dict[str, Any]] = []
+    agent_error_trials: list[dict[str, Any]] = []
+
+    for rec in records:
+        status = str(rec.get("agent_exit_status") or "ok").strip() or "ok"
+        if status == "ok":
+            clean_completions += 1
+        elif status == "benign_epipe":
+            benign_epipe_exits += 1
+        elif status == "provider_api_error":
+            provider_api_errors += 1
+        elif status == "agent_timeout":
+            agent_timeouts += 1
+        else:
+            agent_errors += 1
+
+        p_cnt = safe_nonneg_int(rec.get("provider_error_count"))
+        p_kind = rec.get("provider_error_kind")
+        if status == "provider_api_error":
+            provider_error_trials.append(
+                {
+                    "trial_name": str(rec.get("trial_name") or ""),
+                    "base_task": str(rec.get("base_task") or ""),
+                    "stage": str(rec.get("stage") or ""),
+                    "arm": str(rec.get("arm") or ""),
+                    "model_name": str(rec.get("model_name") or ""),
+                    "n_turns": safe_nonneg_int(rec.get("n_turns")),
+                    "agent_exit_status": status,
+                    "provider_error_kind": p_kind,
+                    "provider_status_code": rec.get("provider_status_code"),
+                    "provider_error_count": p_cnt,
+                }
+            )
+        elif p_cnt > 0 or p_kind is not None:
+            recovered_provider_errors += 1
+            recovered_provider_error_trials.append(
+                {
+                    "trial_name": str(rec.get("trial_name") or ""),
+                    "base_task": str(rec.get("base_task") or ""),
+                    "stage": str(rec.get("stage") or ""),
+                    "arm": str(rec.get("arm") or ""),
+                    "model_name": str(rec.get("model_name") or ""),
+                    "n_turns": safe_nonneg_int(rec.get("n_turns")),
+                    "agent_exit_status": status,
+                    "provider_error_kind": p_kind,
+                    "provider_status_code": rec.get("provider_status_code"),
+                    "provider_error_count": p_cnt,
+                }
+            )
+        if status == "agent_timeout":
+            timeout_trials.append(
+                {
+                    "trial_name": str(rec.get("trial_name") or ""),
+                    "base_task": str(rec.get("base_task") or ""),
+                    "stage": str(rec.get("stage") or ""),
+                    "arm": str(rec.get("arm") or ""),
+                    "model_name": str(rec.get("model_name") or ""),
+                    "agent_wall_sec": float(rec.get("agent_wall_sec") or 0.0),
+                    "reward": float(rec.get("reward") or 0.0),
+                    "passed": int(rec.get("passed") or 0),
+                }
+            )
+        elif status not in ("ok", "benign_epipe", "provider_api_error"):
+            agent_error_trials.append(
+                {
+                    "trial_name": str(rec.get("trial_name") or ""),
+                    "base_task": str(rec.get("base_task") or ""),
+                    "stage": str(rec.get("stage") or ""),
+                    "arm": str(rec.get("arm") or ""),
+                    "model_name": str(rec.get("model_name") or ""),
+                    "exception_type": str(rec.get("exception_type") or ""),
+                    "reward": float(rec.get("reward") or 0.0),
+                    "passed": int(rec.get("passed") or 0),
+                }
+            )
+
+    return sanitize_json_tree(
+        {
+            "n_trials": len(records),
+            "clean_completions": clean_completions,
+            "benign_epipe_exits": benign_epipe_exits,
+            "provider_api_errors": provider_api_errors,
+            "recovered_provider_errors": recovered_provider_errors,
+            "agent_timeouts": agent_timeouts,
+            "agent_errors": agent_errors,
+            "provider_error_trials": provider_error_trials,
+            "recovered_provider_error_trials": recovered_provider_error_trials,
+            "timeout_trials": timeout_trials,
+            "agent_error_trials": agent_error_trials,
+        }
+    )
 
 
 def _atomic_write_text(target_path: Path, text: str) -> None:

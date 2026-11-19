@@ -1695,24 +1695,35 @@ def test_wave2_precal_unflagged_rfi_and_virtual_source_model(
     gt_s1 = _load_gt(SYNTH_ROOT / "s1_precal" / "ground_truth.json")
     npz_s1 = SYNTH_ROOT / "s1_precal" / "corruption_masks.npz"
 
-    # 1. Planted fault: clear all flags on input.ms and calibrators.ms -> must_flag_recall == 0.0
+    # 1. Planted fault: clear all flags on input.ms and split unflagged calibrators.ms -> must_flag_recall == 0.0
     ws_unflag = tmp_path / "ws_precal_unflag"
     ws_unflag.mkdir()
     shutil.copytree(synth_golden_precal_dir / "input.ms", ws_unflag / "input.ms")
-    shutil.copytree(synth_golden_precal_dir / "calibrators.ms", ws_unflag / "calibrators.ms")
-    for ms_p in (ws_unflag / "input.ms", ws_unflag / "calibrators.ms"):
-        tb = casatools.table()
-        tb.open(str(ms_p), nomodify=False)
-        try:
-            flg = tb.getcol("FLAG")
-            flgr = tb.getcol("FLAG_ROW")
-            flg[:] = False
-            flgr[:] = False
-            tb.putcol("FLAG", flg)
-            tb.putcol("FLAG_ROW", flgr)
-        finally:
-            tb.close()
-            tb.done()
+    tb = casatools.table()
+    tb.open(str(ws_unflag / "input.ms"), nomodify=False)
+    try:
+        flg = tb.getcol("FLAG")
+        flgr = tb.getcol("FLAG_ROW")
+        flg[:] = False
+        flgr[:] = False
+        tb.putcol("FLAG", flg)
+        tb.putcol("FLAG_ROW", flgr)
+    finally:
+        tb.close()
+        tb.done()
+    casatasks.split(
+        vis=str(ws_unflag / "input.ms"),
+        outputvis=str(ws_unflag / "calibrators.ms"),
+        field="J1331+3030,J1822-0938",
+        datacolumn="data",
+        keepflags=True,
+    )
+    casatasks.setjy(
+        vis=str(ws_unflag / "calibrators.ms"),
+        field="J1331+3030",
+        standard="Perley-Butler 2017",
+        usescratch=True,
+    )
 
     rew_unf, met_unf = grade_precal(ws_unflag, gt_s1, masks_npz_path=npz_s1, task_id="s1_precal")
     assert met_unf["measured"]["precal.must_flag_recall"] == 0.0
@@ -3036,3 +3047,298 @@ def test_wave2_adversarial_review_regressions(synth_golden_image_dir: Path, tmp_
         check=False,
     )
     assert proc_help.returncode == 0, f"STDERR:\n{proc_help.stderr}"
+
+
+def test_part2_precal_role_scoped_observables_and_calibrator_split_rubrics(
+    tmp_path: Path,
+) -> None:
+    """Verify role-scoped precal flag observables, calibrator-split 1.0 parity, and blanket-cal guard."""
+    from radio_bench.grading.extractors import WorkspaceExtractionResult
+    from radio_bench.grading.extractors.precal import extract_precal
+    from radio_bench.grading.inspect_metrics import resolve_task_configs
+    from radio_bench.grading.rubric import evaluate_rubric
+    from radio_bench.grading.schema import ObservableRecord
+
+    gt_s1 = _load_gt(SYNTH_ROOT / "s1_precal" / "ground_truth.json")
+    masks_s1 = SYNTH_ROOT / "s1_precal" / "corruption_masks.npz"
+
+    # 1. Build an arm-neutral calibrator-split `s1_precal` workspace:
+    #    - `input.ms` gets ONLY deterministic preflags (`quack_rows | dead_rows`), deferring
+    #      science-target statistical RFI (`rfi_channels`, target `burst_rows`) to `postcal`.
+    #    - `calibrators.ms` gets full calibrator RFI flagging (`burst_rows` + `rfi_channels`) + `setjy`.
+    ws_split = tmp_path / "ws_s1_cal_split"
+    ws_split.mkdir()
+    in_ms = ws_split / "input.ms"
+    cal_ms = ws_split / "calibrators.ms"
+    shutil.copytree(SYNTH_ROOT / "s1_precal" / "input.ms", in_ms)
+
+    intents_by_fid = {
+        0: "CALIBRATE_BANDPASS#ON_SOURCE;CALIBRATE_FLUX#ON_SOURCE",
+        1: "CALIBRATE_PHASE#ON_SOURCE",
+        2: "OBSERVE_TARGET#ON_SOURCE",
+        3: "OBSERVE_TARGET#ON_SOURCE",
+    }
+    unique_modes = sorted(set(intents_by_fid.values()))
+    mode_to_sid = {m: idx for idx, m in enumerate(unique_modes)}
+
+    tb_s = casatools.table()
+    tb_s.open(str(in_ms / "STATE"), nomodify=False)
+    try:
+        nrows = int(tb_s.nrows())
+        if nrows < len(unique_modes):
+            tb_s.addrows(len(unique_modes) - nrows)
+        elif nrows > len(unique_modes):
+            tb_s.removerows(list(range(len(unique_modes), nrows)))
+        for idx, mode in enumerate(unique_modes):
+            tb_s.putcell("OBS_MODE", idx, mode)
+    finally:
+        tb_s.close()
+        tb_s.done()
+
+    with np.load(masks_s1, allow_pickle=False) as z:
+        quack_rows = z["quack_rows"].astype(bool)
+        burst_rows = z["burst_rows"].astype(bool)
+        dead_rows = z["dead_rows"].astype(bool)
+        rfi_channels = z["rfi_channels"].astype(int).tolist()
+
+    tb_m = casatools.table()
+    tb_m.open(str(in_ms), nomodify=False)
+    try:
+        fids = tb_m.getcol("FIELD_ID")
+        sids = np.array([mode_to_sid[intents_by_fid[int(f)]] for f in fids], dtype=np.int32)
+        tb_m.putcol("STATE_ID", sids)
+        flg = tb_m.getcol("FLAG")
+        # Deterministic preflags ONLY on input.ms (no target rfi_channels or target burst_rows!)
+        flg[:, :, quack_rows | dead_rows] = True
+        cal_burst = burst_rows & np.isin(fids, [0, 1])
+        flg[:, :, cal_burst] = True
+        tb_m.putcol("FLAG", flg)
+        tb_m.putcol("FLAG_ROW", np.all(flg, axis=(0, 1)))
+    finally:
+        tb_m.close()
+        tb_m.done()
+
+    casatasks.split(
+        vis=str(in_ms),
+        outputvis=str(cal_ms),
+        field="J1331+3030,J1822-0938",
+        datacolumn="data",
+        keepflags=False,
+    )
+    casatasks.setjy(
+        vis=str(cal_ms),
+        field="J1331+3030",
+        standard="Perley-Butler 2017",
+        usescratch=True,
+    )
+    tb_c = casatools.table()
+    tb_c.open(str(cal_ms), nomodify=False)
+    try:
+        cflg = tb_c.getcol("FLAG")
+        for ch in rfi_channels:
+            cflg[:, ch, :] = True
+        tb_c.putcol("FLAG", cflg)
+        tb_c.putcol("FLAG_ROW", np.all(cflg, axis=(0, 1)))
+    finally:
+        tb_c.close()
+        tb_c.done()
+    casatasks.clearstat()
+
+    rew_split, met_split = grade_precal(
+        ws_split, gt_s1, masks_npz_path=masks_s1, task_id="s1_precal"
+    )
+    meas_split = met_split["measured"]
+    assert meas_split["precal.calibrator_must_flag_recall"] == pytest.approx(1.0)
+    assert 0.85 <= meas_split["precal.target_must_flag_recall"] < 1.0
+    assert meas_split["precal.calibrator_clean_false_positive_rate"] == pytest.approx(0.0)
+    assert meas_split["precal.target_clean_false_positive_rate"] == pytest.approx(0.0)
+    assert rew_split["flag_recall_score"] == pytest.approx(1.0)
+    assert rew_split["clean_fpr_score"] == pytest.approx(1.0)
+    assert rew_split["reward"] == pytest.approx(1.0)
+    assert rew_split["passed"] == 1
+
+    # 2. Verify missing/renamed fields -> `missing_artifact`, empty role list -> `not_applicable`,
+    #    missing `input.ms` -> `missing_artifact`, and vacuous submasks -> `1.0` / `0.0` (`measured`).
+    ec_s1, _ = resolve_task_configs("s1_precal", "precal", gt_s1)
+    ec_renamed_tgt = ec_s1.model_copy(
+        update={"roles": ec_s1.roles.model_copy(update={"targets": ["NONEXISTENT_TARGET_FIELD"]})},
+        deep=True,
+    )
+    obs_renamed_tgt, _ = extract_precal(
+        ws_split, ec_renamed_tgt, ref_arrays_dir=SYNTH_ROOT / "s1_precal"
+    )
+    assert obs_renamed_tgt["precal.calibrator_must_flag_recall"].status == "measured"
+    assert obs_renamed_tgt["precal.target_must_flag_recall"].status == "missing_artifact"
+    assert obs_renamed_tgt["precal.target_clean_false_positive_rate"].status == "missing_artifact"
+
+    ec_empty_tgt = ec_s1.model_copy(
+        update={"roles": ec_s1.roles.model_copy(update={"targets": []})},
+        deep=True,
+    )
+    obs_empty_tgt, _ = extract_precal(
+        ws_split, ec_empty_tgt, ref_arrays_dir=SYNTH_ROOT / "s1_precal"
+    )
+    assert obs_empty_tgt["precal.target_must_flag_recall"].status == "not_applicable"
+    assert obs_empty_tgt["precal.target_clean_false_positive_rate"].status == "not_applicable"
+
+    ws_empty_dir = tmp_path / "ws_missing_input_ms"
+    ws_empty_dir.mkdir()
+    obs_no_in, _ = extract_precal(ws_empty_dir, ec_s1, ref_arrays_dir=SYNTH_ROOT / "s1_precal")
+    assert obs_no_in["precal.must_flag_recall"].status == "missing_artifact"
+    assert obs_no_in["precal.calibrator_must_flag_recall"].status == "missing_artifact"
+    assert obs_no_in["precal.target_must_flag_recall"].status == "missing_artifact"
+
+    vac_npz = tmp_path / "vacuous_masks.npz"
+    with np.load(masks_s1, allow_pickle=False) as z:
+        c_shape = z["corrupted_chan_row"].shape
+    np.savez(
+        vac_npz,
+        must_flag_2d=np.zeros(c_shape, dtype=bool),
+        clean_2d=np.zeros(c_shape, dtype=bool),
+    )
+    obs_vac, _ = extract_precal(ws_split, ec_s1, ref_arrays_dir=vac_npz)
+    assert obs_vac["precal.calibrator_must_flag_recall"].status == "measured"
+    assert obs_vac["precal.calibrator_must_flag_recall"].value == pytest.approx(1.0)
+    assert obs_vac["precal.calibrator_clean_false_positive_rate"].value == pytest.approx(0.0)
+    assert obs_vac["precal.target_must_flag_recall"].value == pytest.approx(1.0)
+    assert obs_vac["precal.target_clean_false_positive_rate"].value == pytest.approx(0.0)
+
+    # 2b. Verify `keepflags=False` calibrator row-drop:
+    #     - Legitimate: calibrator rows in `input.ms` are left completely UNFLAGGED (`False`),
+    #       while `calibrators.ms` dropped `quack/dead/cal_burst` rows via `split(..., keepflags=False)`
+    #       -> absent calibrator rows are marked `True` in merged `eff_2d` -> `reward == 1.0`!
+    ws_kf = tmp_path / "ws_keepflags_false"
+    ws_kf.mkdir()
+    shutil.copytree(in_ms, ws_kf / "input.ms")
+    shutil.copytree(cal_ms, ws_kf / "calibrators.ms")
+    tb_kf_in = casatools.table()
+    tb_kf_in.open(str(ws_kf / "input.ms"), nomodify=False)
+    try:
+        kf_fids = tb_kf_in.getcol("FIELD_ID")
+        kf_flg = tb_kf_in.getcol("FLAG")
+        cal_in_rows = np.isin(kf_fids, [0, 1])
+        kf_flg[:, :, cal_in_rows] = False
+        tb_kf_in.putcol("FLAG", kf_flg)
+        tb_kf_in.putcol("FLAG_ROW", np.all(kf_flg, axis=(0, 1)))
+    finally:
+        tb_kf_in.close()
+        tb_kf_in.done()
+
+    rew_kf_ok, met_kf_ok = grade_precal(ws_kf, gt_s1, masks_npz_path=masks_s1, task_id="s1_precal")
+    assert met_kf_ok["measured"]["precal.calibrator_must_flag_recall"] == pytest.approx(1.0)
+    assert met_kf_ok["measured"]["precal.calibrator_clean_false_positive_rate"] == pytest.approx(
+        0.0
+    )
+    assert rew_kf_ok["reward"] == pytest.approx(1.0)
+    assert rew_kf_ok["passed"] == 1
+
+    #     - Adversarial: dropping clean calibrator rows/baselines from `calibrators.ms` marks those
+    #       absent rows `True`, spiking `calibrator_clean_false_positive_rate > 0.50` -> `0.0`!
+    shutil.rmtree(ws_kf / "calibrators.ms")
+    casatasks.split(
+        vis=str(cal_ms),
+        outputvis=str(ws_kf / "calibrators.ms"),
+        antenna="0&1",
+        datacolumn="all",
+        keepflags=True,
+    )
+    casatasks.clearstat()
+
+    rew_kf_drop, met_kf_drop = grade_precal(
+        ws_kf, gt_s1, masks_npz_path=masks_s1, task_id="s1_precal"
+    )
+    assert met_kf_drop["measured"]["precal.calibrator_clean_false_positive_rate"] > 0.50
+    assert rew_kf_drop["flag_recall_score"] == 0.0
+    assert rew_kf_drop["clean_fpr_score"] == 0.0
+    assert rew_kf_drop["passed"] == 0
+
+    # 3. Blanket-flagging `calibrators.ms` (`100%` of calibrators.ms flagged while science targets
+    #    remain clean so overall `clean_false_positive_rate < 0.50`) -> 0.0 on BOTH subscores!
+    tb_c2 = casatools.table()
+    tb_c2.open(str(cal_ms), nomodify=False)
+    try:
+        cflg2 = tb_c2.getcol("FLAG")
+        cflg2[:, :, :] = True
+        tb_c2.putcol("FLAG", cflg2)
+        tb_c2.putcol("FLAG_ROW", np.ones(cflg2.shape[2], dtype=bool))
+    finally:
+        tb_c2.close()
+        tb_c2.done()
+
+    rew_blanket_cal, met_blanket_cal = grade_precal(
+        ws_split, gt_s1, masks_npz_path=masks_s1, task_id="s1_precal"
+    )
+    assert met_blanket_cal["measured"]["precal.clean_false_positive_rate"] < 0.50
+    assert met_blanket_cal["measured"][
+        "precal.calibrator_clean_false_positive_rate"
+    ] == pytest.approx(1.0)
+    assert rew_blanket_cal["flag_recall_score"] == 0.0
+    assert rew_blanket_cal["clean_fpr_score"] == 0.0
+    assert rew_blanket_cal["passed"] == 0
+
+    # 4. Suite R (`r1_3c391_precal`): verify golden checkpoint observables + calibrator-split 1.0
+    #    + blanket-calibrator guard (`0.0` subscores, `passed == 0`)
+    ws_r1_gold = tmp_path / "ws_r1_gold_roles"
+    ws_r1_gold.mkdir()
+    os.symlink(R3C391_ROOT / "post_precal" / "input.ms", ws_r1_gold / "input.ms")
+    os.symlink(R3C391_ROOT / "post_precal" / "calibrators.ms", ws_r1_gold / "calibrators.ms")
+    rew_r1_g, met_r1_g = grade_task(
+        "r1_3c391_precal",
+        "precal",
+        ws_r1_gold,
+        R3C391_ROOT / "r1_3c391_precal",
+        tmp_path / "log_r1_gold_roles",
+    )
+    assert rew_r1_g["reward"] == pytest.approx(1.0)
+    assert rew_r1_g["passed"] == 1
+    assert met_r1_g["measured"]["precal.calibrator_must_flag_recall"] == pytest.approx(1.0)
+    assert met_r1_g["measured"]["precal.target_must_flag_recall"] == pytest.approx(1.0)
+    assert met_r1_g["measured"]["precal.calibrator_clean_false_positive_rate"] == pytest.approx(0.0)
+    assert met_r1_g["measured"]["precal.target_clean_false_positive_rate"] == pytest.approx(0.0)
+
+    gt_r1 = _load_gt(R3C391_ROOT / "r1_3c391_precal" / "ground_truth.json")
+    _, rb_r1 = resolve_task_configs("r1_3c391_precal", "precal", gt_r1)
+    r1_split_obs = {
+        k: ObservableRecord(**v)
+        for k, v in met_r1_g["measurements"].items()
+        if isinstance(v, dict) and "status" in v
+    }
+    # Deterministic preflags (`dead + 10s quack`) on 3C391 targets achieve ~41.88% target recall
+    r1_split_obs["precal.calibrator_must_flag_recall"] = ObservableRecord(
+        value=1.0, status="measured"
+    )
+    r1_split_obs["precal.target_must_flag_recall"] = ObservableRecord(
+        value=0.4188, status="measured"
+    )
+    r1_split_obs["precal.must_flag_recall"] = ObservableRecord(value=0.585, status="measured")
+    r1_split_obs["precal.clean_false_positive_rate"] = ObservableRecord(
+        value=0.002, status="measured"
+    )
+    r1_split_obs["precal.calibrator_clean_false_positive_rate"] = ObservableRecord(
+        value=0.004, status="measured"
+    )
+    r1_split_obs["precal.target_clean_false_positive_rate"] = ObservableRecord(
+        value=0.001, status="measured"
+    )
+    eval_r1_split = evaluate_rubric(
+        ws_r1_gold, WorkspaceExtractionResult(observables=r1_split_obs), rb_r1, gt_r1
+    )
+    assert eval_r1_split.subscores["flag_recall_score"] == pytest.approx(1.0)
+    assert eval_r1_split.subscores["clean_fpr_score"] == pytest.approx(1.0)
+    assert eval_r1_split.reward == pytest.approx(1.0)
+    assert eval_r1_split.passed == 1
+
+    # Blanket-flagging `calibrators.ms` on 3C391 (overall FPR ~0.16 < 0.50, calibrator FPR == 1.0)
+    r1_blanket_obs = dict(r1_split_obs)
+    r1_blanket_obs["precal.clean_false_positive_rate"] = ObservableRecord(
+        value=0.16, status="measured"
+    )
+    r1_blanket_obs["precal.calibrator_clean_false_positive_rate"] = ObservableRecord(
+        value=1.0, status="measured"
+    )
+    eval_r1_blanket = evaluate_rubric(
+        ws_r1_gold, WorkspaceExtractionResult(observables=r1_blanket_obs), rb_r1, gt_r1
+    )
+    assert eval_r1_blanket.subscores["flag_recall_score"] == 0.0
+    assert eval_r1_blanket.subscores["clean_fpr_score"] == 0.0
+    assert eval_r1_blanket.passed == 0

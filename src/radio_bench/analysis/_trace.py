@@ -97,6 +97,22 @@ BASH_TOOL_NAMES: frozenset[str] = frozenset(
 DISPATCH_TOOL_NAMES: frozenset[str] = frozenset({"agent", "task", "dispatch_agent"})
 PASSIVE_READ_TOOL_NAMES: frozenset[str] = frozenset({"read", "grep", "glob"})
 PASSIVE_OR_DISPATCH_TOOL_NAMES: frozenset[str] = DISPATCH_TOOL_NAMES | PASSIVE_READ_TOOL_NAMES
+BUILTIN_HARNESS_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "read",
+        "write",
+        "edit",
+        "multiedit",
+        "apply_patch",
+        "glob",
+        "grep",
+        "ls",
+        "todowrite",
+        "todoread",
+        "skill",
+        "task",
+    }
+)
 
 GENERIC_AGENT_MODES: frozenset[str] = frozenset(
     {"build", "plan", "general", "general-purpose", "default", "main"}
@@ -257,6 +273,39 @@ def extract_exit_code(
     return None
 
 
+_HARBOR_CMD_ECHO_WITH_STREAM_RE = re.compile(
+    r"(?is)^\s*command(?:\s+failed[^:]*?)?\s*:.*?(?:^|\n)\s*(stdout|stderr)\s*:(.*)$"
+)
+_HARBOR_CMD_ECHO_PREFIX_RE = re.compile(r"(?is)^\s*command(?:\s+failed\b|\s*:).*$")
+_HTTP_STATUS_MSG_RE = re.compile(
+    r"(?:error\s+code|status(?:\s+code)?|http)\s*[:=]?\s*([45]\d{2})\b|<title>\s*([45]\d{2})\b",
+    re.IGNORECASE,
+)
+
+_TIMEOUT_EXC_NAMES: frozenset[str] = frozenset(
+    {
+        "AgentTimeoutError",
+        "VerifierTimeoutError",
+        "EnvironmentStartTimeoutError",
+        "AgentSetupTimeoutError",
+        "Timeout",
+        "TimeoutError",
+    }
+)
+
+
+def strip_harbor_command_echo(exc_msg: str | None) -> str:
+    """Strip echoed agent invocation command/prompt text from Harbor `NonZeroAgentExitCodeError`."""
+    if not exc_msg:
+        return ""
+    m_stream = _HARBOR_CMD_ECHO_WITH_STREAM_RE.match(exc_msg)
+    if m_stream:
+        return f"{m_stream.group(1)}:{m_stream.group(2)}"
+    if _HARBOR_CMD_ECHO_PREFIX_RE.match(exc_msg):
+        return ""
+    return exc_msg
+
+
 def is_tool_error(
     tc_extra: dict[str, Any],
     obs_extra: dict[str, Any],
@@ -272,8 +321,12 @@ def is_tool_error(
         if isinstance(meta, dict) and meta.get("is_error") is True:
             return True
 
-    if fn_name.strip().lower() in PASSIVE_OR_DISPATCH_TOOL_NAMES:
+    low_fn = fn_name.strip().lower()
+    if low_fn in PASSIVE_OR_DISPATCH_TOOL_NAMES:
         return False
+    if low_fn in BASH_TOOL_NAMES:
+        ec = extract_exit_code(tc_extra, obs_extra, obs_text)
+        return bool(ec is not None and ec != 0)
 
     low = obs_text.lower()
     if "[error] tool reported failure" in low:
@@ -291,13 +344,289 @@ def is_protocol_error(fn_name: str, mcp_srv: str | None, obs_text: str, arm: str
 
     if low_fn == "invalid":
         return True
+    if (
+        low_fn in BASH_TOOL_NAMES
+        or low_fn in BUILTIN_HARNESS_TOOL_NAMES
+        or low_fn in PASSIVE_OR_DISPATCH_TOOL_NAMES
+    ):
+        return False
     if mcp_srv is not None and arm in {"00_none", "01_skills_raw", "01_skills_casa"}:
         return True
     if mcp_srv == "mcp-other" and low_fn.startswith("ms_") and low_fn not in ALL_KNOWN_MCP_TOOLS:
         return True
-    if low_fn in PASSIVE_OR_DISPATCH_TOOL_NAMES:
-        return False
     return any(phrase in low_obs for phrase in PROTOCOL_ERR_PHRASES)
+
+
+def _coerce_http_status_code(val: Any) -> int | None:
+    if isinstance(val, bool) or val is None:
+        return None
+    if isinstance(val, int):
+        return val if 100 <= val <= 599 else None
+    if isinstance(val, str):
+        s = val.strip()
+        if s.isdigit():
+            iv = int(s)
+            return iv if 100 <= iv <= 599 else None
+    return None
+
+
+def _extract_error_event_status_and_text(ev: dict[str, Any]) -> tuple[int | None, str]:
+    err_obj = ev.get("error") if isinstance(ev.get("error"), dict) else {}
+    data_obj = err_obj.get("data") if isinstance(err_obj.get("data"), dict) else {}
+
+    status_code: int | None = None
+    for cand in (
+        data_obj.get("statusCode"),
+        data_obj.get("status"),
+        data_obj.get("code"),
+        err_obj.get("statusCode"),
+        err_obj.get("status"),
+        err_obj.get("code"),
+        ev.get("statusCode"),
+    ):
+        status_code = _coerce_http_status_code(cand)
+        if status_code is not None:
+            break
+
+    text_parts: list[str] = []
+    for raw_field in (
+        err_obj.get("name"),
+        err_obj.get("message"),
+        data_obj.get("message"),
+        data_obj.get("responseBody"),
+        ev.get("message"),
+    ):
+        if isinstance(raw_field, str) and raw_field.strip():
+            s = raw_field.strip()
+            text_parts.append(s)
+            if status_code is None and s.startswith("{"):
+                with contextlib.suppress(json.JSONDecodeError):
+                    parsed = json.loads(s)
+                    if isinstance(parsed, dict):
+                        nested_err = (
+                            parsed.get("error") if isinstance(parsed.get("error"), dict) else {}
+                        )
+                        for ncand in (
+                            parsed.get("statusCode"),
+                            parsed.get("status"),
+                            parsed.get("code"),
+                            nested_err.get("statusCode"),
+                            nested_err.get("status"),
+                            nested_err.get("code"),
+                        ):
+                            status_code = _coerce_http_status_code(ncand)
+                            if status_code is not None:
+                                break
+                        if isinstance(nested_err.get("message"), str):
+                            text_parts.append(nested_err["message"])
+
+    combined_text = "\n".join(text_parts)
+    if status_code is None and combined_text:
+        m_sc = _HTTP_STATUS_MSG_RE.search(combined_text)
+        if m_sc:
+            raw_g = m_sc.group(1) or m_sc.group(2)
+            status_code = _coerce_http_status_code(raw_g)
+    return status_code, combined_text
+
+
+def _classify_provider_error(status_code: int | None, err_text: str) -> tuple[str, int | None]:
+    low = err_text.lower()
+    has_400 = (
+        status_code == 400
+        or "error code: 400" in low
+        or '"code":"400"' in low
+        or '"code": "400"' in low
+    )
+    if has_400 and any(
+        tok in low
+        for tok in (
+            "function calling",
+            "tool call",
+            "tool_call",
+            "mismatched closing tag",
+            "failed to parse tool",
+            "invalid_function",
+        )
+    ):
+        return "tool_call_parse_400", 400
+
+    if status_code == 429 or (
+        status_code is None
+        and any(tok in low for tok in ("rate limit", "ratelimiterror", "too many requests"))
+    ):
+        return "rate_limit_429", (status_code or 429)
+
+    if status_code in (502, 504) or any(
+        tok in low
+        for tok in (
+            "gateway time-out",
+            "gateway timeout",
+            "504 gateway",
+            "502 bad gateway",
+            "bad gateway",
+            "apiresponsestallederror",
+        )
+    ):
+        eff_sc = status_code
+        if eff_sc is None:
+            if "504" in low or "gateway time-out" in low or "gateway timeout" in low:
+                eff_sc = 504
+            elif "502" in low or "bad gateway" in low:
+                eff_sc = 502
+        return "upstream_timeout_504", eff_sc
+
+    if (status_code is not None and 500 <= status_code < 600) or any(
+        tok in low
+        for tok in (
+            "apiconnectionerror",
+            "apiinternalservererror",
+            "apioverloadederror",
+            "apiconnectionclosederror",
+            "networkconnectionerror",
+            "connection error",
+            "connection closed",
+            "connection reset",
+            "service unavailable",
+            "internal server error",
+            "overloaded",
+        )
+    ):
+        eff_5xx = status_code
+        if eff_5xx is None:
+            if "503" in low or "service unavailable" in low or "overloaded" in low:
+                eff_5xx = 503
+            elif "500" in low or "internal server error" in low:
+                eff_5xx = 500
+        return "upstream_connection_or_5xx", eff_5xx
+
+    return "provider_api_error", status_code
+
+
+def extract_agent_runtime_diagnostics(
+    opencode_txt_path: Path | None,
+    exc_type: str | None,
+    exc_msg: str | None,
+) -> dict[str, Any]:
+    """Classify OpenCode `opencode.txt` upstream errors, shutdown `EPIPE`s, and Harbor exceptions."""
+    exc_type_clean = (exc_type or "").strip()
+    stripped_exc = strip_harbor_command_echo(exc_msg)
+    saw_epipe = "epipe: broken pipe" in stripped_exc.lower()
+
+    provider_error_count = 0
+    provider_status_code: int | None = None
+    provider_error_kind: str | None = None
+    last_jsonl_type = ""
+
+    if opencode_txt_path is not None and Path(opencode_txt_path).is_file():
+        try:
+            lines = (
+                Path(opencode_txt_path).read_text(encoding="utf-8", errors="replace").splitlines()
+            )
+        except OSError:
+            lines = []
+
+        for raw_line in lines:
+            s = raw_line.strip()
+            if not s:
+                continue
+            if not s.startswith("{"):
+                if "epipe: broken pipe" in s.lower():
+                    saw_epipe = True
+                continue
+            try:
+                ev = json.loads(s)
+            except json.JSONDecodeError:
+                if "epipe: broken pipe" in s.lower():
+                    saw_epipe = True
+                continue
+            if not isinstance(ev, dict):
+                continue
+            etype = str(ev.get("type") or "").strip().lower()
+            if etype:
+                last_jsonl_type = etype
+            if etype != "error":
+                continue
+
+            provider_error_count += 1
+            ev_sc, ev_txt = _extract_error_event_status_and_text(ev)
+            ev_kind, norm_sc = _classify_provider_error(ev_sc, ev_txt)
+            # Prefer concrete 400 tool-call parse error if multiple error events exist,
+            # otherwise retain the latest upstream error terminating the session.
+            if provider_error_kind != "tool_call_parse_400" or ev_kind == "tool_call_parse_400":
+                provider_error_kind = ev_kind
+                if norm_sc is not None:
+                    provider_status_code = norm_sc
+
+    if provider_error_kind is None:
+        exc_low = stripped_exc.lower()
+        m_exc_sc = _HTTP_STATUS_MSG_RE.search(stripped_exc) if stripped_exc else None
+        exc_sc = _coerce_http_status_code(
+            (m_exc_sc.group(1) or m_exc_sc.group(2)) if m_exc_sc else None
+        )
+        if (exc_sc == 400 or "error code: 400" in exc_low) and any(
+            tok in exc_low
+            for tok in (
+                "function calling",
+                "tool call",
+                "tool_call",
+                "mismatched closing tag",
+                "failed to parse tool",
+            )
+        ):
+            provider_error_kind = "tool_call_parse_400"
+            provider_status_code = 400
+            provider_error_count = max(provider_error_count, 1)
+        elif exc_type_clean == "ApiRateLimitError":
+            provider_error_kind = "rate_limit_429"
+            provider_status_code = provider_status_code or exc_sc or 429
+            provider_error_count = max(provider_error_count, 1)
+        elif exc_type_clean == "ApiResponseStalledError":
+            provider_error_kind = "upstream_timeout_504"
+            provider_status_code = provider_status_code or exc_sc or 504
+            provider_error_count = max(provider_error_count, 1)
+        elif exc_type_clean in {
+            "ApiInternalServerError",
+            "ApiOverloadedError",
+            "ApiConnectionClosedError",
+            "NetworkConnectionError",
+        }:
+            provider_error_kind = "upstream_connection_or_5xx"
+            if provider_status_code is None:
+                if exc_sc is not None:
+                    provider_status_code = exc_sc
+                elif exc_type_clean == "ApiInternalServerError":
+                    provider_status_code = 500
+                elif exc_type_clean == "ApiOverloadedError":
+                    provider_status_code = 503
+            provider_error_count = max(provider_error_count, 1)
+        elif exc_type_clean.startswith("Api"):
+            provider_error_kind = "provider_api_error"
+            provider_status_code = provider_status_code or exc_sc
+            provider_error_count = max(provider_error_count, 1)
+
+    benign_epipe_exit = bool(
+        exc_type_clean == "NonZeroAgentExitCodeError" and saw_epipe and provider_error_count == 0
+    )
+    is_timeout = exc_type_clean in _TIMEOUT_EXC_NAMES or "timeout" in exc_type_clean.lower()
+
+    if benign_epipe_exit:
+        agent_exit_status = "benign_epipe"
+    elif is_timeout:
+        agent_exit_status = "agent_timeout"
+    elif provider_error_kind is not None and (bool(exc_type_clean) or last_jsonl_type == "error"):
+        agent_exit_status = "provider_api_error"
+    elif bool(exc_type_clean):
+        agent_exit_status = "agent_error"
+    else:
+        agent_exit_status = "ok"
+
+    return {
+        "benign_epipe_exit": benign_epipe_exit,
+        "provider_error_count": provider_error_count,
+        "provider_status_code": provider_status_code,
+        "provider_error_kind": provider_error_kind,
+        "agent_exit_status": agent_exit_status,
+    }
 
 
 def extract_dispatched_role(arguments: Any) -> str | None:

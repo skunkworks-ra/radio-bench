@@ -2,9 +2,12 @@
 
 from typing import TYPE_CHECKING, Any
 
+from radio_bench.analysis._trace import extract_agent_runtime_diagnostics
 from radio_bench.analysis.collect import (
     CANONICAL_ARMS,
+    TrialRecord,
     collect_single_trial,
+    collect_trial,
     collect_trials,
     discover_trial_dirs,
     extract_thinking_level,
@@ -13,11 +16,13 @@ from radio_bench.analysis.collect import (
     parse_task_variant_with_pack,
     reconcile_trace_completeness,
     sanitize_json_tree,
+    summarize_run_health,
     write_trials_outputs,
 )
 from radio_bench.analysis.diagnostics import (
     build_truth_vs_measured_table,
     generate_diagnostic_plots,
+    render_human_report_markdown,
     render_summary_markdown,
     write_diagnostic_reports,
 )
@@ -81,12 +86,14 @@ __all__ = [
     "PARETO_E2E_6_ARMS",
     "TrialExecutionAnalysis",
     "TrialPricing",
+    "TrialRecord",
     "TurnPricing",
     "analyze_factorial",
     "analyze_trial_execution",
     "build_truth_vs_measured_table",
     "classify_failure",
     "collect_single_trial",
+    "collect_trial",
     "collect_trials",
     "compute_pareto_frontiers",
     "compute_parity_summary",
@@ -98,6 +105,7 @@ __all__ = [
     "diff_visibilities",
     "diff_workspaces",
     "discover_trial_dirs",
+    "extract_agent_runtime_diagnostics",
     "extract_thinking_level",
     "extract_trajectory_telemetry",
     "generate_diagnostic_plots",
@@ -110,11 +118,13 @@ __all__ = [
     "price_from_agent_context",
     "price_turn",
     "reconcile_trace_completeness",
+    "render_human_report_markdown",
     "render_summary_markdown",
     "run_analysis_pipeline",
     "sanitize_json_tree",
     "summarize_arm_cells",
     "summarize_failure_taxonomy",
+    "summarize_run_health",
     "wilson_ci",
     "write_diagnostic_reports",
     "write_trials_outputs",

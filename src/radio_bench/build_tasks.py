@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import tomllib
 from collections.abc import Sequence
@@ -78,6 +79,7 @@ ARM_ORCHESTRATED = "11_orchestrated"
 
 SKILL_ARMS = frozenset({ARM_SKILLS_RAW, ARM_SKILLS_CASA, ARM_FULL, ARM_ORCHESTRATED})
 TOOL_ARMS = frozenset({ARM_TOOLS, ARM_FULL, ARM_ORCHESTRATED})
+OPENCODE_MCP_TIMEOUT_MS = 1_200_000
 
 AGENT_IMAGE = "${RADIO_BENCH_AGENT_IMAGE:-localhost/radio-bench-agent-base:latest}"
 SIDECAR_IMAGE = "${RADIO_BENCH_SIDECAR_IMAGE:-localhost/radio-bench-mcp-sidecar:00a11ea}"
@@ -763,6 +765,18 @@ def _build_environment_compose(
         ]
     )
     if has_tools:
+        oc_mcp_doc = {
+            "mcp": {
+                srv["name"]: {
+                    "type": "remote",
+                    "url": srv["url"],
+                    "oauth": False,
+                    "timeout": OPENCODE_MCP_TIMEOUT_MS,
+                }
+                for srv in _mcp_servers_for_ports(mcp_ports)
+            }
+        }
+        escaped_oc_jsonc = shlex.quote(json.dumps(oc_mcp_doc, indent=2))
         ports_tuple = tuple(int(p) for p in mcp_ports.values())
         tcp_probe = (
             "/opt/casa-venv/bin/python -c '"
@@ -780,6 +794,10 @@ def _build_environment_compose(
         )
         startup_lines.extend(
             [
+                "mkdir -p /home/analyst/.config/opencode",
+                f"printf '%s\\n' {escaped_oc_jsonc} > /home/analyst/.config/opencode/opencode.jsonc",
+                "chmod -R u+rwX,go+rX /home/analyst/.config",
+                "chown -R 1000:1000 /home/analyst/.config",
                 "touch /workspace/.ws_owned",
                 "chown 1000:1000 /workspace/.ws_owned",
                 tcp_probe,

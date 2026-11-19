@@ -360,9 +360,18 @@ class ModelSpec:
     host_gateway_required: bool = False
     disable_web_search: bool = True
     aliases: tuple[str, ...] = ()
+    opencode_config: dict[str, Any] = field(default_factory=dict)
     pricing: ModelPricingConfig = field(
         default_factory=lambda: ModelPricingConfig(0.0, 0.0, 0.0, 0.0, 0.0)
     )
+
+    @property
+    def agent(self) -> str:
+        return self.harness
+
+    @property
+    def model(self) -> str:
+        return self.model_name
 
 
 @dataclass(frozen=True)
@@ -627,6 +636,19 @@ def load_bench_config(
     )
 
 
+def _deep_merge_mapping(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {str(k): v for k, v in base.items()}
+    for k, v in override.items():
+        ks = str(k)
+        if isinstance(v, Mapping) and isinstance(out.get(ks), Mapping):
+            out[ks] = _deep_merge_mapping(out[ks], v)
+        elif isinstance(v, Mapping):
+            out[ks] = _deep_merge_mapping({}, v)
+        else:
+            out[ks] = v
+    return out
+
+
 def _merge_models_doc(base_doc: dict[str, Any], override_doc: Mapping[str, Any]) -> None:
     if isinstance(override_doc.get("models"), Mapping):
         models_target = base_doc.setdefault("models", {})
@@ -643,6 +665,10 @@ def _merge_models_doc(base_doc: dict[str, Any], override_doc: Mapping[str, Any])
                     merged_pricing = dict(cur.get("pricing") or {})
                     merged_pricing.update(fv)
                     cur["pricing"] = merged_pricing
+                elif fk == "opencode_config" and isinstance(fv, Mapping):
+                    cur["opencode_config"] = _deep_merge_mapping(
+                        cur.get("opencode_config") or {}, fv
+                    )
                 else:
                     cur[fk] = fv
             models_target[str(mkey)] = cur
@@ -724,6 +750,8 @@ def load_models_config(
             norm_api_fmt: str | None = "anthropic_messages"
         else:
             norm_api_fmt = raw_api_fmt
+        raw_oc_cfg = raw_m.get("opencode_config")
+        oc_cfg = _deep_merge_mapping({}, raw_oc_cfg) if isinstance(raw_oc_cfg, Mapping) else {}
         parsed_models[str(key)] = ModelSpec(
             key=str(key),
             harness=str(raw_m["harness"]),
@@ -741,6 +769,7 @@ def load_models_config(
             host_gateway_required=bool(raw_m.get("host_gateway_required", False)),
             disable_web_search=bool(raw_m.get("disable_web_search", True)),
             aliases=aliases,
+            opencode_config=oc_cfg,
             pricing=pricing,
         )
 

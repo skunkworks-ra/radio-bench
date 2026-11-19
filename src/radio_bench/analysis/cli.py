@@ -24,6 +24,7 @@ def run_analysis_pipeline(
     job_dirs: Sequence[Path | str],
     *,
     output_dir: Path | None = None,
+    diffs_dir: Path | None = None,
     plots: bool = False,
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_BOOT_SEED,
@@ -43,6 +44,8 @@ def run_analysis_pipeline(
         target_out = resolved_jobs[0] / "analysis"
 
     reject_slash_tmp(target_out, label="output_dir")
+    if diffs_dir is not None:
+        reject_slash_tmp(Path(diffs_dir), label="diffs_dir")
 
     records = collect_trials(resolved_jobs, output_dir=target_out)
     factorial_summary = analyze_factorial(records, n_boot=n_boot, seed=seed)
@@ -54,7 +57,9 @@ def run_analysis_pipeline(
         factorial_summary=factorial_summary,
         taxonomy_summary=taxonomy_summary,
         plots=plots,
+        diffs_dir=diffs_dir,
     )
+
     return {
         "output_dir": str(target_out),
         "trials_csv_path": str(target_out / "trials.csv"),
@@ -83,6 +88,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Explicit output directory (default: <first_job_dir>/analysis).",
+    )
+    parser.add_argument(
+        "--diffs-dir",
+        type=Path,
+        default=None,
+        help="Optional directory of diff-run *.json files (default: <output_dir>/diffs if present).",
     )
     parser.add_argument(
         "--plots",
@@ -114,6 +125,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = run_analysis_pipeline(
             args.job_dirs,
             output_dir=args.output_dir,
+            diffs_dir=args.diffs_dir,
             plots=bool(args.plots),
             n_boot=int(args.n_boot),
             seed=int(args.seed),

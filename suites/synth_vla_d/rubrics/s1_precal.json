@@ -115,21 +115,51 @@
         "combine": "multiplicative_cap",
         "children": [
           {
-            "observable": "precal.must_flag_recall",
-            "primitive": "lower_ramp",
-            "label": "Must-Flag Recall",
-            "params": {
-              "pass_min_key": ["tolerances.min_corrupted_recall", "tolerances.flag_recall_min"],
-              "zero_at": 0.50
-            }
+            "combine": "weighted_sum",
+            "weights": [0.75, 0.25],
+            "children": [
+              {
+                "observable": "precal.calibrator_must_flag_recall",
+                "primitive": "lower_ramp",
+                "label": "Calibrator Must-Flag Recall",
+                "params": {
+                  "pass_min_key": ["tolerances.min_corrupted_recall", "tolerances.flag_recall_min"],
+                  "zero_at": 0.50
+                }
+              },
+              {
+                "observable": "precal.target_must_flag_recall",
+                "primitive": "lower_ramp",
+                "label": "Target Deterministic Preflag Recall",
+                "params": {
+                  "pass_min": 0.85,
+                  "zero_at": 0.05
+                }
+              }
+            ]
           },
           {
-            "observable": "precal.clean_false_positive_rate",
-            "primitive": "upper_ramp",
-            "params": {
-              "pass_max": 0.25,
-              "zero_at": 0.75
-            }
+            "combine": "min_of",
+            "children": [
+              {
+                "observable": "precal.clean_false_positive_rate",
+                "primitive": "threshold_gate",
+                "label": "Overall Blanket-Flag Guard",
+                "params": {
+                  "op": "<",
+                  "limit": 0.50
+                }
+              },
+              {
+                "observable": "precal.calibrator_clean_false_positive_rate",
+                "primitive": "threshold_gate",
+                "label": "Calibrator Blanket-Flag Guard",
+                "params": {
+                  "op": "<",
+                  "limit": 0.50
+                }
+              }
+            ]
           }
         ]
       }
@@ -140,14 +170,29 @@
       "failure_tag": "flagging_recall_or_overflag",
       "label": "Clean Visibility False-Positive Guard",
       "expr": {
-        "observable": "precal.clean_false_positive_rate",
-        "primitive": "upper_ramp",
-        "label": "Clean False-Positive Rate",
-        "params": {
-          "strict_pass": true,
-          "pass_max_key": ["tolerances.max_clean_false_positive_rate", "tolerances.clean_false_positive_max"],
-          "decay_span": 0.15
-        }
+        "combine": "min_of",
+        "children": [
+          {
+            "observable": "precal.clean_false_positive_rate",
+            "primitive": "upper_ramp",
+            "label": "Clean False-Positive Rate",
+            "params": {
+              "strict_pass": true,
+              "pass_max_key": ["tolerances.max_clean_false_positive_rate", "tolerances.clean_false_positive_max"],
+              "decay_span": 0.15
+            }
+          },
+          {
+            "observable": "precal.calibrator_clean_false_positive_rate",
+            "primitive": "upper_ramp",
+            "label": "Calibrator Clean False-Positive Rate",
+            "params": {
+              "strict_pass": true,
+              "pass_max_key": ["tolerances.max_clean_false_positive_rate", "tolerances.clean_false_positive_max"],
+              "decay_span": 0.15
+            }
+          }
+        ]
       }
     }
   ]

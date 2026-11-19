@@ -1333,3 +1333,140 @@ def test_prompts_dir_override_readonly_copy_models_merges_and_explicit_tmp_guard
         rj.main(["--suites", "synth", "--arms", "00_none", "--output", "/tmp/bad_job.yaml"])
     with pytest.raises(ValueError, match="/tmp"):
         run_analysis_pipeline([tmp_path], output_dir=Path("/tmp/bad_analysis_out"))
+
+
+def test_part3_opencode_mcp_timeout_safe_retries_and_pixi_run_job(tmp_path: Path) -> None:
+    """Verify safe retry whitelist, opencode limit.context, tool-arm opencode.jsonc, and pixi run-job."""
+    repo_root = rb_cfg.resolve_repo_root()
+    pixi_doc = tomllib.loads((repo_root / "pixi.toml").read_text(encoding="utf-8"))
+    assert pixi_doc["tasks"]["run-job"] == "python -B -m radio_bench.cli run-job"
+
+    # 1. Safe retry.include_exceptions whitelist (NEVER NonZeroAgentExitCodeError or AgentTimeoutError)
+    custom_models = ModelsConfig(
+        models={
+            "oc_custom": ModelSpec(
+                key="oc_custom",
+                harness="opencode",
+                model_name="minimax/MiniMax-M2.5",
+                context_window_tokens=196_608,
+                opencode_config={
+                    "provider": {
+                        "minimax": {
+                            "models": {
+                                "MiniMax-M2.5": {
+                                    "limit": {"output": 40_000},
+                                    "options": {"temperature": 0.1},
+                                }
+                            }
+                        }
+                    },
+                    "mcp": {
+                        "should_be_stripped": {
+                            "type": "remote",
+                            "url": "http://mcp-servers:9999/mcp",
+                        }
+                    },
+                },
+            )
+        },
+        parity_pairs=(),
+    )
+    job_dict = compile_job_dict(
+        job_name="safe_retry_test",
+        suites=["synth"],
+        arms=["00_none", "11_full"],
+        model_keys=["oc_custom"],
+        tasks_dir=tmp_path / "tasks",
+        runs_dir=tmp_path / "runs",
+        jobs_out_dir=tmp_path / "jobs",
+        models_cfg=custom_models,
+        env=_clean_bench_env(),
+    )
+    # Validate against Harbor 0.25.0 JobConfig Pydantic schema
+    validated_job = JobConfig.model_validate(job_dict)
+    assert validated_job.retry.max_retries == 2
+    inc_exc = list(job_dict["retry"]["include_exceptions"])
+    assert inc_exc == [
+        "ApiRateLimitError",
+        "ApiInternalServerError",
+        "ApiOverloadedError",
+        "ApiConnectionClosedError",
+        "ApiResponseStalledError",
+        "NetworkConnectionError",
+    ]
+    assert "NonZeroAgentExitCodeError" not in inc_exc
+    assert "AgentTimeoutError" not in inc_exc
+
+    # 2. Verify opencode_config.provider.<prov>.models.<id>.limit + user deep-merge + zero mcp leak
+    agent_entry = rj._build_agent_entry(
+        custom_models.models["oc_custom"],
+        "default",
+        job_n_concurrent=2,
+        env=_clean_bench_env(),
+    )
+    oc_cfg = agent_entry["kwargs"]["opencode_config"]
+    assert "mcp" not in oc_cfg
+    lim = oc_cfg["provider"]["minimax"]["models"]["MiniMax-M2.5"]["limit"]
+    assert lim["context"] == 196_608
+    # User override on limit.output wins while auto-populated limit.context is preserved
+    assert lim["output"] == 40_000
+    assert oc_cfg["provider"]["minimax"]["models"]["MiniMax-M2.5"]["options"] == {
+        "temperature": 0.1
+    }
+
+    # Verify default output token cap min(65536, max(8192, ctx // 4)) when no override is supplied
+    auto_spec = ModelSpec(
+        key="oc_auto",
+        harness="opencode",
+        model_name="openrouter/qwen-coder",
+        context_window_tokens=131_072,
+    )
+    auto_entry = rj._build_agent_entry(
+        auto_spec, "default", job_n_concurrent=1, env=_clean_bench_env()
+    )
+    assert auto_entry["kwargs"]["opencode_config"] == {
+        "provider": {
+            "openrouter": {
+                "models": {
+                    "qwen-coder": {
+                        "limit": {
+                            "context": 131_072,
+                            "output": 32_768,
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    # 3. Verify build_tasks.py writes /home/analyst/.config/opencode/opencode.jsonc ONLY on tool arms
+    custom_ports = {"ms-inspect": 9101, "ms-modify": 9102, "ms-create": 9103}
+
+    for non_tool_arm in (ARM_NONE, ARM_SKILLS_RAW, ARM_SKILLS_CASA):
+        compose_nt = bt._build_environment_compose(
+            non_tool_arm,
+            cpus=4,
+            has_seed_workspace=(non_tool_arm in (ARM_SKILLS_RAW, ARM_SKILLS_CASA)),
+            has_calibrators_ms=False,
+            sidecar_image="localhost/radio-bench-mcp-sidecar:latest",
+            mcp_ports=custom_ports,
+        )
+        cmd_nt = compose_nt["services"]["main"]["command"][-1]
+        assert "opencode.jsonc" not in cmd_nt
+        assert "1200000" not in cmd_nt
+
+    for tool_arm in (ARM_TOOLS, ARM_FULL, ARM_ORCHESTRATED):
+        compose_t = bt._build_environment_compose(
+            tool_arm,
+            cpus=4,
+            has_seed_workspace=(tool_arm in (ARM_FULL, ARM_ORCHESTRATED)),
+            has_calibrators_ms=False,
+            sidecar_image="localhost/radio-bench-mcp-sidecar:latest",
+            mcp_ports=custom_ports,
+        )
+        cmd_t = compose_t["services"]["main"]["command"][-1]
+        assert "/home/analyst/.config/opencode/opencode.jsonc" in cmd_t
+        assert '"timeout": 1200000' in cmd_t
+        for srv_name, port in custom_ports.items():
+            assert f"http://127.0.0.1:{port}/mcp" in cmd_t
+            assert f'"{srv_name}"' in cmd_t

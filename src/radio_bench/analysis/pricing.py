@@ -1025,7 +1025,9 @@ def analyze_trial_execution(
                                 (ec is not None and ec != 0)
                                 or oc_failed
                                 or missing_oc_obs_err
-                                or is_tool_error(tc_extra, obs_extra, combined_obs_text)
+                                or is_tool_error(
+                                    tc_extra, obs_extra, combined_obs_text, fn_name=eff_fn_name
+                                )
                             ):
                                 telemetry["bash_nonzero_exits"] += 1
                                 r_acc.bash_nonzero_exits += 1
@@ -1045,8 +1047,11 @@ def analyze_trial_execution(
                             is_proto
                             or oc_failed
                             or missing_oc_obs_err
-                            or is_tool_error(
-                                tc_extra, obs_extra, combined_obs_text, fn_name=eff_fn_name
+                            or (
+                                not is_bash
+                                and is_tool_error(
+                                    tc_extra, obs_extra, combined_obs_text, fn_name=eff_fn_name
+                                )
                             )
                         )
                         if tool_failed:
@@ -1238,7 +1243,7 @@ def analyze_trial_execution(
                         if (
                             (ec is not None and ec != 0)
                             or oc_failed
-                            or is_tool_error({}, {}, comb_txt)
+                            or is_tool_error({}, {}, comb_txt, fn_name=fn_name)
                         ):
                             telemetry["bash_nonzero_exits"] += 1
                             r_acc.bash_nonzero_exits += 1
@@ -1255,7 +1260,9 @@ def analyze_trial_execution(
                         telemetry["protocol_errors"] += 1
 
                     tool_failed = bool(
-                        is_proto or oc_failed or is_tool_error({}, {}, comb_txt, fn_name=fn_name)
+                        is_proto
+                        or oc_failed
+                        or (not is_bash and is_tool_error({}, {}, comb_txt, fn_name=fn_name))
                     )
                     if tool_failed:
                         telemetry["tool_errors"] += 1

@@ -28,6 +28,7 @@ ObservableStatusLiteral = Literal[
     "locked_or_unreadable",
     "extractor_error",
 ]
+ObservableStatus = ObservableStatusLiteral
 
 PrimitiveLiteral = Literal[
     "bool_pass",
@@ -343,6 +344,27 @@ class RolesSpec(BaseModel):
     dead_antennas: list[str] = Field(default_factory=list)
     missing_stations: list[str] = Field(default_factory=list)
     target_retention_excludes_dead_antenna: bool = True
+
+    @property
+    def calibrator_fields(self) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for raw in (
+            *self.flux_cal,
+            *self.bandpass_cal,
+            *self.phase_cal,
+            *self.pol_angle_cal,
+            *self.pol_leakage_cal,
+        ):
+            clean = raw.strip()
+            if clean and clean.upper() not in seen:
+                seen.add(clean.upper())
+                out.append(clean)
+        return out
+
+    @property
+    def target_fields(self) -> list[str]:
+        return [t.strip() for t in self.targets if t.strip()]
 
 
 class SourceApertureSpec(BaseModel):

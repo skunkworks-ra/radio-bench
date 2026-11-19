@@ -2637,3 +2637,1092 @@ def test_v02_post_review_collect_stages_taxonomy_and_cli_regressions(
         ),
     ):
         pass
+
+
+def test_bug1a_echoed_prompt_lock_phrase_not_misclassified_as_lock_or_timeout() -> None:
+    """Verify NonZeroAgentExitCodeError echoing prompt text does not trigger lock_or_timeout."""
+    assert len(FAILURE_CATEGORIES) == 14
+
+    echoed_exc_msg = (
+        "Command failed (exit code 1):\n"
+        "Command: opencode run --format=json 'Inspect /workspace/input.ms and ensure "
+        "no active casacore table locks remain in /workspace before finishing.'\n"
+        "Stdout:\n"
+        '{"type":"step_finish","part":{"reason":"stop"}}\n'
+        "Stderr:\n"
+        "error: EPIPE: broken pipe, write\n"
+    )
+
+    # Case 1: Inspect deliverables present, reward=0.70, table_locked=False, elevation_score=0.0
+    inspect_metrics: dict[str, Any] = {
+        "schema_version": "0.2",
+        "stage": "inspect",
+        "table_locked": False,
+        "measurements": {
+            "proc.table_locked": {"value": False, "status": "measured"},
+            "inspect.summary_valid": {"value": True, "status": "measured"},
+            "inspect.bandpass_min_el_deg": {
+                "value": 36.12,
+                "unit": "deg",
+                "status": "measured",
+            },
+        },
+        "rubric_meta": {
+            "subscores": [
+                {
+                    "id": "roles_score",
+                    "stage": "inspect",
+                    "score": 1.0,
+                    "weight": 0.40,
+                    "failure_tag": "flux_model_or_fluxscale_error",
+                },
+                {
+                    "id": "dead_antenna_score",
+                    "stage": "inspect",
+                    "score": 1.0,
+                    "weight": 0.30,
+                    "failure_tag": "flagging_recall_or_overflag",
+                },
+                {
+                    "id": "elevation_score",
+                    "stage": "inspect",
+                    "score": 0.0,
+                    "weight": 0.30,
+                    "failure_tag": "skipped_delay_or_bandpass",
+                },
+            ]
+        },
+    }
+    inspect_rewards = {
+        "reward": 0.70,
+        "passed": 0,
+        "roles_score": 1.0,
+        "dead_antenna_score": 1.0,
+        "elevation_score": 0.0,
+    }
+    cat_inspect = classify_failure(
+        passed=0,
+        stage="inspect",
+        arm="00_none",
+        reward=0.70,
+        reward_dict=inspect_rewards,
+        metrics_dict=inspect_metrics,
+        exception_type="NonZeroAgentExitCodeError",
+        exception_message=echoed_exc_msg,
+        protocol_errors=0,
+    )
+    assert cat_inspect == "skipped_delay_or_bandpass"
+
+    # Case 2: metrics_dict is None (crash before verifier), echoed prompt mentions casacore table locks
+    cat_crash = classify_failure(
+        passed=0,
+        stage="inspect",
+        arm="00_none",
+        reward=0.0,
+        reward_dict=None,
+        metrics_dict=None,
+        exception_type="NonZeroAgentExitCodeError",
+        exception_message=echoed_exc_msg,
+        protocol_errors=0,
+    )
+    assert cat_crash == "script_or_casa_crash"
+
+    # Case 3: Genuine table lock in metrics_dict still returns lock_or_timeout immediately
+    locked_metrics = dict(inspect_metrics)
+    locked_metrics["table_locked"] = True
+    assert (
+        classify_failure(
+            passed=0,
+            stage="inspect",
+            arm="00_none",
+            reward=0.0,
+            reward_dict={"reward": 0.0, "passed": 0, "elevation_score": 0.0},
+            metrics_dict=locked_metrics,
+            exception_type="NonZeroAgentExitCodeError",
+            exception_message=echoed_exc_msg,
+            protocol_errors=0,
+        )
+        == "lock_or_timeout"
+    )
+
+
+def test_bug1b_bash_python_typeerror_not_misclassified_as_tool_protocol_error(
+    tmp_path: Path,
+) -> None:
+    """Verify Python TypeErrors inside bash scripts do not count as protocol_errors."""
+    from radio_bench.analysis._trace import is_protocol_error, is_tool_error
+
+    py_tb = (
+        "Traceback (most recent call last):\n"
+        '  File "cal.py", line 14, in <module>\n'
+        "    gaincal(vis='calibrators.ms', bogus_kw=1)\n"
+        "TypeError: gaincal() got an unexpected keyword argument 'bogus_kw'\n"
+    )
+    assert is_protocol_error("bash", None, py_tb, "00_none") is False
+    assert is_protocol_error("execute_bash", None, py_tb, "11_full") is False
+    for builtin in (
+        "read",
+        "write",
+        "edit",
+        "multiedit",
+        "apply_patch",
+        "glob",
+        "grep",
+        "ls",
+        "todowrite",
+        "todoread",
+        "skill",
+        "task",
+    ):
+        assert is_protocol_error(builtin, None, py_tb, "00_none") is False
+
+    # OpenCode invalid tool invocation and MCP validation errors remain protocol errors
+    assert is_protocol_error("invalid", None, "schema parse failed", "11_full") is True
+    assert (
+        is_protocol_error(
+            "ms-modify_ms_gaincal",
+            "ms-modify",
+            "InputValidationError: unexpected keyword argument 'bogus_kw'",
+            "11_full",
+        )
+        is True
+    )
+
+    # For bash, is_tool_error relies on explicit error metadata rather than stdout substrings
+    assert is_tool_error({}, {}, py_tb, fn_name="bash") is False
+    assert is_tool_error({}, {"is_error": True}, py_tb, fn_name="bash") is True
+
+    # Full Harbor trial on 00_none calibrate with reward=0.75 and bash Python TypeError
+    job_dir = tmp_path / "job_bug1b"
+    job_dir.mkdir()
+    traj = Trajectory(
+        schema_version="ATIF-v1.6",
+        session_id="ses_bug1b",
+        agent=Agent(name="opencode", version="1.2.0", model_name="minimax/MiniMax-M2.5"),
+        steps=[
+            Step(
+                step_id=1,
+                source="agent",
+                model_name="minimax/MiniMax-M2.5",
+                message="Run calibration script",
+                tool_calls=[
+                    ToolCall(
+                        tool_call_id="call_bash_1",
+                        function_name="bash",
+                        arguments={"command": "python cal.py"},
+                    )
+                ],
+                observation=Observation(
+                    results=[
+                        ObservationResult(
+                            source_call_id="call_bash_1",
+                            content=py_tb + "\n[exit_code]: 1\n",
+                        )
+                    ]
+                ),
+                metrics=Metrics(prompt_tokens=1000, completion_tokens=200),
+            )
+        ],
+        final_metrics=FinalMetrics(
+            total_prompt_tokens=1000,
+            total_completion_tokens=200,
+            total_steps=1,
+        ),
+    )
+    cal_metrics: dict[str, Any] = {
+        "schema_version": "0.2",
+        "stage": "calibrate",
+        "table_locked": False,
+        "measurements": {
+            "proc.table_locked": {"value": False, "status": "measured"},
+            "cal.corrected_distinct_from_data": {"value": True, "status": "measured"},
+        },
+        "rubric_meta": {
+            "subscores": [
+                {
+                    "id": "bandpass_flatness_score",
+                    "stage": "calibrate",
+                    "score": 0.0,
+                    "weight": 0.25,
+                    "failure_tag": "skipped_delay_or_bandpass",
+                },
+                {
+                    "id": "fluxscale_score",
+                    "stage": "calibrate",
+                    "score": 1.0,
+                    "weight": 0.25,
+                    "failure_tag": "flux_model_or_fluxscale_error",
+                },
+            ]
+        },
+    }
+    _write_harbor_trial(
+        job_dir,
+        task_name="r1_3c391_calibrate__00_none",
+        agent_name="opencode",
+        model_name="minimax/MiniMax-M2.5",
+        reward_dict={
+            "reward": 0.75,
+            "passed": 0,
+            "bandpass_flatness_score": 0.0,
+            "fluxscale_score": 1.0,
+        },
+        metrics_dict=cal_metrics,
+        trajectory=traj,
+    )
+    recs = collect_trials([job_dir])
+    assert len(recs) == 1
+    assert recs[0]["protocol_errors"] == 0
+    assert recs[0]["bash_nonzero_exits"] == 1
+    assert recs[0]["tool_errors"] == 0
+    assert recs[0]["failure_mode"] == "skipped_delay_or_bandpass"
+
+
+def test_bug1c_benign_epipe_and_late_timeout_preserve_physics_rubric_tags() -> None:
+    """Verify physics rubric tags take precedence when all deliverables exist and reward > 0."""
+    # 1. Precal reward=0.70 with NonZeroAgentExitCodeError (shutdown EPIPE) -> flagging_recall_or_overflag
+    precal_metrics: dict[str, Any] = {
+        "schema_version": "0.2",
+        "stage": "precal",
+        "table_locked": False,
+        "measurements": {
+            "proc.table_locked": {"value": False, "status": "measured"},
+            "precal.calibrators_ms_nrows": {"value": 1200, "status": "measured"},
+        },
+        "rubric_meta": {
+            "subscores": [
+                {
+                    "id": "calibrators_ms_score",
+                    "stage": "precal",
+                    "score": 1.0,
+                    "weight": 0.20,
+                    "failure_tag": "script_or_casa_crash",
+                },
+                {
+                    "id": "model_data_score",
+                    "stage": "precal",
+                    "score": 1.0,
+                    "weight": 0.25,
+                    "failure_tag": "flux_model_or_fluxscale_error",
+                },
+                {
+                    "id": "flag_recall_score",
+                    "stage": "precal",
+                    "score": 0.0,
+                    "weight": 0.30,
+                    "failure_tag": "flagging_recall_or_overflag",
+                },
+                {
+                    "id": "clean_fpr_score",
+                    "stage": "precal",
+                    "score": 1.0,
+                    "weight": 0.25,
+                    "failure_tag": "flagging_recall_or_overflag",
+                },
+            ]
+        },
+    }
+    assert (
+        classify_failure(
+            passed=0,
+            stage="precal",
+            arm="11_full",
+            reward=0.70,
+            reward_dict={
+                "reward": 0.70,
+                "passed": 0,
+                "calibrators_ms_score": 1.0,
+                "model_data_score": 1.0,
+                "flag_recall_score": 0.0,
+                "clean_fpr_score": 1.0,
+            },
+            metrics_dict=precal_metrics,
+            exception_type="NonZeroAgentExitCodeError",
+            exception_message="error: EPIPE: broken pipe, write",
+        )
+        == "flagging_recall_or_overflag"
+    )
+
+    # 2. Image reward=0.43 with NonZeroAgentExitCodeError -> beam_sampling_or_clean_bowl
+    img_metrics: dict[str, Any] = {
+        "schema_version": "0.2",
+        "stage": "image",
+        "table_locked": False,
+        "measurements": {
+            "proc.table_locked": {"value": False, "status": "measured"},
+            "image.valid_product_count": {"value": 5, "status": "measured"},
+        },
+        "rubric_meta": {
+            "subscores": [
+                {
+                    "id": "deconv_and_bowl_score",
+                    "stage": "image",
+                    "score": 0.0,
+                    "weight": 0.35,
+                    "failure_tag": "beam_sampling_or_clean_bowl",
+                },
+                {
+                    "id": "residual_rms_score",
+                    "stage": "image",
+                    "score": 0.80,
+                    "weight": 0.30,
+                    "failure_tag": "beam_sampling_or_clean_bowl",
+                },
+            ]
+        },
+    }
+    assert (
+        classify_failure(
+            passed=0,
+            stage="image",
+            arm="11_full",
+            reward=0.43,
+            reward_dict={
+                "reward": 0.43,
+                "passed": 0,
+                "deconv_and_bowl_score": 0.0,
+                "residual_rms_score": 0.80,
+            },
+            metrics_dict=img_metrics,
+            exception_type="NonZeroAgentExitCodeError",
+            exception_message="error: EPIPE: broken pipe, write",
+        )
+        == "beam_sampling_or_clean_bowl"
+    )
+
+    # 3. E2E reward=0.74 with post-deliverable AgentTimeoutError -> beam_sampling_or_clean_bowl
+    e2e_metrics: dict[str, Any] = {
+        "schema_version": "0.2",
+        "stage": "e2e",
+        "table_locked": False,
+        "measurements": {
+            "proc.table_locked": {"value": False, "status": "measured"},
+            "cal.corrected_distinct_from_data": {"value": True, "status": "measured"},
+            "image.valid_product_count": {"value": 5, "status": "measured"},
+        },
+        "rubric_meta": {
+            "subscores": [
+                {
+                    "id": "cal_fluxscale_score",
+                    "stage": "calibrate",
+                    "score": 1.0,
+                    "weight": 0.25,
+                    "failure_tag": "flux_model_or_fluxscale_error",
+                },
+                {
+                    "id": "img_deconv_and_bowl_score",
+                    "stage": "image",
+                    "score": 0.0,
+                    "weight": 0.26,
+                    "failure_tag": "beam_sampling_or_clean_bowl",
+                },
+            ]
+        },
+    }
+    assert (
+        classify_failure(
+            passed=0,
+            stage="e2e",
+            arm="11_orchestrated",
+            reward=0.74,
+            reward_dict={
+                "reward": 0.74,
+                "passed": 0,
+                "cal_fluxscale_score": 1.0,
+                "img_deconv_and_bowl_score": 0.0,
+            },
+            metrics_dict=e2e_metrics,
+            exception_type="AgentTimeoutError",
+            exception_message="Agent timed out after 3600s",
+        )
+        == "beam_sampling_or_clean_bowl"
+    )
+
+    # 4. Fallback to lock_or_timeout if AgentTimeoutError had all physics subscores == 1.0
+    e2e_perfect_sub: dict[str, Any] = {
+        "schema_version": "0.2",
+        "stage": "e2e",
+        "table_locked": False,
+        "measurements": {
+            "proc.table_locked": {"value": False, "status": "measured"},
+            "cal.corrected_distinct_from_data": {"value": True, "status": "measured"},
+            "image.valid_product_count": {"value": 5, "status": "measured"},
+        },
+        "rubric_meta": {
+            "subscores": [
+                {
+                    "id": "img_deconv_and_bowl_score",
+                    "stage": "image",
+                    "score": 1.0,
+                    "weight": 0.26,
+                    "failure_tag": "beam_sampling_or_clean_bowl",
+                },
+            ]
+        },
+    }
+    assert (
+        classify_failure(
+            passed=0,
+            stage="e2e",
+            arm="11_orchestrated",
+            reward=0.80,
+            reward_dict={"reward": 0.80, "passed": 0, "img_deconv_and_bowl_score": 1.0},
+            metrics_dict=e2e_perfect_sub,
+            exception_type="AgentTimeoutError",
+            exception_message="Agent timed out after 3600s",
+        )
+        == "lock_or_timeout"
+    )
+
+
+def test_bug1d_extract_agent_runtime_diagnostics_and_run_health(tmp_path: Path) -> None:
+    """Verify runtime diagnostics for EPIPE, HTTP 400 tool parse, 429, 500, and 504."""
+    from radio_bench.analysis import (
+        TrialRecord,
+        extract_agent_runtime_diagnostics,
+        summarize_run_health,
+    )
+    from radio_bench.analysis.cli import run_analysis_pipeline
+
+    # Verify additive TrialRecord defaults keep bare constructor backward-compatible
+    default_rec = TrialRecord(trial_name="t0", passed=1, reward=1.0)
+    assert default_rec["agent_exit_status"] == "ok"
+    assert default_rec["provider_error_kind"] is None
+    assert default_rec["provider_status_code"] is None
+    assert default_rec["provider_error_count"] == 0
+
+    # 1. Benign EPIPE (middle of opencode.txt stderr + zero JSON error events)
+    oc_epipe = tmp_path / "oc_epipe.txt"
+    oc_epipe.write_text(
+        '{"type":"step_start","part":{}}\n'
+        "error: EPIPE: broken pipe, write\n"
+        '{"type":"step_finish","part":{"reason":"stop"}}\n',
+        encoding="utf-8",
+    )
+    d_epipe = extract_agent_runtime_diagnostics(
+        oc_epipe,
+        "NonZeroAgentExitCodeError",
+        "Command failed (exit code 1)",
+    )
+    assert d_epipe["benign_epipe_exit"] is True
+    assert d_epipe["provider_error_count"] == 0
+    assert d_epipe["provider_error_kind"] is None
+    assert d_epipe["agent_exit_status"] == "benign_epipe"
+
+    # 2. HTTP 400 malformed tool call mislabeled by Harbor as ApiRateLimitError with 599 header
+    oc_400 = tmp_path / "oc_400.txt"
+    err_400_event = {
+        "type": "error",
+        "error": {
+            "name": "APIError",
+            "data": {
+                "statusCode": 400,
+                "message": "Invalid function calling XML: mismatched closing tag </invoke>",
+                "responseHeaders": {
+                    "x-ratelimit-limit-requests": "600",
+                    "x-ratelimit-remaining-requests": "599",
+                },
+            },
+        },
+    }
+    oc_400.write_text(json.dumps(err_400_event) + "\n", encoding="utf-8")
+    d_400 = extract_agent_runtime_diagnostics(
+        oc_400,
+        "ApiRateLimitError",
+        json.dumps(err_400_event),
+    )
+    assert d_400["benign_epipe_exit"] is False
+    assert d_400["provider_error_count"] == 1
+    assert d_400["provider_status_code"] == 400
+    assert d_400["provider_error_kind"] == "tool_call_parse_400"
+    assert d_400["agent_exit_status"] == "provider_api_error"
+
+    # 3. Genuine HTTP 429 rate limit
+    oc_429 = tmp_path / "oc_429.txt"
+    oc_429.write_text(
+        json.dumps(
+            {
+                "type": "error",
+                "error": {"data": {"statusCode": 429, "message": "Too Many Requests"}},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d_429 = extract_agent_runtime_diagnostics(oc_429, "ApiRateLimitError", "429 Too Many Requests")
+    assert d_429["provider_status_code"] == 429
+    assert d_429["provider_error_kind"] == "rate_limit_429"
+    assert d_429["agent_exit_status"] == "provider_api_error"
+
+    # 4. HTTP 500 APIConnectionError
+    oc_500 = tmp_path / "oc_500.txt"
+    oc_500.write_text(
+        json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "data": {
+                        "statusCode": 500,
+                        "message": "APIConnectionError: upstream connection reset",
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d_500 = extract_agent_runtime_diagnostics(oc_500, "NonZeroAgentExitCodeError", "exit 1")
+    assert d_500["provider_status_code"] == 500
+    assert d_500["provider_error_kind"] == "upstream_connection_or_5xx"
+    assert d_500["agent_exit_status"] == "provider_api_error"
+
+    # 5. HTTP 504 Gateway Time-out
+    oc_504 = tmp_path / "oc_504.txt"
+    oc_504.write_text(
+        json.dumps(
+            {
+                "type": "error",
+                "error": {"data": {"statusCode": 504, "message": "504 Gateway Time-out"}},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d_504 = extract_agent_runtime_diagnostics(
+        oc_504, "NonZeroAgentExitCodeError", "504 Gateway Time-out"
+    )
+    assert d_504["provider_status_code"] == 504
+    assert d_504["provider_error_kind"] == "upstream_timeout_504"
+    assert d_504["agent_exit_status"] == "provider_api_error"
+
+    # Verify collect_trials increments protocol_errors on tool_call_parse_400 -> tool_protocol_error
+    # and populates summary.json["run_health"]
+    job_dir = tmp_path / "job_health"
+    job_dir.mkdir()
+    td_400, _ = _write_harbor_trial(
+        job_dir,
+        task_name="r1_3c391_calibrate__11_full",
+        agent_name="opencode",
+        model_name="minimax/MiniMax-M2.5",
+        reward_dict={"reward": 0.0, "passed": 0},
+        metrics_dict=None,
+        exception_info=ExceptionInfo(
+            exception_type="ApiRateLimitError",
+            exception_message=json.dumps(err_400_event),
+            exception_traceback="Traceback...",
+            occurred_at=datetime(2026, 11, 14, 12, 5, 0, tzinfo=UTC),
+        ),
+    )
+    (td_400 / "agent" / "opencode.txt").write_text(
+        oc_400.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    td_epipe, _ = _write_harbor_trial(
+        job_dir,
+        task_name="r1_3c391_inspect__11_full",
+        agent_name="opencode",
+        model_name="minimax/MiniMax-M2.5",
+        reward_dict={"reward": 1.0, "passed": 1},
+        metrics_dict={
+            "schema_version": "0.2",
+            "stage": "inspect",
+            "table_locked": False,
+            "measurements": {"inspect.summary_valid": {"value": True, "status": "measured"}},
+        },
+        exception_info=ExceptionInfo(
+            exception_type="NonZeroAgentExitCodeError",
+            exception_message="Command failed: exit 1",
+            exception_traceback="Traceback...",
+            occurred_at=datetime(2026, 11, 14, 12, 2, 0, tzinfo=UTC),
+        ),
+    )
+    (td_epipe / "agent" / "opencode.txt").write_text(
+        oc_epipe.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    out_dir = tmp_path / "analysis_health_out"
+    bundle = run_analysis_pipeline([job_dir], output_dir=out_dir, n_boot=50)
+    summary_on_disk = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    rh = summary_on_disk["run_health"]
+    assert bundle["summary"]["run_health"] == rh
+    assert rh["n_trials"] == 2
+    assert rh["clean_completions"] == 0
+    assert rh["benign_epipe_exits"] == 1
+    assert rh["provider_api_errors"] == 1
+    assert rh["agent_timeouts"] == 0
+    assert len(rh["provider_error_trials"]) == 1
+    assert rh["provider_error_trials"][0]["provider_error_kind"] == "tool_call_parse_400"
+
+    recs = collect_trials([job_dir])
+    rec_by_stage = {r["stage"]: r for r in recs}
+    assert rec_by_stage["calibrate"]["protocol_errors"] >= 1
+    assert rec_by_stage["calibrate"]["failure_mode"] == "tool_protocol_error"
+    assert rec_by_stage["inspect"]["agent_exit_status"] == "benign_epipe"
+    assert summarize_run_health(recs)["benign_epipe_exits"] == 1
+    assert (out_dir / "report.md").is_file()
+
+
+def test_part4_render_human_report_markdown_and_cli_integration(tmp_path: Path) -> None:
+    """Verify report.md generation for sparse 3-arm runs, diffs, subagents, and multi-seed 4-arm runs."""
+    import radio_bench.cli as top_cli
+    from radio_bench.analysis import TrialRecord, render_human_report_markdown
+    from radio_bench.analysis.cli import run_analysis_pipeline
+
+    # 1. Sparse 3-arm 3C391 run with upstream API 500/504/400 drops, late timeout, subagents, and diffs
+    diffs_dir = tmp_path / "diffs"
+    diffs_dir.mkdir()
+    (diffs_dir / "r1_3c391_image__11_full__abc.json").write_text(
+        json.dumps(
+            {
+                "trial_name": "r1_3c391_image__11_full__abc",
+                "images": {
+                    "status": "ok",
+                    "ncc": 0.9942,
+                    "aperture_flux_ratio": 0.985,
+                    "offsource_rms_ratio": 1.12,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sparse_records = [
+        TrialRecord(
+            trial_name="r1_3c391_inspect__00_none__t1",
+            base_task="r1_3c391_inspect",
+            suite="suite_r",
+            stage="inspect",
+            arm="00_none",
+            model_name="minimax/MiniMax-M2.5",
+            passed=0,
+            reward=0.70,
+            agent_wall_sec=120.0,
+            n_turns=8,
+            total_usd=0.0,
+            failure_mode="skipped_delay_or_bandpass",
+            agent_exit_status="ok",
+            subscores={"flux_bandpass_score": 0.5, "elevation_score": 0.0},
+            measured={
+                "inspect.flux_cal_list": ["J1331+3030"],
+                "inspect.bandpass_cal_list": ["J0319+4130"],
+                "inspect.bandpass_min_el_deg": 38.20,
+            },
+        ),
+        TrialRecord(
+            trial_name="r1_3c391_inspect__11_full__t2",
+            base_task="r1_3c391_inspect",
+            suite="suite_r",
+            stage="inspect",
+            arm="11_full",
+            model_name="minimax/MiniMax-M2.5",
+            passed=1,
+            reward=1.0,
+            agent_wall_sec=78.0,
+            n_turns=5,
+            total_usd=0.0,
+            failure_mode="none",
+            agent_exit_status="benign_epipe",
+            subscores={"flux_bandpass_score": 1.0, "elevation_score": 1.0},
+            measured={
+                "inspect.flux_cal_list": ["J1331+3030"],
+                "inspect.bandpass_cal_list": ["J1331+3030"],
+                "inspect.bandpass_min_el_deg": 34.87,
+            },
+        ),
+        TrialRecord(
+            trial_name="r1_3c391_precal__11_full__t3",
+            base_task="r1_3c391_precal",
+            suite="suite_r",
+            stage="precal",
+            arm="11_full",
+            model_name="minimax/MiniMax-M2.5",
+            passed=0,
+            reward=0.70,
+            agent_wall_sec=410.0,
+            n_turns=16,
+            total_usd=0.0,
+            failure_mode="flagging_recall_or_overflag",
+            agent_exit_status="benign_epipe",
+            subscores={"flag_recall_score": 0.0, "clean_fpr_score": 1.0},
+            measured={
+                "precal.flux_cal_model_amp_jy": 7.59,
+                "precal.calibrator_must_flag_recall": 0.998,
+                "precal.target_must_flag_recall": 0.04,
+                "precal.clean_false_positive_rate": 0.002,
+            },
+        ),
+        TrialRecord(
+            trial_name="r1_3c391_calibrate__00_none__t3b",
+            base_task="r1_3c391_calibrate",
+            suite="suite_r",
+            stage="calibrate",
+            arm="00_none",
+            model_name="minimax/MiniMax-M2.5",
+            passed=0,
+            reward=0.75,
+            agent_wall_sec=750.0,
+            n_turns=40,
+            total_usd=0.0,
+            failure_mode="skipped_delay_or_bandpass",
+            agent_exit_status="ok",
+            subscores={"bandpass_flatness_score": 0.0, "fluxscale_score": 1.0},
+            measured={
+                "cal.corrected_distinct_from_data": True,
+                "cal.bandpass_cal_calibrated": False,
+                "cal.fluxscale_table_flux_jy": 2.296,
+                "cal.verifier_tclean_dr": 265.4,
+            },
+        ),
+        TrialRecord(
+            trial_name="r1_3c391_calibrate__11_full__t4",
+            base_task="r1_3c391_calibrate",
+            suite="suite_r",
+            stage="calibrate",
+            arm="11_full",
+            model_name="minimax/MiniMax-M2.5",
+            passed=0,
+            reward=0.0,
+            agent_wall_sec=295.0,
+            n_turns=11,
+            total_usd=0.0,
+            failure_mode="tool_protocol_error",
+            agent_exit_status="provider_api_error",
+            provider_error_kind="tool_call_parse_400",
+            provider_status_code=400,
+            provider_error_count=1,
+            measured={"cal.corrected_distinct_from_data": False},
+        ),
+        TrialRecord(
+            trial_name="r1_3c391_image__11_full__abc",
+            base_task="r1_3c391_image",
+            suite="suite_r",
+            stage="image",
+            arm="11_full",
+            model_name="minimax/MiniMax-M2.5",
+            passed=0,
+            reward=0.43,
+            agent_wall_sec=540.0,
+            n_turns=14,
+            total_usd=0.0,
+            failure_mode="beam_sampling_or_clean_bowl",
+            agent_exit_status="ok",
+            subscores={"deconv_and_bowl_score": 0.0},
+            measured={
+                "image.offsource_residual_rms_jy": 0.00021,
+                "image.dynamic_range": 412.5,
+                "image.negative_bowl_ratio": 0.19,
+            },
+        ),
+        TrialRecord(
+            trial_name="r2_3c391_e2e__00_none__t5",
+            base_task="r2_3c391_e2e",
+            suite="suite_r",
+            stage="e2e",
+            arm="00_none",
+            model_name="minimax/MiniMax-M2.5",
+            passed=0,
+            reward=0.0,
+            agent_wall_sec=610.0,
+            n_turns=13,
+            total_usd=0.0,
+            failure_mode="script_or_casa_crash",
+            agent_exit_status="provider_api_error",
+            provider_error_kind="upstream_connection_or_5xx",
+            provider_status_code=500,
+            provider_error_count=1,
+        ),
+        TrialRecord(
+            trial_name="r2_3c391_e2e__11_full__t6",
+            base_task="r2_3c391_e2e",
+            suite="suite_r",
+            stage="e2e",
+            arm="11_full",
+            model_name="minimax/MiniMax-M2.5",
+            passed=0,
+            reward=0.0,
+            agent_wall_sec=920.0,
+            n_turns=19,
+            total_usd=0.0,
+            failure_mode="script_or_casa_crash",
+            agent_exit_status="provider_api_error",
+            provider_error_kind="upstream_timeout_504",
+            provider_status_code=504,
+            provider_error_count=1,
+        ),
+        TrialRecord(
+            trial_name="r2_3c391_e2e__11_orchestrated__t7",
+            base_task="r2_3c391_e2e",
+            suite="suite_r",
+            stage="e2e",
+            arm="11_orchestrated",
+            model_name="minimax/MiniMax-M2.5",
+            passed=0,
+            reward=0.74,
+            agent_wall_sec=3600.0,
+            n_turns=42,
+            total_usd=0.0,
+            failure_mode="beam_sampling_or_clean_bowl",
+            agent_exit_status="agent_timeout",
+            subscores={"img_deconv_and_bowl_score": 0.0},
+            measured={
+                "cal.corrected_distinct_from_data": True,
+                "cal.bandpass_cal_calibrated": True,
+                "cal.fluxscale_table_flux_jy": 2.303,
+                "cal.bandpass_coh_phase_slope_deg_per_100mhz": 0.0003,
+                "cal.bandpass_coh_chan_phase_rms_deg": 0.0049,
+                "cal.verifier_tclean_dr": 387.7,
+                "image.offsource_residual_rms_jy": 0.00018,
+                "image.dynamic_range": 480.0,
+                "image.negative_bowl_ratio": 0.14,
+            },
+            role_breakdown={
+                "orchestrator": {
+                    "turns": 10,
+                    "mcp_calls_total": 0,
+                    "bash_calls": 2,
+                    "total_usd": 0.0,
+                },
+                "inspect-stage": {
+                    "turns": 6,
+                    "mcp_calls_total": 5,
+                    "bash_calls": 0,
+                    "total_usd": 0.0,
+                },
+                "precal-stage": {
+                    "turns": 9,
+                    "mcp_calls_total": 7,
+                    "bash_calls": 1,
+                    "total_usd": 0.0,
+                },
+                "calibrate-stage": {
+                    "turns": 10,
+                    "mcp_calls_total": 8,
+                    "bash_calls": 0,
+                    "total_usd": 0.0,
+                },
+                "image-stage": {
+                    "turns": 7,
+                    "mcp_calls_total": 4,
+                    "bash_calls": 1,
+                    "total_usd": 0.0,
+                },
+            },
+        ),
+    ]
+    md_sparse = render_human_report_markdown(sparse_records, {}, diffs_dir=diffs_dir)
+    assert "\u2014" not in md_sparse
+    assert "\u2013" not in md_sparse
+    assert "does **not** unit-test prompt guides or MCP tools in isolation" in md_sparse
+    assert "VLA 3C391 C-band 7-Pointing Continuum Mosaic (4.6 GHz)" in md_sparse
+    assert "Bare CASA (No Guides, No MCP Tools)" in md_sparse
+    assert "Guides + MCP Tools (Single Agent)" in md_sparse
+    assert "Guides + MCP Tools (Orchestrated Subagents)" in md_sparse
+    assert "| 1. Observation Inspection |" in md_sparse
+    assert "Capability arms not included in this run" in md_sparse
+    assert "flux calibrator `J1331+3030`; bandpass calibrator `J0319+4130`" in md_sparse
+    assert "minimum bandpass elevation `38.20 deg`" in md_sparse
+    assert "minimum bandpass elevation `34.87 deg`" in md_sparse
+    assert "bandpass calibrator left uncalibrated" in md_sparse
+    assert "CORRECTED_DATA not populated" in md_sparse
+    assert (
+        "bandpass phase slope `0.00 deg/100MHz`; bandpass channel phase RMS `0.00 deg`" in md_sparse
+    )
+    assert "INCOMPLETE 0.00 -- upstream API 500 drop at turn 13" in md_sparse
+    assert "INCOMPLETE 0.00 -- upstream API 504 timeout at turn 19" in md_sparse
+    assert "FAIL 0.74 -- clean bowl + late timeout (60.0m)" in md_sparse
+    assert "`inspect-stage`" in md_sparse
+    assert "`image-stage`" in md_sparse
+    assert "common-beam NCC 0.9942" in md_sparse
+
+    # 2. Multi-seed 4-arm matrix formatting (`k/n PASS, mean ...`)
+    multi_records: list[TrialRecord] = []
+    for arm in ("00_none", "01_skills_casa", "10_tools", "11_full"):
+        for seed_idx, (passed_i, rew_i) in enumerate(((1, 1.0), (0, 0.70))):
+            multi_records.append(
+                TrialRecord(
+                    trial_name=f"s1_inspect__{arm}__s{seed_idx}",
+                    base_task="s1_inspect",
+                    suite="suite_s",
+                    stage="inspect",
+                    arm=arm,
+                    model_name="anthropic/claude-haiku-4-5",
+                    passed=passed_i,
+                    reward=rew_i,
+                    agent_wall_sec=45.0,
+                    n_turns=4,
+                    total_usd=0.05,
+                    failure_mode="none" if passed_i else "skipped_delay_or_bandpass",
+                    agent_exit_status="ok",
+                )
+            )
+    md_multi = render_human_report_markdown(multi_records, {})
+    assert "\u2014" not in md_multi
+    assert "\u2013" not in md_multi
+    assert "Synthetic VLA D-Configuration C-band Continuum" in md_multi
+    assert "1/2 PASS, mean 0.85" in md_multi
+    assert "Workflow Guides Only (CASA)" in md_multi
+    assert "MCP Tools Only (No Guides)" in md_multi
+
+    # 2b. Multi-model + multi-suite + multi-pack isolation (never pooled as `n` seeds in Sec 2)
+    #     plus recovered_provider_errors vs agent_errors Run Health accounting & anchored echo strip
+    from radio_bench.analysis import summarize_run_health
+    from radio_bench.analysis._trace import strip_harbor_command_echo
+
+    midline_prompt = (
+        "Command failed (exit 1): opencode run 'Do not print stdout: table.lock text'\n"
+        "Stderr:\n"
+        "actual runtime crash\n"
+    )
+    stripped_mid = strip_harbor_command_echo(midline_prompt)
+    assert "table.lock" not in stripped_mid
+    assert "actual runtime crash" in stripped_mid
+
+    cross_group_records = [
+        TrialRecord(
+            trial_name="s1_inspect__11_full__m1",
+            base_task="s1_inspect",
+            suite="suite_s",
+            stage="inspect",
+            arm="11_full",
+            pack_id="ra_00a11ea",
+            model_name="anthropic/claude-haiku-4-5",
+            thinking_level="low",
+            passed=1,
+            reward=1.0,
+            agent_wall_sec=30.0,
+            n_turns=3,
+            total_usd=0.02,
+            failure_mode="none",
+            agent_exit_status="ok",
+            provider_error_kind="rate_limit_429",
+            provider_status_code=429,
+            provider_error_count=1,
+            measured={"inspect.bandpass_min_el_deg": 20.42},
+        ),
+        TrialRecord(
+            trial_name="r1_3c391_inspect__10_tools__m2",
+            base_task="r1_3c391_inspect",
+            suite="suite_r",
+            stage="inspect",
+            arm="10_tools",
+            pack_id="ra_rescue",
+            model_name="minimax/MiniMax-M2.5",
+            thinking_level="high",
+            passed=0,
+            reward=0.0,
+            agent_wall_sec=50.0,
+            n_turns=5,
+            total_usd=0.01,
+            failure_mode="script_or_casa_crash",
+            exception_type="NonZeroAgentExitCodeError",
+            agent_exit_status="agent_error",
+            measured={"inspect.bandpass_min_el_deg": 34.87},
+        ),
+    ]
+    rh_cross = summarize_run_health(cross_group_records)
+    assert rh_cross["n_trials"] == 2
+    assert rh_cross["clean_completions"] == 1
+    assert rh_cross["provider_api_errors"] == 0
+    assert rh_cross["recovered_provider_errors"] == 1
+    assert rh_cross["agent_errors"] == 1
+
+    md_cross = render_human_report_markdown(cross_group_records, {"run_health": rh_cross})
+    assert "across `n=2` seeds" not in md_cross
+    assert "anthropic/claude-haiku-4-5 (low, pack=ra_00a11ea)" in md_cross
+    assert "minimax/MiniMax-M2.5 (high, pack=ra_rescue)" in md_cross
+    assert "`Bare CASA` (`00_none`)" in md_cross
+    assert "`Guides + MCP Tools` (`11_full`)" in md_cross
+    assert "recovered from transient upstream provider errors" in md_cross
+    assert "Local non-zero agent exits (`1`)" in md_cross
+
+    # 3. Verify BOTH analysis CLI and top-level `radio_bench.cli analyze` write `<output_dir>/report.md`
+    #    and honor explicit `--diffs-dir` without falling back to unrelated parent directories.
+    job_dir = tmp_path / "job_cli_rep"
+    job_dir.mkdir()
+    decoy_parent_diffs = tmp_path / "analysis" / "diffs"
+    decoy_parent_diffs.mkdir(parents=True)
+    (decoy_parent_diffs / "s1_inspect__11_full.json").write_text(
+        json.dumps(
+            {
+                "trial_name": "s1_inspect__11_full",
+                "images": {"status": "ok", "ncc": 0.1234},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_harbor_trial(
+        job_dir,
+        task_name="s1_inspect__11_full",
+        agent_name="opencode",
+        model_name="minimax/MiniMax-M2.5",
+        reward_dict={"reward": 1.0, "passed": 1},
+        metrics_dict={
+            "schema_version": "0.2",
+            "stage": "inspect",
+            "table_locked": False,
+            "measurements": {
+                "inspect.bandpass_min_el_deg": {
+                    "value": 20.42,
+                    "unit": "deg",
+                    "status": "measured",
+                }
+            },
+        },
+    )
+    out_a = tmp_path / "out_analysis_cli"
+    run_analysis_pipeline(
+        [job_dir], output_dir=out_a, diffs_dir=tmp_path / "nonexistent_diffs", n_boot=20
+    )
+    assert (out_a / "report.md").is_file()
+    txt_a = (out_a / "report.md").read_text(encoding="utf-8")
+    assert "\u2014" not in txt_a and "\u2013" not in txt_a
+    assert "0.1234" not in txt_a
+    assert "minimum bandpass elevation `20.42 deg`" in txt_a
+
+    out_b = tmp_path / "out_top_cli"
+    rc = top_cli.main(
+        [
+            "--work-dir",
+            str(tmp_path / "w_cli"),
+            "analyze",
+            str(job_dir),
+            "--output-dir",
+            str(out_b),
+            "--n-boot",
+            "20",
+        ]
+    )
+    assert rc == 0
+    assert (out_b / "report.md").is_file()
+    txt_b = (out_b / "report.md").read_text(encoding="utf-8")
+    assert "\u2014" not in txt_b and "\u2013" not in txt_b
+    assert "0.1234" not in txt_b
+
+    # 4. If real 11-trial 3C391 run dirs exist under configured runs_dir, verify exact report.md readout
+    import shutil
+
+    from radio_bench.config import load_bench_config
+
+    runs_root = load_bench_config().runs_dir
+    real_without = runs_root / "3c391_minimax_without"
+    real_with = runs_root / "3c391_minimax_with"
+    if real_without.is_dir() and real_with.is_dir():
+        real_scratch = tmp_path / "real_3c391_scratch_report"
+        try:
+            run_analysis_pipeline(
+                [real_without, real_with],
+                output_dir=real_scratch,
+                n_boot=20,
+            )
+            real_md = (real_scratch / "report.md").read_text(encoding="utf-8")
+            assert "\u2014" not in real_md and "\u2013" not in real_md
+            assert "flux calibrator `J1331+3030`; bandpass calibrator `J0319+4130`" in real_md
+            assert "minimum bandpass elevation `38.20 deg`" in real_md
+            assert "minimum bandpass elevation `34.87 deg`" in real_md
+            assert "bandpass calibrator left uncalibrated" in real_md
+            assert (
+                "bandpass phase slope `0.00 deg/100MHz`; bandpass channel phase RMS `0.00 deg`"
+                in real_md
+            )
+        finally:
+            shutil.rmtree(real_scratch, ignore_errors=True)

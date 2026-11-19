@@ -142,9 +142,36 @@ def _resolve_relative_caller_paths(
     extra_args: Sequence[str],
     caller_cwd: Path,
 ) -> list[str]:
-    """Resolve relative existing directory/file arguments against `caller_cwd` before chdir to `work_dir`."""
+    """Resolve relative directory/file arguments and `--output-dir` / `--diffs-dir` against `caller_cwd`."""
+    path_flags = {"--output-dir", "--diffs-dir"}
     resolved: list[str] = []
+    expect_path = False
     for arg in extra_args:
+        if expect_path:
+            expect_path = False
+            if not arg.startswith("-"):
+                cand_opt = Path(os.path.expanduser(arg))
+                resolved.append(
+                    str(cand_opt if cand_opt.is_absolute() else (caller_cwd / cand_opt).resolve())
+                )
+            else:
+                resolved.append(arg)
+            continue
+        if arg in path_flags:
+            resolved.append(arg)
+            expect_path = True
+            continue
+        matched_eq = False
+        for pf in path_flags:
+            if arg.startswith(f"{pf}="):
+                val = arg[len(pf) + 1 :]
+                cand_eq = Path(os.path.expanduser(val))
+                abs_s = str(cand_eq if cand_eq.is_absolute() else (caller_cwd / cand_eq).resolve())
+                resolved.append(f"{pf}={abs_s}")
+                matched_eq = True
+                break
+        if matched_eq:
+            continue
         if arg.startswith("-"):
             resolved.append(arg)
             continue

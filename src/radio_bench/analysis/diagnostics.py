@@ -6,12 +6,19 @@ import contextlib
 import json
 import math
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from radio_bench.analysis.collect import CANONICAL_ARMS, sanitize_json_tree
+from radio_bench.analysis.collect import (
+    CANONICAL_ARMS,
+    TrialRecord,
+    _is_trial_directory,
+    sanitize_json_tree,
+    summarize_run_health,
+)
 from radio_bench.analysis.taxonomy import ALL_OUTCOME_LABELS
 from radio_bench.config import reject_slash_tmp
 from radio_bench.grading import PASS_REWARD_MIN
@@ -1413,6 +1420,1067 @@ def generate_diagnostic_plots(
     return written
 
 
+_HUMAN_ARM_ORDER: tuple[str, ...] = (
+    "00_none",
+    "01_skills_casa",
+    "01_skills_raw",
+    "10_tools",
+    "11_full",
+    "11_orchestrated",
+)
+
+_HUMAN_ARM_TITLES: dict[str, str] = {
+    "00_none": "Bare CASA (No Guides, No MCP Tools)",
+    "01_skills_casa": "Workflow Guides Only (CASA)",
+    "01_skills_raw": "Workflow Guides Only (Raw)",
+    "10_tools": "MCP Tools Only (No Guides)",
+    "11_full": "Guides + MCP Tools (Single Agent)",
+    "11_orchestrated": "Guides + MCP Tools (Orchestrated Subagents)",
+}
+
+_HUMAN_SUITE_TITLES: dict[str, str] = {
+    "3c391": "VLA 3C391 C-band 7-Pointing Continuum Mosaic (4.6 GHz)",
+    "r3c391": "VLA 3C391 C-band 7-Pointing Continuum Mosaic (4.6 GHz)",
+    "suite_r": "VLA 3C391 C-band 7-Pointing Continuum Mosaic (4.6 GHz)",
+    "vla_3c391_cband": "VLA 3C391 C-band 7-Pointing Continuum Mosaic (4.6 GHz)",
+    "synth": "Synthetic VLA D-Configuration C-band Continuum",
+    "suite_s": "Synthetic VLA D-Configuration C-band Continuum",
+    "synth_vla_d": "Synthetic VLA D-Configuration C-band Continuum",
+}
+
+_HUMAN_STAGE_ORDER: tuple[tuple[str, str], ...] = (
+    ("inspect", "1. Observation Inspection"),
+    ("precal", "2. Pre-Calibration"),
+    ("calibrate", "3. Calibration"),
+    ("postcal", "3b. Post-Calibration Flagging"),
+    ("polcal", "3c. Polarization Calibration"),
+    ("image", "4. Continuum Imaging"),
+    ("image_cube", "4b. Spectral-Line Cube Imaging"),
+    ("selfcal", "4c. Self-Calibration"),
+    ("report", "4d. Reduction Report"),
+    ("e2e", "5. Full Start-to-Finish Reduction"),
+)
+
+_HUMAN_STAGE_CHECKS: dict[str, str] = {
+    "inspect": (
+        "Checks `/workspace/inspect_summary.json` (or `stage_output.json`) against MS metadata "
+        "for primary flux calibrator, bandpass calibrator, secondary phase calibrator, science "
+        "target pointings, dead antennas, and minimum bandpass-calibrator elevation (deg)."
+    ),
+    "precal": (
+        "Checks `/workspace/input.ms` and `/workspace/calibrators.ms` for restored scan intents, "
+        "calibrator split integrity, Perley-Butler flux-standard `MODEL_DATA` amplitude (Jy), "
+        "and calibrator vs target RFI/quack flag recall (%) without over-flagging clean data (%)."
+    ),
+    "calibrate": (
+        "Checks calibrated `/workspace/input.ms` (`CORRECTED_DATA`) and caltables for dead-antenna "
+        "flagging, target row retention (%), bandpass phase slope (deg/100MHz) and channel RMS (deg), "
+        "bootstrapped phase-calibrator flux density (Jy), and calibrated target dynamic range."
+    ),
+    "image": (
+        "Checks delivered Stokes I continuum image products (`.image`, `.image.pbcor`, `.pb`, "
+        "`.residual`, `.model`) for synthesized beam sampling (pixels/beam), primary-beam-masked "
+        "off-source residual RMS (mJy/beam), continuum dynamic range, integrated flux (Jy), and "
+        "absence of negative clean-bowl artifacts."
+    ),
+    "e2e": (
+        "Checks the complete start-to-finish reduction from raw `input.ms` through calibrated "
+        "`CORRECTED_DATA`, calibration tables, and final primary-beam-corrected Stokes I continuum "
+        "mosaic on disk."
+    ),
+}
+
+_FAILURE_MODE_HUMAN: dict[str, str] = {
+    "lock_or_timeout": "table lock or timeout",
+    "tool_protocol_error": "malformed tool call",
+    "invalid_abstention_or_halt": "invalid halt on solvable data",
+    "raw_data_or_calflag_mutation": "mutated raw DATA column",
+    "unsupported_or_missing_claim": "unsupported metric claim",
+    "script_or_casa_crash": "missing deliverable or CASA error",
+    "flux_model_or_fluxscale_error": "flux scale error",
+    "skipped_delay_or_bandpass": "residual delay/bandpass error",
+    "flagging_recall_or_overflag": "RFI recall or overflagging",
+    "beam_sampling_or_clean_bowl": "beam sampling or clean bowl",
+    "postcal_clip_or_uv_bias": "post-cal clip or UV bias",
+    "polcal_feed_or_parang_error": "polarization feed/parang error",
+    "cube_baseline_or_frame_error": "cube contsub or frame error",
+    "selfcal_divergence_or_shift": "self-cal divergence or shift",
+}
+
+_ROLE_DISPLAY_ORDER: tuple[str, ...] = (
+    "orchestrator",
+    "main",
+    "inspect-stage",
+    "precal-stage",
+    "calibrate-stage",
+    "postcal-stage",
+    "polcal-stage",
+    "image-stage",
+    "selfcal-stage",
+)
+
+
+def _human_suite_title(suite_raw: str) -> str:
+    key = suite_raw.strip()
+    low = key.lower()
+    if low in _HUMAN_SUITE_TITLES:
+        return _HUMAN_SUITE_TITLES[low]
+    pretty = key.replace("_", " ").strip()
+    return f"{pretty} ({key})" if pretty.lower() != low else key
+
+
+def _human_arm_title(arm: str) -> str:
+    return _HUMAN_ARM_TITLES.get(arm, arm)
+
+
+def _human_stage_title(stage: str) -> str:
+    norm = "image" if stage == "image_cont" else stage
+    for st_key, st_lbl in _HUMAN_STAGE_ORDER:
+        if st_key == norm:
+            return st_lbl
+    return stage.replace("_", " ").title()
+
+
+def _ordered_human_arms(records: Sequence[dict[str, Any]]) -> list[str]:
+    present = {str(r.get("arm")) for r in records if r.get("arm")}
+    ordered = [a for a in _HUMAN_ARM_ORDER if a in present]
+    extras = sorted(present - set(ordered))
+    return [*ordered, *extras]
+
+
+def _ordered_human_stages(records: Sequence[dict[str, Any]]) -> list[str]:
+    present = {
+        ("image" if str(r.get("stage")) == "image_cont" else str(r.get("stage")))
+        for r in records
+        if r.get("stage")
+    }
+    ordered = [st for st, _lbl in _HUMAN_STAGE_ORDER if st in present]
+    extras = sorted(present - set(ordered))
+    return [*ordered, *extras]
+
+
+def _get_obs_num(rec: dict[str, Any], *keys: str) -> float | None:
+    measurements = rec.get("measurements")
+    if isinstance(measurements, dict):
+        for k in keys:
+            m_rec = measurements.get(k)
+            if isinstance(m_rec, dict) and m_rec.get("status") == "measured":
+                val = m_rec.get("value")
+                if (
+                    isinstance(val, (int, float))
+                    and not isinstance(val, bool)
+                    and math.isfinite(float(val))
+                ):
+                    return float(val)
+    measured = rec.get("measured")
+    if isinstance(measured, dict):
+        for k in keys:
+            if k in measured:
+                val = measured.get(k)
+                if (
+                    isinstance(val, (int, float))
+                    and not isinstance(val, bool)
+                    and math.isfinite(float(val))
+                ):
+                    return float(val)
+        for blk_k in ("calibration", "image"):
+            blk = measured.get(blk_k)
+            if isinstance(blk, dict):
+                for k in keys:
+                    if k in blk:
+                        val = blk.get(k)
+                        if (
+                            isinstance(val, (int, float))
+                            and not isinstance(val, bool)
+                            and math.isfinite(float(val))
+                        ):
+                            return float(val)
+    return None
+
+
+def _get_obs_any(rec: dict[str, Any], *keys: str) -> Any:
+    measurements = rec.get("measurements")
+    if isinstance(measurements, dict):
+        for k in keys:
+            m_rec = measurements.get(k)
+            if isinstance(m_rec, dict) and m_rec.get("status") == "measured":
+                return m_rec.get("value")
+    measured = rec.get("measured")
+    if isinstance(measured, dict):
+        for k in keys:
+            if k in measured and measured[k] is not None:
+                return measured[k]
+        for blk_k in ("calibration", "image"):
+            blk = measured.get(blk_k)
+            if isinstance(blk, dict):
+                for k in keys:
+                    if k in blk and blk[k] is not None:
+                        return blk[k]
+    return None
+
+
+def _get_obs_bool(rec: dict[str, Any], *keys: str) -> bool | None:
+    val = _get_obs_any(rec, *keys)
+    return val if isinstance(val, bool) else None
+
+
+def _fmt_str_or_list(val: Any) -> str:
+    if isinstance(val, list):
+        return ", ".join(str(x) for x in val)
+    return str(val)
+
+
+def _provider_drop_label(rec: dict[str, Any], *, include_turn: bool = True) -> str:
+    p_kind = str(rec.get("provider_error_kind") or "")
+    p_code = rec.get("provider_status_code")
+    turns = int(rec.get("n_turns") or 0)
+    turn_sfx = f" at turn {turns}" if (include_turn and turns > 0) else ""
+
+    if p_kind == "tool_call_parse_400":
+        return f"malformed tool call HTTP 400{turn_sfx}"
+    if p_kind == "rate_limit_429":
+        return f"upstream API {p_code or 429} rate limit{turn_sfx}"
+    if p_kind == "upstream_timeout_504":
+        return f"upstream API {p_code or 504} timeout{turn_sfx}"
+    if p_kind == "upstream_connection_or_5xx":
+        return f"upstream API {p_code or 500} drop{turn_sfx}"
+    if p_code is not None:
+        return f"upstream API {p_code} error{turn_sfx}"
+    return f"upstream API drop{turn_sfx}"
+
+
+def _diagnose_trial_cell_reason(rec: dict[str, Any]) -> tuple[str, str]:
+    """Return `('PASS' | 'FAIL' | 'INCOMPLETE', plain_english_reason)` for one trial."""
+    if int(rec.get("passed") or 0) == 1:
+        return "PASS", ""
+
+    rew = float(rec.get("reward") or 0.0)
+    exit_st = str(rec.get("agent_exit_status") or "ok")
+    stage = str(rec.get("stage") or "")
+    fmode = str(rec.get("failure_mode") or "script_or_casa_crash")
+    subs = rec.get("subscores") if isinstance(rec.get("subscores"), dict) else {}
+
+    if exit_st == "provider_api_error" and rew < 0.25:
+        return "INCOMPLETE", _provider_drop_label(rec, include_turn=True)
+
+    reason = ""
+    if stage == "inspect":
+        fb_sc = float(subs.get("flux_bandpass_score", 1.0))
+        el_sc = float(subs.get("elevation_score", 1.0))
+        if fb_sc < 1.0 and el_sc < 0.5:
+            reason = "wrong bandpass calibrator and elevation"
+        elif fb_sc < 1.0:
+            reason = "wrong flux/bandpass calibrator"
+        elif el_sc < 0.5:
+            reason = "wrong bandpass elevation"
+        elif subs.get("dead_antenna_score", 1.0) < 0.5:
+            reason = "missed dead antenna"
+        elif subs.get("phase_vs_target_score", 1.0) < 0.5:
+            reason = "calibrator/target role confusion"
+    elif stage == "precal":
+        if subs.get("calibrators_ms_score", 1.0) < 0.5 and rew < 0.25:
+            reason = "missing calibrators.ms"
+        elif subs.get("model_data_score", 1.0) < 0.5 and fmode == "flux_model_or_fluxscale_error":
+            reason = "wrong flux calibrator model"
+        elif subs.get("clean_fpr_score", 1.0) < 0.5:
+            reason = "clean data overflagged"
+        elif subs.get("flag_recall_score", 1.0) < 0.5:
+            reason = "incomplete target/calibrator RFI flagging"
+    elif stage in ("calibrate", "e2e") and fmode in (
+        "flux_model_or_fluxscale_error",
+        "skipped_delay_or_bandpass",
+        "flagging_recall_or_overflag",
+    ):
+        corr_dist = _get_obs_bool(
+            rec, "cal.corrected_distinct_from_data", "corrected_distinct_from_data"
+        )
+        bp_cal_ok = _get_obs_bool(rec, "cal.bandpass_cal_calibrated", "bandpass_cal_calibrated")
+        if corr_dist is False:
+            reason = "CORRECTED_DATA not populated"
+        elif fmode == "flux_model_or_fluxscale_error":
+            reason = "fluxscale bootstrap error"
+        elif fmode == "skipped_delay_or_bandpass":
+            if bp_cal_ok is False:
+                reason = "bandpass calibrator left uncalibrated"
+            else:
+                bp_sc = subs.get(
+                    "cal_bandpass_flatness_score", subs.get("bandpass_flatness_score", 1.0)
+                )
+                reason = (
+                    "residual delay/bandpass phase slope"
+                    if float(bp_sc) < 0.5
+                    else "degraded target visibility fidelity"
+                )
+        else:
+            reason = "dead antenna or target overflagging"
+    elif stage == "calibrate":
+        corr_dist = _get_obs_bool(
+            rec, "cal.corrected_distinct_from_data", "corrected_distinct_from_data"
+        )
+        if corr_dist is False and exit_st != "provider_api_error":
+            reason = "CORRECTED_DATA not populated"
+    elif stage in ("image", "e2e") and fmode == "beam_sampling_or_clean_bowl":
+        beam_sc = float(subs.get("img_beam_sampling_score", subs.get("beam_sampling_score", 1.0)))
+        deconv_sc = float(
+            subs.get("img_deconv_and_bowl_score", subs.get("deconv_and_bowl_score", 1.0))
+        )
+        rms_sc = float(subs.get("img_residual_rms_score", subs.get("residual_rms_score", 1.0)))
+        bowl_v = _get_obs_num(rec, "image.negative_bowl_ratio", "negative_bowl_ratio")
+        if deconv_sc < 0.85 or (bowl_v is not None and bowl_v >= 0.12):
+            reason = "clean bowl"
+        elif beam_sc < 0.5:
+            reason = "bad beam sampling"
+        elif rms_sc < 0.5:
+            reason = "elevated residual RMS"
+        else:
+            reason = "clean bowl or beam sampling"
+
+    if not reason:
+        if exit_st == "provider_api_error":
+            reason = _provider_drop_label(rec, include_turn=True)
+        else:
+            reason = _FAILURE_MODE_HUMAN.get(fmode, fmode.replace("_", " "))
+
+    if exit_st == "agent_timeout" and "timeout" not in reason.lower():
+        reason = f"{reason} + late timeout"
+    elif (
+        exit_st == "provider_api_error"
+        and "upstream api" not in reason.lower()
+        and "400" not in reason
+    ):
+        reason = f"{reason} + {_provider_drop_label(rec, include_turn=False)}"
+
+    return "FAIL", reason
+
+
+def _format_scorecard_cell(cell_recs: list[dict[str, Any]], *, arm: str, stage: str) -> str:
+    if not cell_recs:
+        if arm == "11_orchestrated" and stage != "e2e":
+            return "n/a (full reduction only)"
+        return "not run"
+
+    if len(cell_recs) == 1:
+        r = cell_recs[0]
+        rew = float(r.get("reward") or 0.0)
+        mins = float(r.get("agent_wall_sec") or r.get("total_wall_sec") or 0.0) / 60.0
+        tag, reason = _diagnose_trial_cell_reason(r)
+        if tag == "PASS":
+            return f"PASS {rew:.2f} ({mins:.1f}m)"
+        return f"{tag} {rew:.2f} -- {reason} ({mins:.1f}m)"
+
+    n = len(cell_recs)
+    k = sum(int(r.get("passed") or 0) for r in cell_recs)
+    mean_rew = float(np.mean([float(r.get("reward") or 0.0) for r in cell_recs]))
+    mean_min = float(
+        np.mean(
+            [
+                float(r.get("agent_wall_sec") or r.get("total_wall_sec") or 0.0) / 60.0
+                for r in cell_recs
+            ]
+        )
+    )
+    if k == n:
+        return f"{k}/{n} PASS, mean {mean_rew:.2f} ({mean_min:.1f}m)"
+
+    reason_counts: dict[str, int] = {}
+    n_inc = 0
+    for r in cell_recs:
+        tag, rsn = _diagnose_trial_cell_reason(r)
+        if tag == "INCOMPLETE":
+            n_inc += 1
+        if tag != "PASS" and rsn:
+            reason_counts[rsn] = reason_counts.get(rsn, 0) + 1
+
+    top_rsn = (
+        sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+        if reason_counts
+        else "failed"
+    )
+    inc_note = (
+        f", {n_inc} incomplete" if (n_inc > 0 and "upstream api" not in top_rsn.lower()) else ""
+    )
+    return f"{k}/{n} PASS, mean {mean_rew:.2f} -- {top_rsn}{inc_note} ({mean_min:.1f}m)"
+
+
+def _load_diffs_index(diffs_dir: Path | None) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    if diffs_dir is None or not Path(diffs_dir).is_dir():
+        return out
+    try:
+        json_files = sorted(Path(diffs_dir).glob("*.json"))
+    except OSError:
+        return out
+    for jf in json_files:
+        try:
+            parsed = json.loads(jf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        tname = str(parsed.get("trial_name") or jf.stem).strip()
+        if tname:
+            out[tname] = parsed
+            out.setdefault(jf.stem, parsed)
+    return out
+
+
+def _format_diff_snippet(diff_doc: dict[str, Any] | None) -> str:
+    if not isinstance(diff_doc, dict) or not diff_doc:
+        return ""
+    parts: list[str] = []
+    vis = diff_doc.get("visibilities")
+    if isinstance(vis, dict) and vis.get("status") == "ok":
+        ov = vis.get("overall") if isinstance(vis.get("overall"), dict) else vis
+        jac = ov.get("flag_jaccard")
+        vnrmse = ov.get("parallel_hand_nrmse")
+        vphs = ov.get("parallel_hand_phase_rms_deg")
+        v_bits: list[str] = []
+        if isinstance(jac, (int, float)) and math.isfinite(float(jac)):
+            v_bits.append(f"flag Jaccard {float(jac) * 100.0:.1f}%")
+        if isinstance(vnrmse, (int, float)) and math.isfinite(float(vnrmse)):
+            v_bits.append(f"vis NRMSE {float(vnrmse):.4f}")
+        if isinstance(vphs, (int, float)) and math.isfinite(float(vphs)):
+            v_bits.append(f"vis phase RMS {float(vphs):.2f} deg")
+        if v_bits:
+            parts.append("ref-MS diff: " + ", ".join(v_bits))
+
+    cal = diff_doc.get("caltables")
+    if isinstance(cal, dict) and cal.get("status") == "ok":
+        c_bits: list[str] = []
+        b_blk = cal.get("B")
+        if isinstance(b_blk, dict) and b_blk.get("status") == "ok":
+            bp_phs = b_blk.get("bp_phase_rms_deg")
+            if isinstance(bp_phs, (int, float)) and math.isfinite(float(bp_phs)):
+                c_bits.append(f"B phase RMS {float(bp_phs):.2f} deg")
+        g_blk = cal.get("G")
+        if isinstance(g_blk, dict):
+            frat = g_blk.get("fluxscale_ratio")
+            if isinstance(frat, (int, float)) and math.isfinite(float(frat)):
+                c_bits.append(f"fluxscale ratio {float(frat):.4f}")
+            for gk in ("F_fluxscale", "G_ap", "G0_phase_only"):
+                gp = g_blk.get(gk)
+                if isinstance(gp, dict) and gp.get("status") == "ok":
+                    g_phs = gp.get("gain_phase_rms_deg")
+                    if isinstance(g_phs, (int, float)) and math.isfinite(float(g_phs)):
+                        c_bits.append(f"{gk} phase RMS {float(g_phs):.2f} deg")
+                        break
+        if c_bits:
+            parts.append("caltable diff: " + ", ".join(c_bits))
+
+    img = diff_doc.get("images")
+    if isinstance(img, dict) and img.get("status") == "ok":
+        i_bits: list[str] = []
+        ncc = img.get("ncc")
+        afr = img.get("aperture_flux_ratio")
+        rr = img.get("offsource_rms_ratio")
+        if isinstance(ncc, (int, float)) and math.isfinite(float(ncc)):
+            i_bits.append(f"common-beam NCC {float(ncc):.4f}")
+        if isinstance(afr, (int, float)) and math.isfinite(float(afr)):
+            i_bits.append(f"aperture flux ratio {float(afr):.3f}")
+        if isinstance(rr, (int, float)) and math.isfinite(float(rr)):
+            i_bits.append(f"RMS ratio {float(rr):.2f}x")
+        if i_bits:
+            parts.append("image diff: " + ", ".join(i_bits))
+
+    return "; ".join(parts)
+
+
+def _format_stage_physical_summary(
+    rec: dict[str, Any],
+    *,
+    diff_doc: dict[str, Any] | None = None,
+) -> str:
+    """Format concise physical observables with astronomical units for one trial."""
+    stage = str(rec.get("stage") or "")
+    bits: list[str] = []
+
+    if stage == "inspect":
+        fcal = _get_obs_any(rec, "inspect.flux_cal_list", "flux_calibrator")
+        bpcal = _get_obs_any(rec, "inspect.bandpass_cal_list", "bandpass_calibrator")
+        pcal = _get_obs_any(rec, "inspect.phase_cal_list", "phase_calibrator")
+        dead = _get_obs_any(rec, "inspect.dead_antennas_list", "dead_antennas")
+        elev = _get_obs_num(
+            rec,
+            "inspect.bandpass_min_el_deg",
+            "inspect.bandpass_min_elevation_deg",
+            "bandpass_min_elevation_deg",
+        )
+        f_s = _fmt_str_or_list(fcal) if fcal is not None else None
+        bp_s = _fmt_str_or_list(bpcal) if bpcal is not None else None
+        if f_s is not None and bp_s is not None:
+            if f_s == bp_s:
+                bits.append(f"flux and bandpass calibrator `{f_s}`")
+            else:
+                bits.append(f"flux calibrator `{f_s}`")
+                bits.append(f"bandpass calibrator `{bp_s}`")
+        elif f_s is not None:
+            bits.append(f"flux calibrator `{f_s}`")
+        elif bp_s is not None:
+            bits.append(f"bandpass calibrator `{bp_s}`")
+        if pcal is not None:
+            p_s = _fmt_str_or_list(pcal)
+            bits.append(f"phase calibrator `{p_s}`")
+        if dead is not None:
+            d_s = _fmt_str_or_list(dead)
+            bits.append(f"dead antennas `[{d_s}]`")
+        if elev is not None:
+            bits.append(f"minimum bandpass elevation `{elev:.2f} deg`")
+
+    elif stage == "precal":
+        m_jy = _get_obs_num(rec, "precal.flux_cal_model_amp_jy", "j1331_model_amp_jy")
+        cal_rec = _get_obs_num(rec, "precal.calibrator_must_flag_recall")
+        tgt_rec = _get_obs_num(rec, "precal.target_must_flag_recall")
+        tot_rec = _get_obs_num(rec, "precal.must_flag_recall", "must_flag_recall")
+        cal_fpr = _get_obs_num(rec, "precal.calibrator_clean_false_positive_rate")
+        tot_fpr = _get_obs_num(rec, "precal.clean_false_positive_rate", "clean_false_positive_rate")
+        if m_jy is not None:
+            bits.append(f"flux calibrator model `{m_jy:.3f} Jy`")
+        if cal_rec is not None and tgt_rec is not None:
+            bits.append(
+                f"calibrator RFI recall `{cal_rec * 100.0:.1f}%`, target preflag recall `{tgt_rec * 100.0:.1f}%`"
+            )
+        elif tot_rec is not None:
+            bits.append(f"flag recall `{tot_rec * 100.0:.1f}%`")
+        if cal_fpr is not None:
+            bits.append(
+                f"clean overflagging `{tot_fpr * 100.0:.2f}%` (calibrator `{cal_fpr * 100.0:.2f}%`)"
+                if tot_fpr is not None
+                else f"calibrator clean overflagging `{cal_fpr * 100.0:.2f}%`"
+            )
+        elif tot_fpr is not None:
+            bits.append(f"clean overflagging `{tot_fpr * 100.0:.2f}%`")
+
+    if stage in ("calibrate", "e2e"):
+        corr_dist = _get_obs_bool(
+            rec, "cal.corrected_distinct_from_data", "corrected_distinct_from_data"
+        )
+        bp_cal_ok = _get_obs_bool(rec, "cal.bandpass_cal_calibrated", "bandpass_cal_calibrated")
+        if corr_dist is False:
+            bits.append("CORRECTED_DATA not populated")
+        else:
+            p_flux = _get_obs_num(
+                rec,
+                "cal.fluxscale_table_flux_jy",
+                "cal.phase_cal_fluxscale_jy",
+                "cal.phase_cal_corrected_amp_jy",
+                "pcal_flux_jy",
+            )
+            bp_slp = _get_obs_num(
+                rec,
+                "cal.bandpass_coh_phase_slope_deg_per_100mhz",
+                "cal.bandpass_med_bl_phase_slope_deg_per_100mhz",
+                "cal.bp_phase_slope_deg_per_100mhz",
+                "j1331_phase_slope_deg_per_100mhz",
+            )
+            bp_rms = _get_obs_num(
+                rec,
+                "cal.bandpass_coh_chan_phase_rms_deg",
+                "cal.bandpass_med_bl_chan_phase_rms_deg",
+                "cal.bandpass_row_chan_phase_rms_deg",
+                "cal.bp_chan_phase_rms_deg",
+                "j1331_chan_phase_rms_deg",
+            )
+            ret = _get_obs_num(rec, "cal.target_row_retention", "target_row_retention")
+            dead_f = _get_obs_num(
+                rec, "cal.dead_antenna_flagged_fraction", "dead_antenna_flagged_fraction"
+            )
+            v_dr = _get_obs_num(rec, "cal.verifier_tclean_dr", "verifier_tclean_dynamic_range")
+            coh_phs = _get_obs_num(rec, "cal.coherent_vis_phase_err_deg", "coherent_phase_deg")
+            if p_flux is not None:
+                bits.append(f"bootstrapped phase calibrator flux `{p_flux:.3f} Jy`")
+            if bp_cal_ok is False:
+                bits.append("bandpass calibrator left uncalibrated")
+            else:
+                if bp_slp is not None:
+                    bits.append(f"bandpass phase slope `{bp_slp:.2f} deg/100MHz`")
+                if bp_rms is not None:
+                    bits.append(f"bandpass channel phase RMS `{bp_rms:.2f} deg`")
+            if ret is not None:
+                bits.append(f"target retention `{ret * 100.0:.1f}%`")
+            if dead_f is not None:
+                bits.append(f"dead antennas flagged `{dead_f * 100.0:.1f}%`")
+            if v_dr is not None:
+                bits.append(f"calibration check dynamic range `{v_dr:.1f}`")
+            elif coh_phs is not None:
+                bits.append(f"target coherent phase error `{coh_phs:.2f} deg`")
+
+    if stage in ("image", "image_cont", "e2e"):
+        ppb = _get_obs_num(rec, "image.pixels_per_beam", "pixels_per_beam")
+        rms_jy = _get_obs_num(rec, "image.offsource_residual_rms_jy", "off_source_residual_rms")
+        rms_mjy = (
+            rms_jy * 1e3
+            if rms_jy is not None
+            else _get_obs_num(rec, "offsource_residual_rms_mjy_per_beam")
+        )
+        dr = _get_obs_num(rec, "image.dynamic_range", "dynamic_range")
+        iflux = _get_obs_num(
+            rec,
+            "image.source_integrated_flux_jy",
+            "image.ext_integrated_flux_jy",
+            "ext_integrated_flux_jy",
+        )
+        bowl = _get_obs_num(
+            rec,
+            "image.negative_bowl_ratio",
+            "negative_bowl_ratio",
+            "negative_model_bowl_ratio",
+        )
+        if ppb is not None:
+            bits.append(f"beam sampling `{ppb:.2f} pix/beam`")
+        if rms_mjy is not None:
+            bits.append(f"off-source residual RMS `{rms_mjy:.3f} mJy/beam`")
+        if dr is not None:
+            bits.append(f"dynamic range `{dr:.1f}`")
+        if iflux is not None:
+            bits.append(f"integrated flux `{iflux:.3f} Jy`")
+        if bowl is not None:
+            bits.append(f"negative clean-bowl ratio `{bowl:.3f}`")
+
+    # Generic fallback for unseen future stages (`polcal`, `postcal`, `selfcal`, `image_cube`, etc.)
+    if not bits and isinstance(rec.get("measurements"), dict):
+        for obs_k, obs_rec in sorted(rec["measurements"].items()):
+            if obs_k.startswith("proc.") or not isinstance(obs_rec, dict):
+                continue
+            if obs_rec.get("status") != "measured" or obs_rec.get("value") is None:
+                continue
+            val = obs_rec["value"]
+            u_str = f" {obs_rec['unit']}" if obs_rec.get("unit") else ""
+            if isinstance(val, float) and math.isfinite(val):
+                bits.append(f"`{obs_k}` = `{val:.4g}{u_str}`")
+            else:
+                bits.append(f"`{obs_k}` = `{val}{u_str}`")
+            if len(bits) >= 5:
+                break
+
+    diff_txt = _format_diff_snippet(
+        diff_doc or (rec.get("diff_summary") if isinstance(rec.get("diff_summary"), dict) else None)
+    )
+    if diff_txt:
+        bits.append(diff_txt)
+
+    if not bits:
+        return "no physical deliverables written before exit"
+    return "; ".join(bits)
+
+
+def _record_model_display(rec: dict[str, Any], *, multi_tl: bool, multi_pack: bool) -> str:
+    m_raw = str(rec.get("model_name") or "unknown")
+    tl = str(rec.get("thinking_level") or "default")
+    pid = str(rec.get("pack_id") or "ra_00a11ea")
+    tags: list[str] = []
+    if multi_tl and tl != "default":
+        tags.append(tl)
+    if multi_pack:
+        tags.append(f"pack={pid}")
+    return f"{m_raw} ({', '.join(tags)})" if tags else m_raw
+
+
+def _missing_factorial_arms_for_group(group_recs: list[dict[str, Any]]) -> list[str]:
+    present = {str(r.get("arm")) for r in group_recs if r.get("arm")}
+    missing: list[str] = []
+    if "00_none" not in present:
+        missing.append("`Bare CASA` (`00_none`)")
+    if not (present & {"01_skills_casa", "01_skills_raw"}):
+        missing.append("`Workflow Guides Only` (`01_skills_casa` / `01_skills_raw`)")
+    if "10_tools" not in present:
+        missing.append("`MCP Tools Only` (`10_tools`)")
+    if "11_full" not in present:
+        missing.append("`Guides + MCP Tools` (`11_full`)")
+    return missing
+
+
+def render_human_report_markdown(
+    records: Sequence[TrialRecord | dict[str, Any]],
+    summary: dict[str, Any],
+    *,
+    diffs_dir: Path | None = None,
+) -> str:
+    """Render an astronomer-readable Markdown benchmark report (`report.md`) with zero em/en dashes."""
+    rec_list: list[dict[str, Any]] = [dict(r) for r in records]
+    diffs_index = _load_diffs_index(diffs_dir)
+    run_health = (
+        summary["run_health"]
+        if isinstance(summary.get("run_health"), dict)
+        else summarize_run_health(rec_list)
+    )
+
+    lines: list[str] = [
+        "# Radio Astronomy Reduction Benchmark Report",
+        "",
+        (
+            "> **What This Benchmark Measures:** `radio-bench` evaluates **scientific "
+            "radio-interferometry data reduction outcomes produced by LLM agents**, graded "
+            "directly on arm-neutral CASA Measurement Sets (`input.ms`, `calibrators.ms`), "
+            "calibration tables, continuum images, and stage metadata against physical reference "
+            f"truth (`PASS` requires composite score >= `{PASS_REWARD_MIN:.2f}` with all hard "
+            "data-integrity gates satisfied). It compares end-to-end reduction quality across "
+            "capability setups -- it does **not** unit-test prompt guides or MCP tools in isolation."
+        ),
+        "",
+    ]
+
+    if not rec_list:
+        lines.extend(
+            [
+                "## 1. At-a-Glance Stage x Capability Scorecard",
+                "",
+                "No trials were found in the supplied job directory.",
+                "",
+            ]
+        )
+        return "\n".join(lines).replace("\u2014", "--").replace("\u2013", "--")
+
+    # Group strictly by (model_display, suite, pack_key) across BOTH Section 1 and Section 2
+    multi_tl = len({str(r.get("thinking_level") or "default") for r in rec_list}) > 1
+    multi_pack = len({str(r.get("pack_id") or "ra_00a11ea") for r in rec_list}) > 1
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for r in rec_list:
+        m_disp = _record_model_display(r, multi_tl=multi_tl, multi_pack=multi_pack)
+        s_raw = str(r.get("suite") or "unknown")
+        p_key = str(r.get("pack_id") or "ra_00a11ea") if multi_pack else ""
+        groups.setdefault((m_disp, s_raw, p_key), []).append(r)
+
+    sorted_groups = sorted(groups.items())
+    lines.extend(["## 1. At-a-Glance Stage x Capability Scorecard", ""])
+
+    for (m_disp, s_raw, _p_key), g_recs in sorted_groups:
+        g_arms = _ordered_human_arms(g_recs)
+        g_stages = _ordered_human_stages(g_recs)
+        lines.append(
+            f"### Model: `{_md_cell(m_disp)}` -- Dataset: {_md_cell(_human_suite_title(s_raw))}"
+        )
+        lines.append("")
+        hdr = ["Pipeline Stage", *(_human_arm_title(a) for a in g_arms)]
+        lines.append("| " + " | ".join(_md_cell(h) for h in hdr) + " |")
+        lines.append("| " + " | ".join(["---"] * len(hdr)) + " |")
+        for st in g_stages:
+            row_cells = [_human_stage_title(st)]
+            for arm in g_arms:
+                c_recs = [
+                    r
+                    for r in g_recs
+                    if str(r.get("arm")) == arm
+                    and ("image" if str(r.get("stage")) == "image_cont" else str(r.get("stage")))
+                    == st
+                ]
+                row_cells.append(_format_scorecard_cell(c_recs, arm=arm, stage=st))
+            lines.append("| " + " | ".join(_md_cell(c) for c in row_cells) + " |")
+        lines.append("")
+
+    # Run Health & Missing Arms Note (mutually exclusive partition of n_trials)
+    n_total = int(run_health.get("n_trials", len(rec_list)))
+    n_clean = int(run_health.get("clean_completions", 0))
+    n_epipe = int(run_health.get("benign_epipe_exits", 0))
+    n_api = int(run_health.get("provider_api_errors", 0))
+    n_recov = int(run_health.get("recovered_provider_errors", 0))
+    n_to = int(run_health.get("agent_timeouts", 0))
+    n_err = int(run_health.get("agent_errors", 0))
+    api_trials = [
+        it
+        for it in (run_health.get("provider_error_trials") or [])
+        if isinstance(it, dict)
+        and str(it.get("agent_exit_status") or "provider_api_error") == "provider_api_error"
+    ]
+    recov_trials = [
+        it
+        for it in (run_health.get("recovered_provider_error_trials") or [])
+        if isinstance(it, dict)
+    ]
+    to_trials = [it for it in (run_health.get("timeout_trials") or []) if isinstance(it, dict)]
+    err_trials = [it for it in (run_health.get("agent_error_trials") or []) if isinstance(it, dict)]
+
+    lines.append("### Run Health and Experimental Coverage Note")
+    lines.append("")
+    health_notes: list[str] = []
+    if n_epipe > 0:
+        health_notes.append(
+            f"`{n_epipe}` OpenCode runs had a benign post-completion stdout `EPIPE` after work finished"
+        )
+    if n_recov > 0:
+        recov_names = ", ".join(
+            f"`{it.get('trial_name') or it.get('base_task') or 'trial'}`" for it in recov_trials
+        )
+        recov_detail = f": {recov_names}" if recov_names else ""
+        health_notes.append(
+            f"`{n_recov}` runs recovered from transient upstream provider errors{recov_detail}"
+        )
+    note_clause = f" ({'; '.join(health_notes)})" if health_notes else ""
+    lines.append(
+        f"- **Completed agent runs:** `{n_clean + n_epipe}/{n_total}` trials finished agent execution cleanly{note_clause}."
+    )
+    if n_api > 0 or api_trials:
+        api_descs: list[str] = []
+        for it in api_trials:
+            tn = str(it.get("trial_name") or it.get("base_task") or "trial")
+            sc = it.get("provider_status_code")
+            kd = str(it.get("provider_error_kind") or "provider_api_error")
+            trn = int(it.get("n_turns") or 0)
+            sc_s = f"HTTP {sc}" if sc is not None else kd
+            api_descs.append(f"`{tn}` ({sc_s}, {kd}, turn {trn})")
+        joined_api = ", ".join(api_descs) if api_descs else f"`{n_api}` trials"
+        lines.append(f"- **Upstream LLM/API interruptions (`{n_api}`):** {joined_api}.")
+    else:
+        lines.append(
+            "- **Upstream LLM/API interruptions:** `0` trials interrupted by provider errors."
+        )
+
+    if n_to > 0 or to_trials:
+        to_descs: list[str] = []
+        for it in to_trials:
+            tn = str(it.get("trial_name") or it.get("base_task") or "trial")
+            w_min = float(it.get("agent_wall_sec") or 0.0) / 60.0
+            rw = float(it.get("reward") or 0.0)
+            to_descs.append(f"`{tn}` ({w_min:.1f}m, score {rw:.2f})")
+        lines.append(
+            f"- **Wall-clock timeouts (`{n_to}`):** {', '.join(to_descs) if to_descs else f'`{n_to}` trials'}."
+        )
+    else:
+        lines.append("- **Wall-clock timeouts:** `0` trials timed out.")
+
+    if n_err > 0 or err_trials:
+        err_descs: list[str] = []
+        for it in err_trials:
+            tn = str(it.get("trial_name") or it.get("base_task") or "trial")
+            et = str(it.get("exception_type") or "agent_error")
+            rw = float(it.get("reward") or 0.0)
+            err_descs.append(f"`{tn}` ({et}, score {rw:.2f})")
+        lines.append(
+            f"- **Local non-zero agent exits (`{n_err}`):** {', '.join(err_descs) if err_descs else f'`{n_err}` trials'}."
+        )
+
+    group_missing: list[tuple[str, str, list[str]]] = []
+    for (m_disp, s_raw, _p_key), g_recs in sorted_groups:
+        m_arms = _missing_factorial_arms_for_group(g_recs)
+        if m_arms:
+            group_missing.append((m_disp, s_raw, m_arms))
+
+    if group_missing:
+        if len(sorted_groups) == 1:
+            _m0, _s0, m_arms0 = group_missing[0]
+            lines.append(
+                "- **Capability arms not included in this run:** "
+                + ", ".join(m_arms0)
+                + " were not part of this job, so full 2x2 factorial main effects and interaction synergy are not estimated here."
+            )
+        else:
+            per_grp_strs = [
+                f"`{m_d}` on {_human_suite_title(s_r)} ({', '.join(m_a)})"
+                for m_d, s_r, m_a in group_missing
+            ]
+            lines.append(
+                "- **Capability arms not included in this run:** "
+                + "; ".join(per_grp_strs)
+                + " -- full 2x2 factorial main effects and interaction synergy require all four factorial arms per model and dataset."
+            )
+    lines.append("")
+
+    # Section 2: Stage-by-Stage Plain-English What Worked & What Missed (grouped identically to Section 1)
+    lines.extend(["## 2. Stage-by-Stage Plain-English What Worked and What Missed", ""])
+    multi_group = len(sorted_groups) > 1
+    stage_heading_prefix = "####" if multi_group else "###"
+
+    for (m_disp, s_raw, _p_key), g_recs in sorted_groups:
+        if multi_group:
+            lines.append(
+                f"### Model: `{_md_cell(m_disp)}` -- Dataset: {_md_cell(_human_suite_title(s_raw))}"
+            )
+            lines.append("")
+        g_stages = _ordered_human_stages(g_recs)
+        g_arms = _ordered_human_arms(g_recs)
+
+        for st in g_stages:
+            lines.append(f"{stage_heading_prefix} {_human_stage_title(st)}")
+            lines.append("")
+            check_desc = _HUMAN_STAGE_CHECKS.get(
+                st,
+                "Checks physical CASA deliverables, calibration/image fidelity, and data-integrity gates against reference truth.",
+            )
+            lines.append(f"**What was checked on disk:** {check_desc}")
+            lines.append("")
+
+            st_recs = [
+                r
+                for r in g_recs
+                if ("image" if str(r.get("stage")) == "image_cont" else str(r.get("stage"))) == st
+            ]
+            for arm in g_arms:
+                arm_st_recs = [r for r in st_recs if str(r.get("arm")) == arm]
+                if not arm_st_recs:
+                    continue
+                arm_lbl = _human_arm_title(arm)
+                if len(arm_st_recs) == 1:
+                    r0 = arm_st_recs[0]
+                    tname = str(r0.get("trial_name") or r0.get("base_task") or "")
+                    diff_doc = diffs_index.get(tname)
+                    cell_str = _format_scorecard_cell([r0], arm=arm, stage=st)
+                    phys_str = _format_stage_physical_summary(r0, diff_doc=diff_doc)
+                    lines.append(f"- **{arm_lbl}** (`{cell_str}`): {phys_str}.")
+                else:
+                    cell_str = _format_scorecard_cell(arm_st_recs, arm=arm, stage=st)
+                    # Representative median-reward trial for physical telemetry readout
+                    ordered_by_rew = sorted(
+                        arm_st_recs, key=lambda x: float(x.get("reward") or 0.0)
+                    )
+                    rep_rec = ordered_by_rew[len(ordered_by_rew) // 2]
+                    tname = str(rep_rec.get("trial_name") or rep_rec.get("base_task") or "")
+                    diff_doc = diffs_index.get(tname)
+                    phys_str = _format_stage_physical_summary(rep_rec, diff_doc=diff_doc)
+                    lines.append(
+                        f"- **{arm_lbl}** (`{cell_str}` across `n={len(arm_st_recs)}` seeds; median run `{tname}`): {phys_str}."
+                    )
+            lines.append("")
+
+    # Section 3: Runtime, Cost, & Multi-Agent Breakdown
+    lines.extend(["## 3. Runtime, Cost, and Multi-Agent Breakdown", ""])
+    rt_hdr = [
+        "Model",
+        "Stage",
+        "Capability Setup",
+        "Trial",
+        "Outcome",
+        "Score",
+        "Runtime (min)",
+        "Turns",
+        "MCP Calls",
+        "Bash Calls",
+        "Cost (USD)",
+        "Exit Status",
+    ]
+    lines.append("| " + " | ".join(_md_cell(h) for h in rt_hdr) + " |")
+    lines.append("| " + " | ".join(["---"] * len(rt_hdr)) + " |")
+
+    stage_rank = {st: idx for idx, (st, _lbl) in enumerate(_HUMAN_STAGE_ORDER)}
+    arm_rank = {a: idx for idx, a in enumerate(_HUMAN_ARM_ORDER)}
+    sorted_trials = sorted(
+        rec_list,
+        key=lambda r: (
+            _record_model_display(r, multi_tl=multi_tl, multi_pack=multi_pack),
+            str(r.get("suite") or ""),
+            str(r.get("pack_id") or "ra_00a11ea"),
+            stage_rank.get(
+                "image" if str(r.get("stage")) == "image_cont" else str(r.get("stage")), 99
+            ),
+            arm_rank.get(str(r.get("arm")), 99),
+            int(r.get("attempt_idx") or 0),
+        ),
+    )
+
+    for r in sorted_trials:
+        st_norm = "image" if str(r.get("stage")) == "image_cont" else str(r.get("stage") or "")
+        m_disp_row = _record_model_display(r, multi_tl=multi_tl, multi_pack=multi_pack)
+        tag, _rsn = _diagnose_trial_cell_reason(r)
+        rew = float(r.get("reward") or 0.0)
+        mins = float(r.get("agent_wall_sec") or r.get("total_wall_sec") or 0.0) / 60.0
+        usd = r.get("total_usd")
+        usd_s = (
+            f"${float(usd):.4f}"
+            if isinstance(usd, (int, float))
+            and not isinstance(usd, bool)
+            and math.isfinite(float(usd))
+            else "n/a"
+        )
+        ex_st = str(r.get("agent_exit_status") or "ok")
+        if ex_st == "provider_api_error" and r.get("provider_status_code") is not None:
+            ex_st = f"provider_api_error (HTTP {r['provider_status_code']})"
+        row_vals = [
+            f"`{m_disp_row}`",
+            _human_stage_title(st_norm),
+            _human_arm_title(str(r.get("arm") or "")),
+            f"`{r.get('trial_name', '')}`",
+            tag,
+            f"{rew:.2f}",
+            f"{mins:.1f}",
+            str(int(r.get("n_turns") or 0)),
+            str(int(r.get("mcp_calls_total") or 0)),
+            str(int(r.get("bash_calls") or 0)),
+            usd_s,
+            ex_st,
+        ]
+        lines.append("| " + " | ".join(_md_cell(v) for v in row_vals) + " |")
+    lines.append("")
+
+    # Multi-agent subagent breakdown when 11_orchestrated or multi-role trials exist
+    orch_trials = [
+        r
+        for r in sorted_trials
+        if isinstance(r.get("role_breakdown"), dict)
+        and (
+            str(r.get("arm")) == "11_orchestrated"
+            or len(set(r["role_breakdown"].keys()) - {"main"}) > 0
+        )
+    ]
+    if orch_trials:
+        lines.extend(["### Orchestrated Subagent Breakdown", ""])
+        ob_hdr = [
+            "Trial",
+            "Role / Stage Agent",
+            "Turns",
+            "MCP Calls",
+            "Bash Calls",
+            "Input Tokens",
+            "Output Tokens",
+            "Cost (USD)",
+        ]
+        lines.append("| " + " | ".join(_md_cell(h) for h in ob_hdr) + " |")
+        lines.append("| " + " | ".join(["---"] * len(ob_hdr)) + " |")
+        role_rank = {rl: idx for idx, rl in enumerate(_ROLE_DISPLAY_ORDER)}
+        for r in orch_trials:
+            rb_map = r["role_breakdown"]
+            ordered_roles = sorted(
+                rb_map.keys(),
+                key=lambda rk: (role_rank.get(str(rk), 99), str(rk)),
+            )
+            for rk in ordered_roles:
+                rinfo = rb_map.get(rk)
+                if not isinstance(rinfo, dict):
+                    continue
+                r_usd = rinfo.get("total_usd")
+                r_usd_s = (
+                    f"${float(r_usd):.4f}"
+                    if isinstance(r_usd, (int, float))
+                    and not isinstance(r_usd, bool)
+                    and math.isfinite(float(r_usd))
+                    else "n/a"
+                )
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        _md_cell(v)
+                        for v in (
+                            f"`{r.get('trial_name', '')}`",
+                            f"`{rk}`",
+                            str(int(rinfo.get("turns") or 0)),
+                            str(int(rinfo.get("mcp_calls_total") or 0)),
+                            str(int(rinfo.get("bash_calls") or 0)),
+                            f"{int(rinfo.get('input_tokens') or 0):,}",
+                            f"{int(rinfo.get('output_tokens') or 0):,}",
+                            r_usd_s,
+                        )
+                    )
+                    + " |"
+                )
+        lines.append("")
+
+    report_text = "\n".join(lines) + "\n"
+    return report_text.replace("\u2014", "--").replace("\u2013", "--")
+
+
+def _resolve_default_diffs_dir(output_dir: Path, job_dirs: Sequence[Path]) -> Path | None:
+    cand_direct = output_dir / "diffs"
+    if cand_direct.is_dir():
+        return cand_direct
+    for jp in job_dirs:
+        p = Path(jp)
+        cand_job = p / "analysis" / "diffs"
+        if cand_job.is_dir():
+            return cand_job
+        if _is_trial_directory(p):
+            cand_trial_parent = p.parent / "analysis" / "diffs"
+            if cand_trial_parent.is_dir():
+                return cand_trial_parent
+    return None
+
+
 def write_diagnostic_reports(
     *,
     job_dirs: list[Path],
@@ -1421,15 +2489,19 @@ def write_diagnostic_reports(
     factorial_summary: dict[str, Any],
     taxonomy_summary: dict[str, Any],
     plots: bool = False,
+    diffs_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Write `summary.json`, `summary.md`, and (only if `plots=True`) PNGs in `output_dir/plots`."""
+    """Write `summary.json`, `summary.md`, `report.md`, and (only if `plots=True`) PNGs."""
     out_p = Path(output_dir)
     reject_slash_tmp(out_p, label="output_dir")
     for jp in job_dirs:
         reject_slash_tmp(Path(jp), label="job_dir")
+    if diffs_dir is not None:
+        reject_slash_tmp(Path(diffs_dir), label="diffs_dir")
     out_p.mkdir(parents=True, exist_ok=True)
     job_dir_strs = [str(p) for p in job_dirs]
     truth_vs_measured = build_truth_vs_measured_table(records)
+    run_health = summarize_run_health(records)
 
     plot_files: list[str] = []
     if plots:
@@ -1445,6 +2517,7 @@ def write_diagnostic_reports(
             "job_dirs": job_dir_strs,
             "output_dir": str(out_p),
             "n_trials": len(records),
+            "run_health": run_health,
             "truth_vs_measured": truth_vs_measured,
             "factorial": factorial_summary,
             "taxonomy": taxonomy_summary,
@@ -1454,6 +2527,7 @@ def write_diagnostic_reports(
 
     summary_json_path = out_p / "summary.json"
     summary_md_path = out_p / "summary.md"
+    report_md_path = out_p / "report.md"
 
     json_text = json.dumps(summary_payload, indent=2, allow_nan=False) + "\n"
     json_text = json_text.replace("\u2014", "--").replace("\u2013", "--")
@@ -1468,10 +2542,24 @@ def write_diagnostic_reports(
     )
     _atomic_write_text(summary_md_path, md_text)
 
+    if diffs_dir is not None:
+        eff_diffs_dir = Path(diffs_dir) if Path(diffs_dir).is_dir() else None
+    else:
+        eff_diffs_dir = _resolve_default_diffs_dir(out_p, job_dirs)
+
+    human_report_md = render_human_report_markdown(
+        records,
+        summary_payload,
+        diffs_dir=eff_diffs_dir,
+    )
+    _atomic_write_text(report_md_path, human_report_md)
+
     return {
         "summary_json_path": str(summary_json_path),
         "summary_md_path": str(summary_md_path),
+        "report_md_path": str(report_md_path),
         "plot_files": plot_files,
         "summary": summary_payload,
         "markdown": md_text,
+        "report_markdown": human_report_md,
     }

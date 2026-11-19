@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from radio_bench.analysis._trace import strip_harbor_command_echo
+
 FAILURE_NONE = "none"
 
 # Exact v0.2 SPEC-output-and-metrics Section 3.1 categories in strict evaluation priority order.
@@ -157,35 +159,44 @@ def _has_lock_phrase(text: str) -> bool:
     return "casacore write lock" in low or "table lock" in low or "table.lock" in low
 
 
+def _has_mcp_transport_phrase(exc_msg: str | None) -> bool:
+    cleaned = strip_harbor_command_echo(exc_msg).lower()
+    return bool(cleaned and any(phrase in cleaned for phrase in _MCP_EXC_PHRASES))
+
+
 def _is_table_locked(metrics_dict: dict[str, Any] | None, exc_msg_low: str = "") -> bool:
-    if exc_msg_low and _has_lock_phrase(exc_msg_low):
-        return True
-    if not isinstance(metrics_dict, dict):
-        return False
-    if metrics_dict.get("table_locked") is True:
-        return True
-    lk_rec = _get_measurement_record(metrics_dict, "proc.table_locked")
-    if lk_rec is not None and lk_rec.get("value") is True:
-        return True
-    tags = metrics_dict.get("triggered_failure_tags")
-    if isinstance(tags, list) and "lock_or_timeout" in tags:
-        return True
-    errors = metrics_dict.get("errors")
-    if isinstance(errors, list):
-        for err in errors:
-            if _has_lock_phrase(str(err)):
-                return True
-    for nested_key in ("calibration", "image"):
-        nested = metrics_dict.get(nested_key)
-        if isinstance(nested, dict):
-            if nested.get("table_locked") is True:
-                return True
-            n_errs = nested.get("errors")
-            if isinstance(n_errs, list):
-                for err in n_errs:
-                    if _has_lock_phrase(str(err)):
-                        return True
-    return False
+    if isinstance(metrics_dict, dict):
+        if metrics_dict.get("table_locked") is True:
+            return True
+        lk_rec = _get_measurement_record(metrics_dict, "proc.table_locked")
+        if lk_rec is not None and lk_rec.get("value") is True:
+            return True
+        tags = metrics_dict.get("triggered_failure_tags")
+        if isinstance(tags, list) and "lock_or_timeout" in tags:
+            return True
+        errors = metrics_dict.get("errors")
+        if isinstance(errors, list):
+            for err in errors:
+                if _has_lock_phrase(str(err)):
+                    return True
+        for nested_key in ("calibration", "image"):
+            nested = metrics_dict.get(nested_key)
+            if isinstance(nested, dict):
+                if nested.get("table_locked") is True:
+                    return True
+                n_errs = nested.get("errors")
+                if isinstance(n_errs, list):
+                    for err in n_errs:
+                        if _has_lock_phrase(str(err)):
+                            return True
+        explicitly_unlocked = metrics_dict.get("table_locked") is False or (
+            lk_rec is not None and lk_rec.get("value") is False
+        )
+        if explicitly_unlocked:
+            return False
+
+    cleaned_exc = strip_harbor_command_echo(exc_msg_low).lower()
+    return bool(cleaned_exc and _has_lock_phrase(cleaned_exc))
 
 
 def _is_invalid_abstention_or_halt(metrics_dict: dict[str, Any] | None) -> bool:
@@ -538,78 +549,19 @@ def _classify_physics_from_rubric_meta(
     return None
 
 
-def classify_failure(
-    *,
-    passed: int | bool,
+def _classify_physics_failure(
     stage: str,
-    arm: str = "00_none",
-    reward: float = 0.0,
-    reward_dict: dict[str, Any] | None = None,
-    metrics_dict: dict[str, Any] | None = None,
-    exception_type: str | None = None,
-    exception_message: str | None = None,
-    tool_errors: int = 0,
-    protocol_errors: int = 0,
-    mcp_calls_total: int = 0,
-    bash_nonzero_exits: int = 0,
-    severe_casa_errors: int = 0,
-) -> str:
-    """Deterministically classify a trial into `'none'` or one of the 14 `FAILURE_CATEGORIES`."""
-    if bool(passed):
-        return FAILURE_NONE
-
-    exc_type = (exception_type or "").strip()
-    exc_msg_low = (exception_message or "").lower()
-    subscores = _collect_subscores(reward_dict, metrics_dict)
-    reward_present = bool(reward_dict)
-    missing_deliverable = _deliverable_missing(stage, reward_present, subscores, metrics_dict)
-
-    # 1. lock_or_timeout
-    if (
-        exc_type in TIMEOUT_EXCEPTIONS
-        or "timeout" in exc_type.lower()
-        or _is_table_locked(metrics_dict, exc_msg_low=exc_msg_low)
-    ):
-        return "lock_or_timeout"
-
-    # 2. tool_protocol_error
-    attempted_mcp_without_tools = arm in NON_TOOL_ARMS and mcp_calls_total > 0
-    if (
-        exc_type in PROTOCOL_EXCEPTIONS
-        or any(phrase in exc_msg_low for phrase in _MCP_EXC_PHRASES)
-        or attempted_mcp_without_tools
-        or protocol_errors >= 2
-        or (protocol_errors >= 1 and (missing_deliverable or reward < 0.25 or arm in NON_TOOL_ARMS))
-        or (tool_errors >= 3 and (missing_deliverable or reward < 0.25))
-    ):
-        return "tool_protocol_error"
-
-    # 3. invalid_abstention_or_halt (evaluated BEFORE missing_deliverable -> script_or_casa_crash)
-    if _is_invalid_abstention_or_halt(metrics_dict):
-        return "invalid_abstention_or_halt"
-
-    # 4. raw_data_or_calflag_mutation (evaluated BEFORE missing_deliverable / bash_nonzero_exits)
-    if _is_raw_data_or_calflag_mutation(metrics_dict):
-        return "raw_data_or_calflag_mutation"
-
-    # 5. unsupported_or_missing_claim (strictly Layer B Claim Auditor failures, never inspect triage)
-    if _is_unsupported_or_missing_claim(metrics_dict):
-        return "unsupported_or_missing_claim"
-
-    # 6. script_or_casa_crash
-    if (
-        bool(exc_type)
-        or missing_deliverable
-        or (bash_nonzero_exits >= 3 and reward < 0.25)
-        or (severe_casa_errors > 0 and reward < 0.25)
-    ):
-        return "script_or_casa_crash"
-
-    # 7+. Self-describing v0.2 `rubric_meta` physics tags (zero dataset branches)
+    subscores: dict[str, float],
+    metrics_dict: dict[str, Any] | None,
+) -> str | None:
+    """Evaluate v0.2 `rubric_meta` and legacy v0.1 physics failure categories."""
     if isinstance(metrics_dict, dict):
         v02_cat = _classify_physics_from_rubric_meta(metrics_dict, subscores)
         if v02_cat is not None:
             return v02_cat
+        rm = metrics_dict.get("rubric_meta")
+        if isinstance(rm, dict) and isinstance(rm.get("subscores"), list) and rm["subscores"]:
+            return None
 
     # Legacy v0.1 read-compat fallback when `rubric_meta` is absent
     model_data_sc = subscores.get("model_data_score")
@@ -691,6 +643,8 @@ def classify_failure(
     has_img_leaves = any(k.startswith("img_") for k in subscores)
     candidates: list[tuple[float, int, str]] = []
     for sub_key, sub_val in subscores.items():
+        if sub_val >= 1.0 - 1e-9:
+            continue
         if sub_key == "calibration_score" and has_cal_leaves:
             continue
         if sub_key == "delivered_image_score" and has_img_leaves:
@@ -701,6 +655,97 @@ def classify_failure(
     if candidates:
         candidates.sort(key=lambda item: (item[0], item[1]))
         return candidates[0][2]
+
+    return None
+
+
+def classify_failure(
+    *,
+    passed: int | bool,
+    stage: str,
+    arm: str = "00_none",
+    reward: float = 0.0,
+    reward_dict: dict[str, Any] | None = None,
+    metrics_dict: dict[str, Any] | None = None,
+    exception_type: str | None = None,
+    exception_message: str | None = None,
+    tool_errors: int = 0,
+    protocol_errors: int = 0,
+    mcp_calls_total: int = 0,
+    bash_nonzero_exits: int = 0,
+    severe_casa_errors: int = 0,
+) -> str:
+    """Deterministically classify a trial into `'none'` or one of the 14 `FAILURE_CATEGORIES`."""
+    if bool(passed):
+        return FAILURE_NONE
+
+    exc_type = (exception_type or "").strip()
+    exc_type_low = exc_type.lower()
+    exc_msg_raw = exception_message or ""
+    subscores = _collect_subscores(reward_dict, metrics_dict)
+    reward_present = bool(reward_dict)
+    missing_deliverable = _deliverable_missing(stage, reward_present, subscores, metrics_dict)
+    all_deliverables_present = (
+        (metrics_dict is not None)
+        and isinstance(metrics_dict, dict)
+        and (not missing_deliverable)
+        and (stage != "e2e" or not _e2e_image_deliverable_missing(metrics_dict))
+    )
+    has_graded_deliverables = all_deliverables_present and reward > 0.0
+    timed_out = exc_type in TIMEOUT_EXCEPTIONS or "timeout" in exc_type_low
+
+    # 1. lock_or_timeout
+    if _is_table_locked(metrics_dict, exc_msg_low=exc_msg_raw):
+        return "lock_or_timeout"
+    if timed_out and not has_graded_deliverables:
+        return "lock_or_timeout"
+
+    # 2. tool_protocol_error
+    attempted_mcp_without_tools = arm in NON_TOOL_ARMS and mcp_calls_total > 0
+    if (
+        exc_type in PROTOCOL_EXCEPTIONS
+        or _has_mcp_transport_phrase(exc_msg_raw)
+        or attempted_mcp_without_tools
+        or protocol_errors >= 2
+        or (protocol_errors >= 1 and (missing_deliverable or reward < 0.25))
+        or (tool_errors >= 3 and (missing_deliverable or reward < 0.25))
+    ):
+        return "tool_protocol_error"
+
+    # 3. invalid_abstention_or_halt (evaluated BEFORE missing_deliverable -> script_or_casa_crash)
+    if _is_invalid_abstention_or_halt(metrics_dict):
+        return "invalid_abstention_or_halt"
+
+    # 4. raw_data_or_calflag_mutation (evaluated BEFORE missing_deliverable / bash_nonzero_exits)
+    if _is_raw_data_or_calflag_mutation(metrics_dict):
+        return "raw_data_or_calflag_mutation"
+
+    # 5. unsupported_or_missing_claim (strictly Layer B Claim Auditor failures, never inspect triage)
+    if _is_unsupported_or_missing_claim(metrics_dict):
+        return "unsupported_or_missing_claim"
+
+    # 6 vs 7. When all deliverables exist and were graded (reward > 0.0), prioritize rubric
+    # physics diagnosis before generic non-zero exit codes (shutdown EPIPE) or late timeouts.
+    if has_graded_deliverables:
+        phys_cat = _classify_physics_failure(stage, subscores, metrics_dict)
+        if phys_cat is not None:
+            return phys_cat
+        if timed_out:
+            return "lock_or_timeout"
+        return "script_or_casa_crash"
+
+    # 6. script_or_casa_crash
+    if (
+        bool(exc_type)
+        or missing_deliverable
+        or (bash_nonzero_exits >= 3 and reward < 0.25)
+        or (severe_casa_errors > 0 and reward < 0.25)
+    ):
+        return "script_or_casa_crash"
+
+    phys_cat = _classify_physics_failure(stage, subscores, metrics_dict)
+    if phys_cat is not None:
+        return phys_cat
 
     return "script_or_casa_crash"
 

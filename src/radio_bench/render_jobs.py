@@ -77,6 +77,15 @@ DEFAULT_ABLATION_MODELS: tuple[str, ...] = (
     "nrp_glm5",
 )
 
+RETRYABLE_API_EXCEPTIONS: tuple[str, ...] = (
+    "ApiRateLimitError",
+    "ApiInternalServerError",
+    "ApiOverloadedError",
+    "ApiConnectionClosedError",
+    "ApiResponseStalledError",
+    "NetworkConnectionError",
+)
+
 
 @dataclass(frozen=True)
 class JobPreset:
@@ -205,17 +214,31 @@ def _resolve_base_tasks(suites: Sequence[str], task_scope: str) -> list[tuple[st
     return out
 
 
+def _deep_merge_dicts(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {str(k): v for k, v in base.items()}
+    for k, v in override.items():
+        ks = str(k)
+        if isinstance(v, Mapping) and isinstance(out.get(ks), Mapping):
+            out[ks] = _deep_merge_dicts(out[ks], v)
+        elif isinstance(v, Mapping):
+            out[ks] = _deep_merge_dicts({}, v)
+        else:
+            out[ks] = v
+    return out
+
+
 def _build_single_agent_dict(
     model: ModelSpec,
-    thinking_level: str,
+    thinking_level: str = "default",
     *,
-    job_n_concurrent: int,
-    env: Mapping[str, str],
+    job_n_concurrent: int = 1,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Translate one `(ModelSpec, thinking_level)` into a Harbor 0.25.0 AgentConfig dict."""
+    eff_env = os.environ if env is None else env
     resolved_base_url = model.base_url or ""
     if not resolved_base_url and model.base_url_env:
-        resolved_base_url = env.get(model.base_url_env, "").strip()
+        resolved_base_url = eff_env.get(model.base_url_env, "").strip()
         if not resolved_base_url:
             raise ValueError(
                 f"Model {model.key!r} requires environment variable {model.base_url_env} "
@@ -256,6 +279,35 @@ def _build_single_agent_dict(
         kwargs["disable_web_search"] = bool(model.disable_web_search)
         if thinking_level != "default":
             kwargs["variant"] = thinking_level
+
+        oc_cfg: dict[str, Any] = {}
+        if int(model.context_window_tokens) > 0 and "/" in model.model_name:
+            provider_id, model_id = model.model_name.split("/", 1)
+            if provider_id.strip() and model_id.strip():
+                ctx_tokens = int(model.context_window_tokens)
+                out_tokens = min(65536, max(8192, ctx_tokens // 4))
+                oc_cfg = {
+                    "provider": {
+                        provider_id.strip(): {
+                            "models": {
+                                model_id.strip(): {
+                                    "limit": {
+                                        "context": ctx_tokens,
+                                        "output": out_tokens,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+        user_oc_cfg = getattr(model, "opencode_config", None)
+        if isinstance(user_oc_cfg, Mapping) and user_oc_cfg:
+            oc_cfg = _deep_merge_dicts(oc_cfg, user_oc_cfg)
+        # Never inject MCP definitions into job-level opencode_config (those belong only on tool arms).
+        oc_cfg.pop("mcp", None)
+        if oc_cfg:
+            kwargs["opencode_config"] = oc_cfg
+
         agent_dict["kwargs"] = kwargs
     else:
         raise ValueError(f"Unsupported harness {model.harness!r} on model {model.key!r}")
@@ -266,11 +318,14 @@ def _build_single_agent_dict(
     if (
         model.host_gateway_required
         and model.api_key_env
-        and not env.get(model.api_key_env, "").strip()
+        and not eff_env.get(model.api_key_env, "").strip()
     ):
         agent_dict["env"] = {model.api_key_env: "local-placeholder"}
 
     return agent_dict
+
+
+_build_agent_entry = _build_single_agent_dict
 
 
 def compile_job_dict(
@@ -388,6 +443,7 @@ def compile_job_dict(
                 "min_wait_sec": 5.0,
                 "max_wait_sec": 60.0,
                 "wait_multiplier": 2.0,
+                "include_exceptions": list(RETRYABLE_API_EXCEPTIONS),
             }
         )
 

@@ -15,7 +15,12 @@ from radio_bench.grading.extractors.common import (
     open_ro_table,
     read_field_intents,
 )
-from radio_bench.grading.schema import ExtractConfig, ObservableRecord, finite_observable
+from radio_bench.grading.schema import (
+    ExtractConfig,
+    ObservableRecord,
+    ObservableStatusLiteral,
+    finite_observable,
+)
 
 
 def _has_intent_prefix(intents: set[str], prefix: str) -> bool:
@@ -263,6 +268,7 @@ def _merge_calibrator_flags_into_input(
     in_a2: np.ndarray,
     in_ddid: np.ndarray,
     cal_ms_path: Path,
+    allowed_cal_names_upper: set[str] | None = None,
 ) -> int:
     """OR `(nchan, nrow_cal)` flags from `calibrators.ms` onto matching `input.ms` calibrator rows."""
     (
@@ -311,7 +317,17 @@ def _merge_calibrator_flags_into_input(
         dtype=np.int32,
     )
 
-    valid_cal_fids = sorted({int(x) for x in mapped_fids if int(x) >= 0})
+    cal_field_names_upper = {n.strip().upper() for n in cal_fnames if n.strip()}
+    if allowed_cal_names_upper:
+        cal_field_names_upper &= allowed_cal_names_upper
+    present_cal_in_fids = sorted(
+        {
+            idx
+            for idx, fname in enumerate(in_fnames)
+            if fname.strip().upper() in cal_field_names_upper
+        }
+    )
+    valid_cal_fids = sorted({*(int(x) for x in mapped_fids if int(x) >= 0), *present_cal_in_fids})
     if not valid_cal_fids:
         return 0
 
@@ -359,6 +375,11 @@ def _merge_calibrator_flags_into_input(
         in_idx_arr = np.array(matched_in, dtype=np.int64)
         cal_idx_arr = np.array(matched_cal, dtype=np.int64)
         in_chan_row_flag[:, in_idx_arr] |= cal_eff_2d[:, cal_idx_arr]
+        if present_cal_in_fids:
+            absent_cal_row_mask = np.isin(in_fids, present_cal_in_fids)
+            absent_cal_row_mask[in_idx_arr] = False
+            if np.any(absent_cal_row_mask):
+                in_chan_row_flag[:, absent_cal_row_mask] = True
     return len(matched_in)
 
 
@@ -399,8 +420,9 @@ def extract_precal(
     flux_cal = roles.flux_cal[0].strip() if roles.flux_cal else ""
     bp_cal = roles.bandpass_cal[0].strip() if roles.bandpass_cal else flux_cal
     phase_cal = roles.phase_cal[0].strip() if roles.phase_cal else ""
-    target_fields = [t.strip() for t in roles.targets if t.strip()]
+    target_fields = roles.target_fields
     target_set_upper = {t.upper() for t in target_fields}
+    calibrator_set_upper = {c.upper() for c in roles.calibrator_fields}
 
     input_exists = (input_ms / "table.dat").is_file()
     cal_exists = (cal_ms / "table.dat").is_file()
@@ -420,6 +442,10 @@ def extract_precal(
             ("precal.flux_cal_model_spec_nrmse", None),
             ("precal.must_flag_recall", None),
             ("precal.clean_false_positive_rate", None),
+            ("precal.calibrator_must_flag_recall", None),
+            ("precal.target_must_flag_recall", None),
+            ("precal.calibrator_clean_false_positive_rate", None),
+            ("precal.target_clean_false_positive_rate", None),
             ("precal.merged_calibrator_rows", None),
         ):
             obs[key] = ObservableRecord(
@@ -588,6 +614,11 @@ def extract_precal(
     npz_path = _discover_ref_flags_npz(ref_arrays_dir)
     must_flag_recall: float | None = None
     clean_fpr: float | None = None
+    cal_must_flag_recall: float | None = None
+    tgt_must_flag_recall: float | None = None
+    cal_clean_fpr: float | None = None
+    tgt_clean_fpr: float | None = None
+    masks_evaluated = False
     spec_nrmse: float | None = None
     matched_cal_rows = 0
 
@@ -640,13 +671,73 @@ def extract_precal(
                             in_a2,
                             in_ddid,
                             cal_ms,
+                            allowed_cal_names_upper=calibrator_set_upper or None,
                         )
+                masks_evaluated = True
                 must_flag_recall = (
                     float(np.mean(eff_2d[must_mask_2d])) if np.any(must_mask_2d) else 1.0
                 )
                 clean_fpr = float(np.mean(eff_2d[clean_mask_2d])) if np.any(clean_mask_2d) else 0.0
+
+                cal_fids = [
+                    idx
+                    for idx, fname in enumerate(in_fnames)
+                    if fname.strip().upper() in calibrator_set_upper
+                ]
+                tgt_fids = [
+                    idx
+                    for idx, fname in enumerate(in_fnames)
+                    if fname.strip().upper() in target_set_upper
+                ]
+                cal_row_mask = (
+                    np.isin(in_fids, cal_fids) if cal_fids else np.zeros(in_fids.shape, dtype=bool)
+                )
+                tgt_row_mask = (
+                    np.isin(in_fids, tgt_fids) if tgt_fids else np.zeros(in_fids.shape, dtype=bool)
+                )
+
+                if np.any(cal_row_mask):
+                    cal_eff = eff_2d[:, cal_row_mask]
+                    cal_must = must_mask_2d[:, cal_row_mask]
+                    cal_clean = clean_mask_2d[:, cal_row_mask]
+                    cal_must_flag_recall = (
+                        float(np.mean(cal_eff[cal_must])) if np.any(cal_must) else 1.0
+                    )
+                    cal_clean_fpr = float(np.mean(cal_eff[cal_clean])) if np.any(cal_clean) else 0.0
+
+                if np.any(tgt_row_mask):
+                    tgt_eff = eff_2d[:, tgt_row_mask]
+                    tgt_must = must_mask_2d[:, tgt_row_mask]
+                    tgt_clean = clean_mask_2d[:, tgt_row_mask]
+                    tgt_must_flag_recall = (
+                        float(np.mean(tgt_eff[tgt_must])) if np.any(tgt_must) else 1.0
+                    )
+                    tgt_clean_fpr = float(np.mean(tgt_eff[tgt_clean])) if np.any(tgt_clean) else 0.0
         except Exception as exc:
             errors.append(f"Failed evaluating precal flag masks: {exc}")
+
+    flag_prov = "input.ms+calibrators.ms::FLAG" if cal_exists else "input.ms::FLAG"
+    has_cal_roles = bool(calibrator_set_upper)
+    has_tgt_roles = bool(target_set_upper)
+    base_flag_missing: ObservableStatusLiteral
+    cal_flag_missing: ObservableStatusLiteral
+    tgt_flag_missing: ObservableStatusLiteral
+    if not input_exists:
+        base_flag_missing = "missing_artifact"
+        cal_flag_missing = "missing_artifact"
+        tgt_flag_missing = "missing_artifact"
+    elif npz_path is None:
+        base_flag_missing = "not_applicable"
+        cal_flag_missing = "not_applicable"
+        tgt_flag_missing = "not_applicable"
+    elif not masks_evaluated:
+        base_flag_missing = "extractor_error"
+        cal_flag_missing = "extractor_error"
+        tgt_flag_missing = "extractor_error"
+    else:
+        base_flag_missing = "extractor_error"
+        cal_flag_missing = "missing_artifact" if has_cal_roles else "not_applicable"
+        tgt_flag_missing = "missing_artifact" if has_tgt_roles else "not_applicable"
 
     obs["precal.flux_cal_model_spec_nrmse"] = finite_observable(
         spec_nrmse,
@@ -658,15 +749,43 @@ def extract_precal(
     obs["precal.must_flag_recall"] = finite_observable(
         must_flag_recall,
         unit=None,
-        provenance="input.ms+calibrators.ms::FLAG" if cal_exists else "input.ms::FLAG",
-        missing_status="not_applicable" if npz_path is None else "extractor_error",
+        provenance=flag_prov,
+        missing_status=base_flag_missing,
         ndigits=6,
     )
     obs["precal.clean_false_positive_rate"] = finite_observable(
         clean_fpr,
         unit=None,
-        provenance="input.ms+calibrators.ms::FLAG" if cal_exists else "input.ms::FLAG",
-        missing_status="not_applicable" if npz_path is None else "extractor_error",
+        provenance=flag_prov,
+        missing_status=base_flag_missing,
+        ndigits=6,
+    )
+    obs["precal.calibrator_must_flag_recall"] = finite_observable(
+        cal_must_flag_recall,
+        unit=None,
+        provenance=flag_prov,
+        missing_status=cal_flag_missing,
+        ndigits=6,
+    )
+    obs["precal.target_must_flag_recall"] = finite_observable(
+        tgt_must_flag_recall,
+        unit=None,
+        provenance="input.ms::FLAG",
+        missing_status=tgt_flag_missing,
+        ndigits=6,
+    )
+    obs["precal.calibrator_clean_false_positive_rate"] = finite_observable(
+        cal_clean_fpr,
+        unit=None,
+        provenance=flag_prov,
+        missing_status=cal_flag_missing,
+        ndigits=6,
+    )
+    obs["precal.target_clean_false_positive_rate"] = finite_observable(
+        tgt_clean_fpr,
+        unit=None,
+        provenance="input.ms::FLAG",
+        missing_status=tgt_flag_missing,
         ndigits=6,
     )
     obs["precal.merged_calibrator_rows"] = ObservableRecord(
