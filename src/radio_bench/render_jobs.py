@@ -77,6 +77,8 @@ DEFAULT_ABLATION_MODELS: tuple[str, ...] = (
     "nrp_glm5",
 )
 
+OPENCODE_IMPORT_PATH = "radio_bench.agents:RadioBenchOpenCode"
+
 RETRYABLE_API_EXCEPTIONS: tuple[str, ...] = (
     "ApiRateLimitError",
     "ApiInternalServerError",
@@ -264,7 +266,7 @@ def _build_single_agent_dict(
         agent_dict["kwargs"] = kwargs
     elif model.harness == "opencode":
         agent_dict = {
-            "name": "opencode",
+            "import_path": OPENCODE_IMPORT_PATH,
             "model_name": model.model_name,
         }
         if resolved_base_url:
@@ -284,7 +286,7 @@ def _build_single_agent_dict(
         out_limit = (
             int(model.max_output_tokens)
             if (model.max_output_tokens is not None and int(model.max_output_tokens) > 0)
-            else (min(65536, max(8192, ctx_tokens // 4)) if ctx_tokens > 0 else 0)
+            else (min(32000, max(8192, ctx_tokens // 4)) if ctx_tokens > 0 else 0)
         )
         oc_cfg: dict[str, Any] = {}
         if ctx_tokens > 0 and "/" in model.model_name:

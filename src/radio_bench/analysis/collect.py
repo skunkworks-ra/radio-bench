@@ -87,6 +87,8 @@ class TrialRecord(dict[str, Any]):
         if kwargs:
             self.update(kwargs)
         self.setdefault("agent_exit_status", "ok")
+        self.setdefault("decoder_collapse", False)
+        self.setdefault("decoder_collapse_detail", None)
         self.setdefault("output_token_limit_hit", False)
         self.setdefault("last_step_tokens", None)
         self.setdefault("provider_error_kind", None)
@@ -158,6 +160,8 @@ CSV_BASE_COLUMNS: tuple[str, ...] = (
     "exception_type",
     "exception_message",
     "agent_exit_status",
+    "decoder_collapse",
+    "decoder_collapse_detail",
     "output_token_limit_hit",
     "last_step_tokens",
     "provider_error_kind",
@@ -1072,15 +1076,21 @@ def _resolve_agent_and_model(
         rcfg = result_dict.get("config")
         if isinstance(rcfg, dict) and isinstance(rcfg.get("agent"), dict):
             acfg = rcfg["agent"]
-            if not agent_name and isinstance(acfg.get("name"), str):
-                agent_name = acfg["name"].strip()
+            if not agent_name:
+                if isinstance(acfg.get("name"), str) and acfg["name"].strip():
+                    agent_name = acfg["name"].strip()
+                elif "opencode" in str(acfg.get("import_path") or "").lower():
+                    agent_name = "opencode"
             if not raw_model and isinstance(acfg.get("model_name"), str):
                 raw_model = acfg["model_name"].strip()
 
     if isinstance(config_dict, dict) and isinstance(config_dict.get("agent"), dict):
         acfg = config_dict["agent"]
-        if not agent_name and isinstance(acfg.get("name"), str):
-            agent_name = acfg["name"].strip()
+        if not agent_name:
+            if isinstance(acfg.get("name"), str) and acfg["name"].strip():
+                agent_name = acfg["name"].strip()
+            elif "opencode" in str(acfg.get("import_path") or "").lower():
+                agent_name = "opencode"
         if not raw_model and isinstance(acfg.get("model_name"), str):
             raw_model = acfg["model_name"].strip()
 
@@ -1356,6 +1366,8 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         "exception_type": exception_type,
         "exception_message": exception_message,
         "agent_exit_status": runtime_diag["agent_exit_status"],
+        "decoder_collapse": bool(runtime_diag["decoder_collapse"]),
+        "decoder_collapse_detail": runtime_diag["decoder_collapse_detail"],
         "output_token_limit_hit": bool(runtime_diag["output_token_limit_hit"]),
         "last_step_tokens": runtime_diag["last_step_tokens"],
         "provider_error_kind": runtime_diag["provider_error_kind"],
@@ -1398,16 +1410,18 @@ collect_trial = collect_single_trial
 
 
 def summarize_run_health(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Summarize agent exit statuses, benign EPIPE exits, upstream API errors, and timeouts."""
+    """Summarize agent exit statuses, benign EPIPE exits, decoder collapses, API errors, and timeouts."""
     clean_completions = 0
     benign_epipe_exits = 0
     provider_api_errors = 0
     recovered_provider_errors = 0
+    decoder_collapses = 0
     output_token_limits = 0
     agent_timeouts = 0
     agent_errors = 0
     provider_error_trials: list[dict[str, Any]] = []
     recovered_provider_error_trials: list[dict[str, Any]] = []
+    decoder_collapse_trials: list[dict[str, Any]] = []
     output_token_limit_trials: list[dict[str, Any]] = []
     timeout_trials: list[dict[str, Any]] = []
     agent_error_trials: list[dict[str, Any]] = []
@@ -1420,6 +1434,8 @@ def summarize_run_health(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]
             benign_epipe_exits += 1
         elif status == "provider_api_error":
             provider_api_errors += 1
+        elif status == "decoder_collapse":
+            decoder_collapses += 1
         elif status == "output_token_limit":
             output_token_limits += 1
         elif status == "agent_timeout":
@@ -1460,7 +1476,29 @@ def summarize_run_health(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]
                     "provider_error_count": p_cnt,
                 }
             )
-        if status == "output_token_limit":
+        if status == "decoder_collapse":
+            lst_tok = rec.get("last_step_tokens")
+            decoder_collapse_trials.append(
+                {
+                    "trial_name": str(rec.get("trial_name") or ""),
+                    "base_task": str(rec.get("base_task") or ""),
+                    "stage": str(rec.get("stage") or ""),
+                    "arm": str(rec.get("arm") or ""),
+                    "model_name": str(rec.get("model_name") or ""),
+                    "n_turns": safe_nonneg_int(rec.get("n_turns")),
+                    "decoder_collapse_detail": rec.get("decoder_collapse_detail"),
+                    "last_step_tokens": (
+                        int(lst_tok)
+                        if isinstance(lst_tok, (int, float))
+                        and not isinstance(lst_tok, bool)
+                        and int(lst_tok) > 0
+                        else None
+                    ),
+                    "reward": float(rec.get("reward") or 0.0),
+                    "passed": int(rec.get("passed") or 0),
+                }
+            )
+        elif status == "output_token_limit":
             lst_tok = rec.get("last_step_tokens")
             output_token_limit_trials.append(
                 {
@@ -1515,11 +1553,13 @@ def summarize_run_health(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]
             "benign_epipe_exits": benign_epipe_exits,
             "provider_api_errors": provider_api_errors,
             "recovered_provider_errors": recovered_provider_errors,
+            "decoder_collapses": decoder_collapses,
             "output_token_limits": output_token_limits,
             "agent_timeouts": agent_timeouts,
             "agent_errors": agent_errors,
             "provider_error_trials": provider_error_trials,
             "recovered_provider_error_trials": recovered_provider_error_trials,
+            "decoder_collapse_trials": decoder_collapse_trials,
             "output_token_limit_trials": output_token_limit_trials,
             "timeout_trials": timeout_trials,
             "agent_error_trials": agent_error_trials,

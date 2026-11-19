@@ -502,12 +502,65 @@ def _classify_provider_error(status_code: int | None, err_text: str) -> tuple[st
     return "provider_api_error", status_code
 
 
+_ANSI_ESC_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_CTRL_BYTE_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_CTRL_BYTE_RUN_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+")
+
+
+def detect_decoder_collapse(
+    text: str,
+    *,
+    hit_length_limit: bool = False,
+) -> tuple[bool, str | None]:
+    """Detect upstream model decoder collapse in a terminal reasoning or text part."""
+    if not text:
+        return False, None
+
+    cleaned_for_ctrl = _ANSI_ESC_RE.sub("", text)
+    ctrl_matches = _CTRL_BYTE_RE.findall(cleaned_for_ctrl)
+    if ctrl_matches:
+        total_ctrl = len(ctrl_matches)
+        max_run = max(
+            (len(m.group(0)) for m in _CTRL_BYTE_RUN_RE.finditer(cleaned_for_ctrl)),
+            default=0,
+        )
+        if max_run >= 32 or total_ctrl >= 64:
+            counts: dict[str, int] = {}
+            for ch in ctrl_matches:
+                counts[ch] = counts.get(ch, 0) + 1
+            dom_ch, dom_count = min(counts.items(), key=lambda kv: (-kv[1], ord(kv[0])))
+            return True, f"control_byte_loop (0x{ord(dom_ch):02x} x{dom_count})"
+
+    if hit_length_limit and len(text) >= 4000:
+        tail = text[-4000:]
+        tail_len = len(tail)
+        char_counts: dict[str, int] = {}
+        for ch in tail:
+            char_counts[ch] = char_counts.get(ch, 0) + 1
+        if max(char_counts.values()) * 100 >= 85 * tail_len:
+            return True, "degenerate_repetition_loop"
+
+        min_cover = (75 * tail_len + 99) // 100
+        for period in range(1, 17):
+            needed_eq = min_cover - period
+            run = 0
+            for idx in range(tail_len - period):
+                if tail[idx] == tail[idx + period]:
+                    run += 1
+                    if run >= needed_eq:
+                        return True, "degenerate_repetition_loop"
+                else:
+                    run = 0
+
+    return False, None
+
+
 def extract_agent_runtime_diagnostics(
     opencode_txt_path: Path | None,
     exc_type: str | None,
     exc_msg: str | None,
 ) -> dict[str, Any]:
-    """Classify OpenCode `opencode.txt` upstream errors, shutdown `EPIPE`s, and Harbor exceptions."""
+    """Classify OpenCode `opencode.txt` upstream errors, decoder collapses, EPIPEs, and Harbor exceptions."""
     exc_type_clean = (exc_type or "").strip()
     stripped_exc = strip_harbor_command_echo(exc_msg)
     saw_epipe = "epipe: broken pipe" in stripped_exc.lower()
@@ -519,6 +572,10 @@ def extract_agent_runtime_diagnostics(
     last_step_finish_reason = ""
     last_step_tokens: int | None = None
     saw_error_after_last_step_finish = False
+    current_reasoning_parts: list[str] = []
+    current_text_parts: list[str] = []
+    terminal_reasoning_parts: list[str] = []
+    terminal_text_parts: list[str] = []
 
     if opencode_txt_path is not None and Path(opencode_txt_path).is_file():
         try:
@@ -547,10 +604,30 @@ def extract_agent_runtime_diagnostics(
             etype = str(ev.get("type") or "").strip().lower()
             if etype:
                 last_jsonl_type = etype
-            if etype == "step_finish":
+            if etype in ("step_start", "step-start"):
+                current_reasoning_parts = []
+                current_text_parts = []
+                continue
+            if etype == "reasoning":
+                part = ev.get("part") if isinstance(ev.get("part"), dict) else {}
+                ptxt = part.get("text")
+                if isinstance(ptxt, str) and ptxt:
+                    current_reasoning_parts.append(ptxt)
+                continue
+            if etype == "text":
+                part = ev.get("part") if isinstance(ev.get("part"), dict) else {}
+                ptxt = part.get("text")
+                if isinstance(ptxt, str) and ptxt:
+                    current_text_parts.append(ptxt)
+                continue
+            if etype in ("step_finish", "step-finish"):
                 part = ev.get("part") if isinstance(ev.get("part"), dict) else {}
                 last_step_finish_reason = str(part.get("reason") or "").strip().lower()
                 saw_error_after_last_step_finish = False
+                terminal_reasoning_parts = list(current_reasoning_parts)
+                terminal_text_parts = list(current_text_parts)
+                current_reasoning_parts = []
+                current_text_parts = []
                 tok = part.get("tokens")
                 if isinstance(tok, dict):
                     u_in = safe_nonneg_int(tok.get("input"))
@@ -582,7 +659,48 @@ def extract_agent_runtime_diagnostics(
                 if norm_sc is not None:
                     provider_status_code = norm_sc
 
-    if provider_error_kind is None:
+    has_opencode_log = opencode_txt_path is not None and Path(opencode_txt_path).is_file()
+    has_unclosed_turn_parts = bool(current_reasoning_parts or current_text_parts)
+    has_clean_post_error_recovery = bool(
+        last_step_finish_reason
+        and (not saw_error_after_last_step_finish)
+        and (not has_unclosed_turn_parts)
+    )
+    if has_unclosed_turn_parts:
+        cand_reasoning = "".join(current_reasoning_parts)
+        cand_text = "".join(current_text_parts)
+        eff_hit_length_limit = False
+    else:
+        cand_reasoning = "".join(terminal_reasoning_parts)
+        cand_text = "".join(terminal_text_parts)
+        eff_hit_length_limit = last_step_finish_reason == "length"
+
+    raw_decoder_collapse = False
+    raw_decoder_collapse_detail: str | None = None
+    for cand_part in (cand_reasoning, cand_text):
+        if not cand_part:
+            continue
+        c_hit, c_detail = detect_decoder_collapse(
+            cand_part,
+            hit_length_limit=eff_hit_length_limit,
+        )
+        if c_hit:
+            raw_decoder_collapse = True
+            raw_decoder_collapse_detail = c_detail
+            break
+
+    is_synthetic_collapse_exc = bool(
+        raw_decoder_collapse
+        and (not saw_error_after_last_step_finish)
+        and exc_type_clean == "ApiInternalServerError"
+        and "decoder collapse" in stripped_exc.lower()
+    )
+    is_opencode_emitted_error_exc = bool(
+        exc_type_clean == "NonZeroAgentExitCodeError"
+        and "opencode emitted error event(s):" in stripped_exc.lower()
+    )
+
+    if provider_error_kind is None and not is_synthetic_collapse_exc:
         exc_low = stripped_exc.lower()
         m_exc_sc = _HTTP_STATUS_MSG_RE.search(stripped_exc) if stripped_exc else None
         exc_sc = _coerce_http_status_code(
@@ -629,36 +747,86 @@ def extract_agent_runtime_diagnostics(
             provider_status_code = provider_status_code or exc_sc
             provider_error_count = max(provider_error_count, 1)
 
+    hit_output_limit = bool(
+        last_step_finish_reason == "length"
+        and not saw_error_after_last_step_finish
+        and not has_unclosed_turn_parts
+    )
+    raw_epipe_after_clean = bool(
+        exc_type_clean == "NonZeroAgentExitCodeError"
+        and saw_epipe
+        and (provider_error_count == 0 or has_clean_post_error_recovery)
+    )
     benign_epipe_exit = bool(
-        exc_type_clean == "NonZeroAgentExitCodeError" and saw_epipe and provider_error_count == 0
+        raw_epipe_after_clean and not raw_decoder_collapse and not hit_output_limit
     )
     is_timeout = exc_type_clean in _TIMEOUT_EXC_NAMES or "timeout" in exc_type_clean.lower()
-    is_provider_exit = provider_error_kind is not None and (
-        bool(exc_type_clean) or last_jsonl_type == "error"
+    recovered_prior_error_only = bool(
+        has_opencode_log
+        and has_clean_post_error_recovery
+        and (
+            not exc_type_clean
+            or benign_epipe_exit
+            or raw_epipe_after_clean
+            or is_synthetic_collapse_exc
+            or is_opencode_emitted_error_exc
+        )
     )
-    output_token_limit_hit = bool(
-        last_step_finish_reason == "length"
+    is_provider_exit = (
+        provider_error_kind is not None
+        and (bool(exc_type_clean) or last_jsonl_type == "error")
+        and not recovered_prior_error_only
+    )
+    non_collapse_local_error = bool(
+        exc_type_clean
+        and exc_type_clean != "NonZeroAgentExitCodeError"
+        and not is_synthetic_collapse_exc
+    )
+    decoder_collapse = bool(
+        raw_decoder_collapse
         and not saw_error_after_last_step_finish
         and not is_timeout
         and not is_provider_exit
-        and (not exc_type_clean or benign_epipe_exit)
+        and not non_collapse_local_error
+    )
+    decoder_collapse_detail = raw_decoder_collapse_detail if decoder_collapse else None
+    output_token_limit_hit = bool(
+        last_step_finish_reason == "length"
+        and not decoder_collapse
+        and not saw_error_after_last_step_finish
+        and not is_timeout
+        and not is_provider_exit
+        and (
+            not exc_type_clean
+            or benign_epipe_exit
+            or raw_epipe_after_clean
+            or (has_clean_post_error_recovery and is_opencode_emitted_error_exc)
+        )
     )
 
     if is_timeout:
         agent_exit_status = "agent_timeout"
     elif is_provider_exit:
         agent_exit_status = "provider_api_error"
+    elif decoder_collapse:
+        agent_exit_status = "decoder_collapse"
     elif output_token_limit_hit:
         agent_exit_status = "output_token_limit"
     elif benign_epipe_exit:
         agent_exit_status = "benign_epipe"
-    elif bool(exc_type_clean):
+    elif (
+        bool(exc_type_clean)
+        and not is_synthetic_collapse_exc
+        and not (has_clean_post_error_recovery and is_opencode_emitted_error_exc)
+    ):
         agent_exit_status = "agent_error"
     else:
         agent_exit_status = "ok"
 
     return {
         "benign_epipe_exit": benign_epipe_exit,
+        "decoder_collapse": decoder_collapse,
+        "decoder_collapse_detail": decoder_collapse_detail,
         "output_token_limit_hit": output_token_limit_hit,
         "last_step_tokens": last_step_tokens,
         "provider_error_count": provider_error_count,

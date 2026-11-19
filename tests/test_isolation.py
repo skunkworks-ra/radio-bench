@@ -619,17 +619,18 @@ def test_job_yaml_configs_and_opencode_nrp_provider(
         assert task_entry.path.is_dir(), f"Missing task directory in {filename}: {task_entry.path}"
 
     if expected_agents == 4:
-        pairs = [(a.name, a.model_name) for a in cfg.agents]
+        pairs = [(a.name, a.import_path, a.model_name) for a in cfg.agents]
         assert pairs == [
-            ("claude-code", "anthropic/claude-haiku-4-5"),
-            ("claude-code", "anthropic/claude-sonnet-4-6"),
-            ("opencode", "nrp/kimi"),
-            ("opencode", "nrp/glm-5"),
+            ("claude-code", None, "anthropic/claude-haiku-4-5"),
+            ("claude-code", None, "anthropic/claude-sonnet-4-6"),
+            (None, "radio_bench.agents:RadioBenchOpenCode", "nrp/kimi"),
+            (None, "radio_bench.agents:RadioBenchOpenCode", "nrp/glm-5"),
         ]
         for a in cfg.agents:
             AgentFactory.run_preflight(a)
             assert a.kwargs.get("disable_web_search") is True
-            if a.name == "opencode":
+            if a.import_path == "radio_bench.agents:RadioBenchOpenCode":
+                assert a.name is None
                 assert "reasoning_effort" not in a.kwargs
                 assert "config" not in a.kwargs
                 assert "model_api_key_name" not in a.kwargs
@@ -643,6 +644,7 @@ def test_job_yaml_configs_and_opencode_nrp_provider(
                     logs_dir=tmp_path / f"oc_{a.model_name.replace('/', '_')}",
                 )
                 assert isinstance(created, OpenCode)
+                assert created.name() == "opencode"
                 oc = created
                 assert oc.version() == "1.19.5"
                 assert "dummy-test-key" in oc.model_connection.env.values()

@@ -2,7 +2,10 @@
 
 from typing import TYPE_CHECKING, Any
 
-from radio_bench.analysis._trace import extract_agent_runtime_diagnostics
+from radio_bench.analysis._trace import (
+    detect_decoder_collapse,
+    extract_agent_runtime_diagnostics,
+)
 from radio_bench.analysis.collect import (
     CANONICAL_ARMS,
     TrialRecord,
@@ -99,6 +102,7 @@ __all__ = [
     "compute_parity_summary",
     "compute_stratum_contrasts",
     "compute_trial_pricing",
+    "detect_decoder_collapse",
     "diff_caltables",
     "diff_images",
     "diff_job_directory",

@@ -6,6 +6,7 @@ import contextlib
 import json
 import math
 import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -1649,10 +1650,32 @@ def _provider_drop_label(rec: dict[str, Any], *, include_turn: bool = True) -> s
     return f"upstream API drop{turn_sfx}"
 
 
+_CTRL_LOOP_HEX_RE = re.compile(r"control_byte_loop\s*\((0x[0-9a-fA-F]{2})\b")
+
+
 def _output_token_limit_label(rec: dict[str, Any], *, include_turn: bool = True) -> str:
     turns = int(rec.get("n_turns") or 0)
     turn_sfx = f" at turn {turns}" if (include_turn and turns > 0) else ""
     return f"hit output-token limit during reasoning{turn_sfx}"
+
+
+def _decoder_collapse_label(rec: dict[str, Any], *, include_turn: bool = True) -> str:
+    turns = int(rec.get("n_turns") or 0)
+    turn_sfx = f" at turn {turns}" if (include_turn and turns > 0) else ""
+    return f"model decoder collapse{turn_sfx}"
+
+
+def _format_decoder_collapse_exit_status(rec: dict[str, Any]) -> str:
+    detail = str(rec.get("decoder_collapse_detail") or "").strip()
+    m_hex = _CTRL_LOOP_HEX_RE.search(detail) if detail else None
+    if m_hex:
+        return f"decoder_collapse ({m_hex.group(1).lower()} loop)"
+    lst_tok = rec.get("last_step_tokens")
+    if isinstance(lst_tok, (int, float)) and not isinstance(lst_tok, bool) and int(lst_tok) > 0:
+        return f"decoder_collapse ({int(lst_tok):,} tok)"
+    if detail:
+        return f"decoder_collapse ({detail})"
+    return "decoder_collapse"
 
 
 def _diagnose_trial_cell_reason(rec: dict[str, Any]) -> tuple[str, str]:
@@ -1669,7 +1692,7 @@ def _diagnose_trial_cell_reason(rec: dict[str, Any]) -> tuple[str, str]:
     if exit_st == "provider_api_error" and rew < 0.25:
         return "INCOMPLETE", _provider_drop_label(rec, include_turn=True)
 
-    if exit_st == "output_token_limit":
+    if exit_st in ("decoder_collapse", "output_token_limit"):
         corr_dist_chk = _get_obs_bool(
             rec, "cal.corrected_distinct_from_data", "corrected_distinct_from_data"
         )
@@ -1685,6 +1708,8 @@ def _diagnose_trial_cell_reason(rec: dict[str, Any]) -> tuple[str, str]:
             )
         )
         if missing_deliv:
+            if exit_st == "decoder_collapse":
+                return "INCOMPLETE", _decoder_collapse_label(rec, include_turn=True)
             return "INCOMPLETE", _output_token_limit_label(rec, include_turn=True)
 
     reason = ""
@@ -1762,6 +1787,8 @@ def _diagnose_trial_cell_reason(rec: dict[str, Any]) -> tuple[str, str]:
     if not reason:
         if exit_st == "provider_api_error":
             reason = _provider_drop_label(rec, include_turn=True)
+        elif exit_st == "decoder_collapse":
+            reason = _decoder_collapse_label(rec, include_turn=True)
         elif exit_st == "output_token_limit":
             reason = _output_token_limit_label(rec, include_turn=True)
         else:
@@ -1769,6 +1796,8 @@ def _diagnose_trial_cell_reason(rec: dict[str, Any]) -> tuple[str, str]:
 
     if exit_st == "agent_timeout" and "timeout" not in reason.lower():
         reason = f"{reason} + late timeout"
+    elif exit_st == "decoder_collapse" and "decoder collapse" not in reason.lower():
+        reason = f"{reason} + {_decoder_collapse_label(rec, include_turn=False)}"
     elif exit_st == "output_token_limit" and "output-token limit" not in reason.lower():
         reason = f"{reason} + {_output_token_limit_label(rec, include_turn=False)}"
     elif (
@@ -2201,6 +2230,7 @@ def render_human_report_markdown(
     n_epipe = int(run_health.get("benign_epipe_exits", 0))
     n_api = int(run_health.get("provider_api_errors", 0))
     n_recov = int(run_health.get("recovered_provider_errors", 0))
+    n_collapse = int(run_health.get("decoder_collapses", 0))
     n_tok_lim = int(run_health.get("output_token_limits", 0))
     n_to = int(run_health.get("agent_timeouts", 0))
     n_err = int(run_health.get("agent_errors", 0))
@@ -2214,6 +2244,9 @@ def render_human_report_markdown(
         it
         for it in (run_health.get("recovered_provider_error_trials") or [])
         if isinstance(it, dict)
+    ]
+    collapse_trials = [
+        it for it in (run_health.get("decoder_collapse_trials") or []) if isinstance(it, dict)
     ]
     tok_lim_trials = [
         it for it in (run_health.get("output_token_limit_trials") or []) if isinstance(it, dict)
@@ -2255,6 +2288,17 @@ def render_human_report_markdown(
         lines.append(
             "- **Upstream LLM/API interruptions:** `0` trials interrupted by provider errors."
         )
+
+    if n_collapse > 0 or collapse_trials:
+        dc_descs: list[str] = []
+        for it in collapse_trials:
+            tn = str(it.get("trial_name") or it.get("base_task") or "trial")
+            det = str(it.get("decoder_collapse_detail") or "").strip()
+            trn = int(it.get("n_turns") or 0)
+            det_str = f"{det}, " if det else ""
+            dc_descs.append(f"`{tn}` ({det_str}turn {trn})")
+        joined_dc = ", ".join(dc_descs) if dc_descs else f"`{n_collapse}` trials"
+        lines.append(f"- **Model decoder collapses (`{n_collapse}`):** {joined_dc}.")
 
     if n_tok_lim > 0 or tok_lim_trials:
         tl_descs: list[str] = []
@@ -2431,6 +2475,8 @@ def render_human_report_markdown(
         ex_st = str(r.get("agent_exit_status") or "ok")
         if ex_st == "provider_api_error" and r.get("provider_status_code") is not None:
             ex_st = f"provider_api_error (HTTP {r['provider_status_code']})"
+        elif ex_st == "decoder_collapse":
+            ex_st = _format_decoder_collapse_exit_status(r)
         elif ex_st == "output_token_limit" and r.get("last_step_tokens") is not None:
             ex_st = f"output_token_limit ({int(r['last_step_tokens']):,} tok)"
         row_vals = [

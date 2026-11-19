@@ -3869,3 +3869,409 @@ def test_opencode_output_token_limit_detection_and_report_rendering(tmp_path: Pa
         "INCOMPLETE 0.00 -- hit output-token limit during reasoning"
         in render_human_report_markdown(recs, {})
     )
+
+
+def test_decoder_collapse_detection_run_health_and_report_rendering(tmp_path: Path) -> None:
+    """Verify detect_decoder_collapse, terminal-turn diagnostics, run_health partition, and report.md."""
+    import csv
+
+    from radio_bench.analysis import (
+        detect_decoder_collapse,
+        extract_agent_runtime_diagnostics,
+        summarize_run_health,
+    )
+    from radio_bench.analysis.cli import run_analysis_pipeline
+
+    # 1. Pure detect_decoder_collapse unit checks
+    assert detect_decoder_collapse("") == (False, None)
+    assert detect_decoder_collapse("\x0f" * 31) == (False, None)
+    assert detect_decoder_collapse("ok " + ("\x0f" * 32)) == (
+        True,
+        "control_byte_loop (0x0f x32)",
+    )
+    # Scattered >= 64 control bytes triggers even with run length 1
+    scattered = "a\x07" * 64
+    assert detect_decoder_collapse(scattered) == (True, "control_byte_loop (0x07 x64)")
+    # Standard whitespace (\t, \n, \r) never triggers control-byte collapse
+    assert detect_decoder_collapse("\t\n\r" * 200, hit_length_limit=False) == (False, None)
+
+    # Degenerate single-char tail >= 85% only when hit_length_limit=True and len >= 4000
+    single_char_loop = ("Normal analysis. " * 40) + ("." * 3500) + ("x" * 500)
+    assert detect_decoder_collapse(single_char_loop, hit_length_limit=False) == (False, None)
+    assert detect_decoder_collapse(single_char_loop, hit_length_limit=True) == (
+        True,
+        "degenerate_repetition_loop",
+    )
+
+    # Degenerate repeating 1..16-char motif across >= 75% of trailing 4000 chars
+    motif_loop = ("Start reasoning. " * 60) + ("wait, " * 550)
+    assert detect_decoder_collapse(motif_loop, hit_length_limit=False) == (False, None)
+    assert detect_decoder_collapse(motif_loop, hit_length_limit=True) == (
+        True,
+        "degenerate_repetition_loop",
+    )
+
+    # Long normal reasoning hitting length limit must NOT trigger collapse
+    normal_long = " ".join(
+        f"Step {i}: checking baseline spw {i % 16} phase slope {i * 0.13:.2f} deg."
+        for i in range(120)
+    )
+    assert len(normal_long) >= 4000
+    assert detect_decoder_collapse(normal_long, hit_length_limit=True) == (False, None)
+
+    # 2. extract_agent_runtime_diagnostics terminal-turn behavior and precedence
+    oc_ctrl = tmp_path / "oc_ctrl_collapse.txt"
+    oc_ctrl.write_text(
+        json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "reasoning", "part": {"text": "Inspecting caltables."}})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "tool-calls",
+                    "tokens": {"input": 10000, "output": 120, "reasoning": 300, "total": 10420},
+                },
+            }
+        )
+        + "\n"
+        + json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "reasoning", "part": {"text": "Check flux\n" + ("\x0f" * 29330)}})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "length",
+                    "tokens": {"input": 50000, "output": 1, "reasoning": 31999, "total": 82000},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d_ctrl = extract_agent_runtime_diagnostics(oc_ctrl, None, None)
+    assert d_ctrl["decoder_collapse"] is True
+    assert d_ctrl["decoder_collapse_detail"] == "control_byte_loop (0x0f x29330)"
+    assert d_ctrl["agent_exit_status"] == "decoder_collapse"
+    assert d_ctrl["output_token_limit_hit"] is False
+    assert d_ctrl["last_step_tokens"] == 32000
+
+    # Synthetic retry exception from RadioBenchOpenCode preserves decoder_collapse classification
+    d_synth_exc = extract_agent_runtime_diagnostics(
+        oc_ctrl,
+        "ApiInternalServerError",
+        "Upstream model decoder collapse detected (control_byte_loop (0x0f x29330)) in opencode.txt",
+    )
+    assert d_synth_exc["decoder_collapse"] is True
+    assert d_synth_exc["agent_exit_status"] == "decoder_collapse"
+    assert d_synth_exc["provider_error_kind"] is None
+
+    # Earlier collapsed turn followed by a new clean step_start -> step_finish(stop) is NOT collapse
+    oc_reset = tmp_path / "oc_collapse_then_clean.txt"
+    oc_reset.write_text(
+        oc_ctrl.read_text(encoding="utf-8")
+        + json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "text", "part": {"text": "Calibration completed cleanly."}})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "stop",
+                    "tokens": {"input": 55000, "output": 200, "reasoning": 100, "total": 55300},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d_reset = extract_agent_runtime_diagnostics(oc_reset, None, None)
+    assert d_reset["decoder_collapse"] is False
+    assert d_reset["decoder_collapse_detail"] is None
+    assert d_reset["agent_exit_status"] == "ok"
+
+    # AgentTimeoutError supersedes decoder_collapse
+    d_to = extract_agent_runtime_diagnostics(oc_ctrl, "AgentTimeoutError", "Timed out after 3600s")
+    assert d_to["decoder_collapse"] is False
+    assert d_to["agent_exit_status"] == "agent_timeout"
+
+    # 3. End-to-end analysis pipeline: 0x0f collapse + motif collapse + genuine output_token_limit
+    job_dir = tmp_path / "job_collapse"
+    job_dir.mkdir()
+
+    ctrl_traj = Trajectory(
+        session_id="ses_ctrl_collapse",
+        agent=Agent(name="opencode", version="1.19.5", model_name="tejas/MiniMax-M3"),
+        steps=[
+            Step(step_id=1, source="agent", message="Inspecting caltables."),
+            Step(step_id=2, source="agent", message="Checking flux."),
+        ],
+    )
+    td_ctrl, _ = _write_harbor_trial(
+        job_dir,
+        task_name="r1_3c391_calibrate__11_full",
+        agent_name="opencode",
+        model_name="tejas/MiniMax-M3",
+        reward_dict={"reward": 0.0, "passed": 0},
+        metrics_dict={
+            "schema_version": "0.2",
+            "stage": "calibrate",
+            "measurements": {
+                "cal.corrected_distinct_from_data": {"value": False, "status": "measured"},
+            },
+        },
+        trajectory=ctrl_traj,
+        agent_sec=210.0,
+    )
+    (td_ctrl / "agent" / "opencode.txt").write_text(
+        oc_ctrl.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    td_motif, _ = _write_harbor_trial(
+        job_dir,
+        task_name="r2_3c391_e2e__11_full",
+        agent_name="opencode",
+        model_name="tejas/MiniMax-M3",
+        reward_dict={"reward": 0.0, "passed": 0},
+        metrics_dict={
+            "schema_version": "0.2",
+            "stage": "e2e",
+            "measurements": {
+                "cal.corrected_distinct_from_data": {"value": False, "status": "measured"},
+            },
+        },
+        agent_sec=240.0,
+    )
+    (td_motif / "agent" / "opencode.txt").write_text(
+        json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "reasoning", "part": {"text": motif_loop}})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "length",
+                    "tokens": {"input": 42000, "output": 0, "reasoning": 32000, "total": 74000},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    td_lim, _ = _write_harbor_trial(
+        job_dir,
+        task_name="r1_3c391_image__11_full",
+        agent_name="opencode",
+        model_name="tejas/MiniMax-M3",
+        reward_dict={"reward": 0.0, "passed": 0},
+        metrics_dict={
+            "schema_version": "0.2",
+            "stage": "image",
+            "measurements": {
+                "image.valid_product_count": {"value": 0, "status": "measured"},
+            },
+        },
+        agent_sec=180.0,
+    )
+    (td_lim / "agent" / "opencode.txt").write_text(
+        json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "reasoning", "part": {"text": normal_long}})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "length",
+                    "tokens": {"input": 30000, "output": 0, "reasoning": 32000, "total": 62000},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "collapse_analysis"
+    bundle = run_analysis_pipeline([job_dir], output_dir=out_dir, n_boot=20)
+    rh = bundle["summary"]["run_health"]
+    assert rh["n_trials"] == 3
+    assert rh["decoder_collapses"] == 2
+    assert rh["output_token_limits"] == 1
+    assert (
+        rh["clean_completions"]
+        + rh["benign_epipe_exits"]
+        + rh["provider_api_errors"]
+        + rh["decoder_collapses"]
+        + rh["output_token_limits"]
+        + rh["agent_timeouts"]
+        + rh["agent_errors"]
+        == rh["n_trials"]
+    )
+    assert len(rh["decoder_collapse_trials"]) == 2
+
+    rep_md = (out_dir / "report.md").read_text(encoding="utf-8")
+    assert "\u2014" not in rep_md and "\u2013" not in rep_md
+    assert "INCOMPLETE 0.00 -- model decoder collapse at turn" in rep_md
+    assert "INCOMPLETE 0.00 -- hit output-token limit during reasoning" in rep_md
+    assert "- **Model decoder collapses (`2`):**" in rep_md
+    assert "control_byte_loop (0x0f x29330)" in rep_md
+    assert "decoder_collapse (0x0f loop)" in rep_md
+    assert "decoder_collapse (32,000 tok)" in rep_md
+    assert "output_token_limit (32,000 tok)" in rep_md
+
+    with (out_dir / "trials.csv").open("r", encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 3
+    assert "decoder_collapse" in rows[0]
+    assert "decoder_collapse_detail" in rows[0]
+    recs = collect_trials([job_dir])
+    assert summarize_run_health(recs)["decoder_collapses"] == 2
+
+
+def test_review_regressions_ansi_recovered_errors_and_import_path_fallback(
+    tmp_path: Path,
+) -> None:
+    """Verify ANSI stripping, recovered mid-session API errors, and import_path agent fallback."""
+    from radio_bench.analysis import (
+        collect_single_trial,
+        detect_decoder_collapse,
+        extract_agent_runtime_diagnostics,
+    )
+
+    # 1. Valid ANSI CSI and OSC sequences do not false-positive; bare \x1b runs still trigger
+    ansi_csi_text = "".join(f"\x1b[31mWARN\x1b[0m channel {i} flagged\n" for i in range(40))
+    assert detect_decoder_collapse(ansi_csi_text) == (False, None)
+    ansi_osc_text = "".join(f"\x1b]0;casa-step-{i}\x07done\n" for i in range(40))
+    assert detect_decoder_collapse(ansi_osc_text) == (False, None)
+    assert detect_decoder_collapse("oops " + ("\x1b" * 32)) == (
+        True,
+        "control_byte_loop (0x1b x32)",
+    )
+
+    # 2a. Earlier recovered HTTP 503 followed by terminal decoder collapse + synthetic retry exc
+    err503_line = json.dumps(
+        {
+            "type": "error",
+            "error": {"data": {"statusCode": 503, "message": "Service Unavailable"}},
+        }
+    )
+    oc_503_then_collapse = tmp_path / "oc_503_then_collapse.txt"
+    oc_503_then_collapse.write_text(
+        err503_line
+        + "\n"
+        + json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "reasoning", "part": {"text": "Recheck " + ("\x0f" * 120)}})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "length",
+                    "tokens": {"input": 10000, "output": 0, "reasoning": 32000, "total": 42000},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d_503_col = extract_agent_runtime_diagnostics(
+        oc_503_then_collapse,
+        "ApiInternalServerError",
+        "Upstream model decoder collapse detected (control_byte_loop (0x0f x120)) in opencode.txt",
+    )
+    assert d_503_col["decoder_collapse"] is True
+    assert d_503_col["agent_exit_status"] == "decoder_collapse"
+
+    # 2b. Earlier recovered HTTP 503 followed by clean stop + shutdown EPIPE -> benign_epipe
+    oc_503_then_epipe = tmp_path / "oc_503_then_epipe.txt"
+    oc_503_then_epipe.write_text(
+        err503_line
+        + "\n"
+        + json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "text", "part": {"text": "Done cleanly."}})
+        + "\n"
+        + json.dumps({"type": "step_finish", "part": {"reason": "stop"}})
+        + "\n"
+        + "error: EPIPE: broken pipe, write\n",
+        encoding="utf-8",
+    )
+    d_503_ep = extract_agent_runtime_diagnostics(
+        oc_503_then_epipe,
+        "NonZeroAgentExitCodeError",
+        "Command failed (exit code 1)",
+    )
+    assert d_503_ep["benign_epipe_exit"] is True
+    assert d_503_ep["agent_exit_status"] == "benign_epipe"
+
+    # 2c. Earlier recovered HTTP 503 + clean stop + OpenCode _error_messages() NonZero exit -> ok
+    oc_503_then_clean = tmp_path / "oc_503_then_clean.txt"
+    oc_503_then_clean.write_text(
+        err503_line
+        + "\n"
+        + json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "text", "part": {"text": "Done cleanly."}})
+        + "\n"
+        + json.dumps({"type": "step_finish", "part": {"reason": "stop"}})
+        + "\n",
+        encoding="utf-8",
+    )
+    d_503_emitted = extract_agent_runtime_diagnostics(
+        oc_503_then_clean,
+        "NonZeroAgentExitCodeError",
+        "OpenCode emitted error event(s): Service Unavailable",
+    )
+    assert d_503_emitted["agent_exit_status"] == "ok"
+
+    # 2d. Output token limit + EPIPE is NOT benign_epipe (remains output_token_limit)
+    oc_len_epipe = tmp_path / "oc_len_epipe.txt"
+    oc_len_epipe.write_text(
+        json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "reasoning", "part": {"text": "Normal reasoning cut off."}})
+        + "\n"
+        + json.dumps({"type": "step_finish", "part": {"reason": "length"}})
+        + "\n"
+        + "error: EPIPE: broken pipe, write\n",
+        encoding="utf-8",
+    )
+    d_len_ep = extract_agent_runtime_diagnostics(
+        oc_len_epipe,
+        "NonZeroAgentExitCodeError",
+        "stderr: EPIPE: broken pipe",
+    )
+    assert d_len_ep["benign_epipe_exit"] is False
+    assert d_len_ep["output_token_limit_hit"] is True
+    assert d_len_ep["agent_exit_status"] == "output_token_limit"
+
+    # 5. Missing result.json + config.json import_path fallback resolves agent_name == "opencode"
+    job_dir = tmp_path / "job_no_result"
+    trial_dir = job_dir / "r1_3c391_inspect__11_full__abc1234"
+    (trial_dir / "verifier").mkdir(parents=True)
+    (trial_dir / "agent").mkdir(parents=True)
+    (trial_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "task": {"path": "/tasks/r1_3c391_inspect__11_full"},
+                "agent": {
+                    "name": None,
+                    "import_path": "radio_bench.agents:RadioBenchOpenCode",
+                    "model_name": "tejas/MiniMax-M3",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (trial_dir / "verifier" / "reward.json").write_text(
+        json.dumps({"reward": 1.0, "passed": 1}), encoding="utf-8"
+    )
+    rec = collect_single_trial(job_dir, trial_dir)
+    assert rec["agent_name"] == "opencode"

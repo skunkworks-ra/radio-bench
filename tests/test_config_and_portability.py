@@ -1414,7 +1414,7 @@ def test_part3_opencode_mcp_timeout_safe_retries_and_pixi_run_job(tmp_path: Path
         "temperature": 0.1
     }
 
-    # Verify default output token cap min(65536, max(8192, ctx // 4)) when no override is supplied
+    # Verify default output token cap min(32000, max(8192, ctx // 4)) when no override is supplied
     auto_spec = ModelSpec(
         key="oc_auto",
         harness="opencode",
@@ -1424,6 +1424,9 @@ def test_part3_opencode_mcp_timeout_safe_retries_and_pixi_run_job(tmp_path: Path
     auto_entry = rj._build_agent_entry(
         auto_spec, "default", job_n_concurrent=1, env=_clean_bench_env()
     )
+    assert "name" not in auto_entry
+    assert auto_entry["import_path"] == "radio_bench.agents:RadioBenchOpenCode"
+    assert "env" not in auto_entry
     assert auto_entry["kwargs"]["opencode_config"] == {
         "provider": {
             "openrouter": {
@@ -1431,7 +1434,7 @@ def test_part3_opencode_mcp_timeout_safe_retries_and_pixi_run_job(tmp_path: Path
                     "qwen-coder": {
                         "limit": {
                             "context": 131_072,
-                            "output": 32_768,
+                            "output": 32_000,
                         }
                     }
                 }
@@ -1557,3 +1560,315 @@ def test_opencode_max_output_tokens_and_experimental_env_cap(tmp_path: Path) -> 
     )
     with pytest.raises(ValueError, match="max_output_tokens"):
         load_models_config(config_path=bad_toml, env=_clean_bench_env())
+
+
+def test_radiobench_opencode_factory_and_runtime_guards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify RadioBenchOpenCode factory resolution, log pull, and retryable error mapping."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from harbor.agents.factory import AgentFactory
+    from harbor.agents.installed.base import (
+        ApiError,
+        ApiInternalServerError,
+        ApiRateLimitError,
+        ApiResponseStalledError,
+        NonZeroAgentExitCodeError,
+    )
+    from harbor.agents.installed.opencode import OpenCode
+    from harbor.models.agent.context import AgentContext
+    from harbor.models.job.config import AgentConfig
+
+    from radio_bench.agents import RadioBenchOpenCode
+
+    monkeypatch.setenv("TACC_API_KEY", "dummy-tacc-key")
+
+    spec = ModelSpec(
+        key="tejas_minimax_m3",
+        harness="opencode",
+        model_name="tejas/MiniMax-M3",
+        api_format="openai_chat_completions",
+        base_url="https://example.org/v1",
+        api_key_env="TACC_API_KEY",
+        opencode_version="1.19.5",
+        context_window_tokens=1_048_576,
+        max_output_tokens=16_384,
+    )
+    agent_dict = rj._build_agent_entry(spec, "default", job_n_concurrent=1)
+    assert "name" not in agent_dict
+    assert agent_dict["import_path"] == "radio_bench.agents:RadioBenchOpenCode"
+    assert "env" not in agent_dict
+
+    agent_cfg = AgentConfig.model_validate(agent_dict)
+    assert agent_cfg.name is None
+    assert agent_cfg.import_path == "radio_bench.agents:RadioBenchOpenCode"
+    AgentFactory.run_preflight(agent_cfg)
+
+    def _make_agent_and_env(
+        case_name: str,
+        log_payload: str,
+    ) -> tuple[RadioBenchOpenCode, Any, list[tuple[str, Path]]]:
+        logs_dir = tmp_path / f"logs_{case_name}"
+        created = AgentFactory.create_agent_from_config(agent_cfg, logs_dir=logs_dir)
+        assert isinstance(created, RadioBenchOpenCode)
+        assert created.name() == "opencode"
+        downloads: list[tuple[str, Path]] = []
+
+        async def _fake_download_file(src: str, dst: Path) -> None:
+            downloads.append((src, Path(dst)))
+            Path(dst).parent.mkdir(parents=True, exist_ok=True)
+            Path(dst).write_text(log_payload, encoding="utf-8")
+
+        env = SimpleNamespace(download_file=_fake_download_file)
+        return created, env, downloads
+
+    # 1. Decoder collapse (\x0f loop on exit 0) -> ApiInternalServerError (retryable)
+    collapse_log = (
+        json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "reasoning", "part": {"text": "Thinking...\n" + ("\x0f" * 128)}})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "length",
+                    "tokens": {"input": 1000, "output": 1, "reasoning": 31999, "total": 33000},
+                },
+            }
+        )
+        + "\n"
+    )
+    ag_col, env_col, dl_col = _make_agent_and_env("collapse", collapse_log)
+
+    async def _ok_super_run(self: Any, instruction: str, environment: Any, context: Any) -> None:
+        return None
+
+    monkeypatch.setattr(OpenCode, "run", _ok_super_run)
+    with pytest.raises(ApiInternalServerError, match="control_byte_loop"):
+        asyncio.run(ag_col.run("do task", env_col, AgentContext()))
+    assert len(dl_col) == 1
+    assert dl_col[0][0].endswith("/opencode.txt")
+
+    # 2. HTTP 500 where super().run() raised NonZeroAgentExitCodeError -> ApiInternalServerError
+    err500_log = (
+        json.dumps(
+            {
+                "type": "error",
+                "error": {"data": {"statusCode": 500, "message": "Internal Server Error"}},
+            }
+        )
+        + "\n"
+    )
+    ag_500, env_500, dl_500 = _make_agent_and_env("http500", err500_log)
+
+    async def _fail_nonzero(self: Any, instruction: str, environment: Any, context: Any) -> None:
+        raise NonZeroAgentExitCodeError("exit 1")
+
+    monkeypatch.setattr(OpenCode, "run", _fail_nonzero)
+    with pytest.raises(ApiInternalServerError, match="HTTP 500"):
+        asyncio.run(ag_500.run("do task", env_500, AgentContext()))
+    assert len(dl_500) == 1
+
+    # 3. HTTP 504 where super().run() raised NonZeroAgentExitCodeError -> ApiResponseStalledError
+    err504_log = (
+        json.dumps(
+            {
+                "type": "error",
+                "error": {"data": {"statusCode": 504, "message": "504 Gateway Time-out"}},
+            }
+        )
+        + "\n"
+    )
+    ag_504, env_504, _ = _make_agent_and_env("http504", err504_log)
+    with pytest.raises(ApiResponseStalledError, match="HTTP 504"):
+        asyncio.run(ag_504.run("do task", env_504, AgentContext()))
+
+    # 4. HTTP 429 where super().run() raised NonZeroAgentExitCodeError -> ApiRateLimitError
+    err429_log = (
+        json.dumps(
+            {
+                "type": "error",
+                "error": {"data": {"statusCode": 429, "message": "Too Many Requests"}},
+            }
+        )
+        + "\n"
+    )
+    ag_429, env_429, _ = _make_agent_and_env("http429", err429_log)
+    with pytest.raises(ApiRateLimitError, match="HTTP 429"):
+        asyncio.run(ag_429.run("do task", env_429, AgentContext()))
+
+    # 5. HTTP 400 malformed tool call with x-ratelimit headers where Harbor falsely raised
+    # ApiRateLimitError -> downgrades to plain NonZeroAgentExitCodeError (not ApiError)
+    err400_log = (
+        json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "name": "APIError",
+                    "data": {
+                        "statusCode": 400,
+                        "message": "Error code: 400 - failed to parse tool call arguments",
+                        "responseHeaders": {"x-ratelimit-remaining": "99"},
+                    },
+                },
+            }
+        )
+        + "\n"
+    )
+    ag_400, env_400, _ = _make_agent_and_env("http400", err400_log)
+
+    async def _false_ratelimit(self: Any, instruction: str, environment: Any, context: Any) -> None:
+        raise ApiRateLimitError("matched x-ratelimit header")
+
+    monkeypatch.setattr(OpenCode, "run", _false_ratelimit)
+    with pytest.raises(NonZeroAgentExitCodeError, match="HTTP 400") as exc_400_info:
+        asyncio.run(ag_400.run("do task", env_400, AgentContext()))
+    assert not isinstance(exc_400_info.value, ApiError)
+
+    # 6. Benign shutdown EPIPE (NonZeroAgentExitCodeError, zero API errors) -> swallowed cleanly
+    epipe_log = (
+        json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "text", "part": {"text": "Finished calibration cleanly."}})
+        + "\n"
+        + json.dumps({"type": "step_finish", "part": {"reason": "stop"}})
+        + "\n"
+        + "Error: EPIPE: broken pipe, write\n"
+    )
+    ag_ep, env_ep, _ = _make_agent_and_env("epipe", epipe_log)
+
+    async def _fail_epipe(self: Any, instruction: str, environment: Any, context: Any) -> None:
+        raise NonZeroAgentExitCodeError("stderr: EPIPE: broken pipe")
+
+    monkeypatch.setattr(OpenCode, "run", _fail_epipe)
+    assert asyncio.run(ag_ep.run("do task", env_ep, AgentContext())) is None
+
+    # 7. Transient recovered HTTP 500 followed by clean stop on exit 0 -> returns cleanly
+    recovered_log = (
+        json.dumps(
+            {
+                "type": "error",
+                "error": {"data": {"statusCode": 500, "message": "Internal Server Error"}},
+            }
+        )
+        + "\n"
+        + json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "text", "part": {"text": "Recovered and completed."}})
+        + "\n"
+        + json.dumps({"type": "step_finish", "part": {"reason": "stop"}})
+        + "\n"
+    )
+    ag_rec, env_rec, _ = _make_agent_and_env("recovered", recovered_log)
+    monkeypatch.setattr(OpenCode, "run", _ok_super_run)
+    assert asyncio.run(ag_rec.run("do task", env_rec, AgentContext())) is None
+
+    # 8. Normal clean exit 0 -> returns cleanly
+    clean_log = (
+        json.dumps({"type": "step_start"})
+        + "\n"
+        + json.dumps({"type": "text", "part": {"text": "All deliverables verified."}})
+        + "\n"
+        + json.dumps({"type": "step_finish", "part": {"reason": "stop"}})
+        + "\n"
+    )
+    ag_ok, env_ok, dl_ok = _make_agent_and_env("clean", clean_log)
+    assert asyncio.run(ag_ok.run("do task", env_ok, AgentContext())) is None
+    assert len(dl_ok) == 1
+
+    # 9. Recovered mid-session 503 + clean stop where OpenCode._error_messages() raised -> swallowed
+    ag_rec_exc, env_rec_exc, _ = _make_agent_and_env("recovered_emitted", recovered_log)
+
+    async def _fail_emitted(self: Any, instruction: str, environment: Any, context: Any) -> None:
+        raise NonZeroAgentExitCodeError("OpenCode emitted error event(s): Internal Server Error")
+
+    monkeypatch.setattr(OpenCode, "run", _fail_emitted)
+    assert asyncio.run(ag_rec_exc.run("do task", env_rec_exc, AgentContext())) is None
+
+    # 10. Recovered mid-session 503 + clean stop + shutdown EPIPE -> swallowed
+    rec_epipe_log = recovered_log + "error: EPIPE: broken pipe, write\n"
+    ag_rec_ep, env_rec_ep, _ = _make_agent_and_env("recovered_epipe", rec_epipe_log)
+    monkeypatch.setattr(OpenCode, "run", _fail_epipe)
+    assert asyncio.run(ag_rec_ep.run("do task", env_rec_ep, AgentContext())) is None
+
+    # 11. Fatal provider_api_error (HTTP 401 on exit 0; HTTP 422 mislabeled as ApiRateLimitError)
+    err401_log = (
+        json.dumps(
+            {
+                "type": "error",
+                "error": {"data": {"statusCode": 401, "message": "Invalid API key"}},
+            }
+        )
+        + "\n"
+    )
+    ag_401, env_401, _ = _make_agent_and_env("http401", err401_log)
+    monkeypatch.setattr(OpenCode, "run", _ok_super_run)
+    with pytest.raises(NonZeroAgentExitCodeError, match="HTTP 401") as exc_401_info:
+        asyncio.run(ag_401.run("do task", env_401, AgentContext()))
+    assert not isinstance(exc_401_info.value, ApiError)
+
+    err422_log = (
+        json.dumps(
+            {
+                "type": "error",
+                "error": {
+                    "data": {
+                        "statusCode": 422,
+                        "message": "Unprocessable Entity: context length exceeded",
+                        "responseHeaders": {"x-ratelimit-remaining": "50"},
+                    }
+                },
+            }
+        )
+        + "\n"
+    )
+    ag_422, env_422, _ = _make_agent_and_env("http422", err422_log)
+    monkeypatch.setattr(OpenCode, "run", _false_ratelimit)
+    with pytest.raises(NonZeroAgentExitCodeError, match="HTTP 422") as exc_422_info:
+        asyncio.run(ag_422.run("do task", env_422, AgentContext()))
+    assert not isinstance(exc_422_info.value, ApiError)
+
+    # 12. Unmounted pre-existing stale host_log (--resume) is refreshed; failed refresh preserves it
+    ag_res, env_res, dl_res = _make_agent_and_env("resume_refresh", collapse_log)
+    ag_res.logs_dir.mkdir(parents=True, exist_ok=True)
+    stale_host_log = ag_res.logs_dir / ag_res._OUTPUT_FILENAME
+    stale_host_log.write_text(clean_log, encoding="utf-8")
+    env_res.is_path_mounted = lambda _remote, _local: False
+    monkeypatch.setattr(OpenCode, "run", _ok_super_run)
+    with pytest.raises(ApiInternalServerError, match="control_byte_loop"):
+        asyncio.run(ag_res.run("resume task", env_res, AgentContext()))
+    assert len(dl_res) == 1
+
+    # Failed download_file preserves pre-existing host_log and still classifies it
+    ag_keep_logs = tmp_path / "logs_keep_existing"
+    ag_keep = AgentFactory.create_agent_from_config(agent_cfg, logs_dir=ag_keep_logs)
+    assert isinstance(ag_keep, RadioBenchOpenCode)
+    ag_keep_logs.mkdir(parents=True, exist_ok=True)
+    (ag_keep_logs / ag_keep._OUTPUT_FILENAME).write_text(collapse_log, encoding="utf-8")
+
+    async def _broken_download(src: str, dst: Path) -> None:
+        raise OSError("container stopped")
+
+    env_broken = SimpleNamespace(
+        download_file=_broken_download,
+        is_path_mounted=lambda _remote, _local: False,
+    )
+    with pytest.raises(ApiInternalServerError, match="control_byte_loop"):
+        asyncio.run(ag_keep.run("resume task", env_broken, AgentContext()))
+    assert (ag_keep_logs / ag_keep._OUTPUT_FILENAME).read_text(encoding="utf-8") == collapse_log
+
+    # 13. Missing host_log + download_file failure still classifies caught_exc unconditionally
+    ag_nolog = AgentFactory.create_agent_from_config(agent_cfg, logs_dir=tmp_path / "logs_nolog")
+    assert isinstance(ag_nolog, RadioBenchOpenCode)
+
+    async def _false_rl_400(self: Any, instruction: str, environment: Any, context: Any) -> None:
+        raise ApiRateLimitError("Error code: 400 - failed to parse tool call")
+
+    monkeypatch.setattr(OpenCode, "run", _false_rl_400)
+    with pytest.raises(NonZeroAgentExitCodeError, match="HTTP 400") as exc_nolog_info:
+        asyncio.run(ag_nolog.run("do task", env_broken, AgentContext()))
+    assert not isinstance(exc_nolog_info.value, ApiError)
