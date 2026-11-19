@@ -1649,6 +1649,12 @@ def _provider_drop_label(rec: dict[str, Any], *, include_turn: bool = True) -> s
     return f"upstream API drop{turn_sfx}"
 
 
+def _output_token_limit_label(rec: dict[str, Any], *, include_turn: bool = True) -> str:
+    turns = int(rec.get("n_turns") or 0)
+    turn_sfx = f" at turn {turns}" if (include_turn and turns > 0) else ""
+    return f"hit output-token limit during reasoning{turn_sfx}"
+
+
 def _diagnose_trial_cell_reason(rec: dict[str, Any]) -> tuple[str, str]:
     """Return `('PASS' | 'FAIL' | 'INCOMPLETE', plain_english_reason)` for one trial."""
     if int(rec.get("passed") or 0) == 1:
@@ -1662,6 +1668,24 @@ def _diagnose_trial_cell_reason(rec: dict[str, Any]) -> tuple[str, str]:
 
     if exit_st == "provider_api_error" and rew < 0.25:
         return "INCOMPLETE", _provider_drop_label(rec, include_turn=True)
+
+    if exit_st == "output_token_limit":
+        corr_dist_chk = _get_obs_bool(
+            rec, "cal.corrected_distinct_from_data", "corrected_distinct_from_data"
+        )
+        valid_prod_chk = _get_obs_num(rec, "image.valid_product_count", "image_sets_found")
+        missing_deliv = (
+            rew == 0.0
+            or rew < 0.25
+            or (stage in ("calibrate", "e2e") and corr_dist_chk is False)
+            or (
+                stage in ("image", "image_cont", "e2e")
+                and valid_prod_chk is not None
+                and valid_prod_chk <= 0.0
+            )
+        )
+        if missing_deliv:
+            return "INCOMPLETE", _output_token_limit_label(rec, include_turn=True)
 
     reason = ""
     if stage == "inspect":
@@ -1738,11 +1762,15 @@ def _diagnose_trial_cell_reason(rec: dict[str, Any]) -> tuple[str, str]:
     if not reason:
         if exit_st == "provider_api_error":
             reason = _provider_drop_label(rec, include_turn=True)
+        elif exit_st == "output_token_limit":
+            reason = _output_token_limit_label(rec, include_turn=True)
         else:
             reason = _FAILURE_MODE_HUMAN.get(fmode, fmode.replace("_", " "))
 
     if exit_st == "agent_timeout" and "timeout" not in reason.lower():
         reason = f"{reason} + late timeout"
+    elif exit_st == "output_token_limit" and "output-token limit" not in reason.lower():
+        reason = f"{reason} + {_output_token_limit_label(rec, include_turn=False)}"
     elif (
         exit_st == "provider_api_error"
         and "upstream api" not in reason.lower()
@@ -2173,6 +2201,7 @@ def render_human_report_markdown(
     n_epipe = int(run_health.get("benign_epipe_exits", 0))
     n_api = int(run_health.get("provider_api_errors", 0))
     n_recov = int(run_health.get("recovered_provider_errors", 0))
+    n_tok_lim = int(run_health.get("output_token_limits", 0))
     n_to = int(run_health.get("agent_timeouts", 0))
     n_err = int(run_health.get("agent_errors", 0))
     api_trials = [
@@ -2185,6 +2214,9 @@ def render_human_report_markdown(
         it
         for it in (run_health.get("recovered_provider_error_trials") or [])
         if isinstance(it, dict)
+    ]
+    tok_lim_trials = [
+        it for it in (run_health.get("output_token_limit_trials") or []) if isinstance(it, dict)
     ]
     to_trials = [it for it in (run_health.get("timeout_trials") or []) if isinstance(it, dict)]
     err_trials = [it for it in (run_health.get("agent_error_trials") or []) if isinstance(it, dict)]
@@ -2223,6 +2255,23 @@ def render_human_report_markdown(
         lines.append(
             "- **Upstream LLM/API interruptions:** `0` trials interrupted by provider errors."
         )
+
+    if n_tok_lim > 0 or tok_lim_trials:
+        tl_descs: list[str] = []
+        for it in tok_lim_trials:
+            tn = str(it.get("trial_name") or it.get("base_task") or "trial")
+            trn = int(it.get("n_turns") or 0)
+            lst_tok = it.get("last_step_tokens")
+            tok_str = (
+                f"{int(lst_tok):,} tokens, "
+                if isinstance(lst_tok, (int, float))
+                and not isinstance(lst_tok, bool)
+                and int(lst_tok) > 0
+                else ""
+            )
+            tl_descs.append(f"`{tn}` ({tok_str}turn {trn})")
+        joined_tl = ", ".join(tl_descs) if tl_descs else f"`{n_tok_lim}` trials"
+        lines.append(f"- **Output/reasoning token limit cutoffs (`{n_tok_lim}`):** {joined_tl}.")
 
     if n_to > 0 or to_trials:
         to_descs: list[str] = []
@@ -2382,6 +2431,8 @@ def render_human_report_markdown(
         ex_st = str(r.get("agent_exit_status") or "ok")
         if ex_st == "provider_api_error" and r.get("provider_status_code") is not None:
             ex_st = f"provider_api_error (HTTP {r['provider_status_code']})"
+        elif ex_st == "output_token_limit" and r.get("last_step_tokens") is not None:
+            ex_st = f"output_token_limit ({int(r['last_step_tokens']):,} tok)"
         row_vals = [
             f"`{m_disp_row}`",
             _human_stage_title(st_norm),

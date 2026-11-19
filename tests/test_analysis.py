@@ -3726,3 +3726,146 @@ def test_part4_render_human_report_markdown_and_cli_integration(tmp_path: Path) 
             )
         finally:
             shutil.rmtree(real_scratch, ignore_errors=True)
+
+
+def test_opencode_output_token_limit_detection_and_report_rendering(tmp_path: Path) -> None:
+    """Verify step_finish reason=length detection, run_health partition, and INCOMPLETE scorecard."""
+    from radio_bench.analysis import (
+        extract_agent_runtime_diagnostics,
+        render_human_report_markdown,
+        summarize_run_health,
+    )
+    from radio_bench.analysis.cli import run_analysis_pipeline
+
+    # 1. Terminal step_finish with reason == "length" -> output_token_limit (32,000 tokens)
+    oc_len = tmp_path / "oc_length.txt"
+    oc_len.write_text(
+        json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "tool-calls",
+                    "tokens": {"input": 12000, "output": 180, "reasoning": 900, "total": 13080},
+                },
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "length",
+                    "tokens": {
+                        "total": 86675,
+                        "input": 54675,
+                        "output": 1,
+                        "reasoning": 31999,
+                        "cache": {"write": 0, "read": 0},
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d_len = extract_agent_runtime_diagnostics(oc_len, None, None)
+    assert d_len["output_token_limit_hit"] is True
+    assert d_len["last_step_tokens"] == 32000
+    assert d_len["agent_exit_status"] == "output_token_limit"
+
+    # 2. Earlier reason == "length" followed by a subsequent step_finish reason == "stop" -> ok
+    oc_recovered = tmp_path / "oc_len_then_stop.txt"
+    oc_recovered.write_text(
+        oc_len.read_text(encoding="utf-8")
+        + json.dumps(
+            {
+                "type": "step_finish",
+                "part": {
+                    "reason": "stop",
+                    "tokens": {"input": 90000, "output": 250, "reasoning": 400, "total": 90650},
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d_rec = extract_agent_runtime_diagnostics(oc_recovered, None, None)
+    assert d_rec["output_token_limit_hit"] is False
+    assert d_rec["agent_exit_status"] == "ok"
+
+    # 3. Later upstream error or AgentTimeoutError supersedes earlier reason == "length"
+    oc_superseded = tmp_path / "oc_len_then_504.txt"
+    oc_superseded.write_text(
+        oc_len.read_text(encoding="utf-8")
+        + json.dumps(
+            {"type": "error", "error": {"data": {"statusCode": 504, "message": "Gateway Time-out"}}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    d_sup = extract_agent_runtime_diagnostics(oc_superseded, None, None)
+    assert d_sup["output_token_limit_hit"] is False
+    assert d_sup["agent_exit_status"] == "provider_api_error"
+    assert d_sup["provider_status_code"] == 504
+
+    d_to = extract_agent_runtime_diagnostics(oc_len, "AgentTimeoutError", "Timed out after 3600s")
+    assert d_to["output_token_limit_hit"] is False
+    assert d_to["agent_exit_status"] == "agent_timeout"
+
+    # 4. End-to-end Harbor trial collection + summarize_run_health + report.md scorecard & Run Health
+    job_dir = tmp_path / "job_tok_lim"
+    job_dir.mkdir()
+    td_len, _ = _write_harbor_trial(
+        job_dir,
+        task_name="r1_3c391_calibrate__11_full",
+        agent_name="opencode",
+        model_name="tejas/MiniMax-M3",
+        reward_dict={"reward": 0.0, "passed": 0},
+        metrics_dict={
+            "schema_version": "0.2",
+            "stage": "calibrate",
+            "table_locked": False,
+            "measurements": {
+                "proc.table_locked": {"value": False, "status": "measured"},
+                "cal.corrected_distinct_from_data": {"value": False, "status": "measured"},
+            },
+        },
+        agent_sec=204.0,
+    )
+    (td_len / "agent" / "opencode.txt").write_text(
+        oc_len.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+
+    out_dir = tmp_path / "tok_lim_analysis"
+    bundle = run_analysis_pipeline([job_dir], output_dir=out_dir, n_boot=20)
+    rh = bundle["summary"]["run_health"]
+    assert rh["n_trials"] == 1
+    assert rh["output_token_limits"] == 1
+    assert (
+        rh["clean_completions"]
+        + rh["benign_epipe_exits"]
+        + rh["provider_api_errors"]
+        + rh["output_token_limits"]
+        + rh["agent_timeouts"]
+        + rh["agent_errors"]
+        == rh["n_trials"]
+    )
+    assert rh["output_token_limit_trials"][0]["last_step_tokens"] == 32000
+
+    rep_md = (out_dir / "report.md").read_text(encoding="utf-8")
+    assert "\u2014" not in rep_md and "\u2013" not in rep_md
+    assert "INCOMPLETE 0.00 -- hit output-token limit during reasoning" in rep_md
+    assert "**Output/reasoning token limit cutoffs (`1`):**" in rep_md
+    assert "32,000 tokens" in rep_md
+    assert "output_token_limit (32,000 tok)" in rep_md
+
+    # Verify direct summarize_run_health + render_human_report_markdown round-trip
+    recs = collect_trials([job_dir])
+    assert recs[0]["agent_exit_status"] == "output_token_limit"
+    assert recs[0]["output_token_limit_hit"] is True
+    assert recs[0]["last_step_tokens"] == 32000
+    assert summarize_run_health(recs)["output_token_limits"] == 1
+    assert (
+        "INCOMPLETE 0.00 -- hit output-token limit during reasoning"
+        in render_human_report_markdown(recs, {})
+    )

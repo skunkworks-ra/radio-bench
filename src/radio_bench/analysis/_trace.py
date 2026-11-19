@@ -516,6 +516,9 @@ def extract_agent_runtime_diagnostics(
     provider_status_code: int | None = None
     provider_error_kind: str | None = None
     last_jsonl_type = ""
+    last_step_finish_reason = ""
+    last_step_tokens: int | None = None
+    saw_error_after_last_step_finish = False
 
     if opencode_txt_path is not None and Path(opencode_txt_path).is_file():
         try:
@@ -544,9 +547,31 @@ def extract_agent_runtime_diagnostics(
             etype = str(ev.get("type") or "").strip().lower()
             if etype:
                 last_jsonl_type = etype
+            if etype == "step_finish":
+                part = ev.get("part") if isinstance(ev.get("part"), dict) else {}
+                last_step_finish_reason = str(part.get("reason") or "").strip().lower()
+                saw_error_after_last_step_finish = False
+                tok = part.get("tokens")
+                if isinstance(tok, dict):
+                    u_in = safe_nonneg_int(tok.get("input"))
+                    out_t = safe_nonneg_int(tok.get("output"))
+                    reas_t = safe_nonneg_int(tok.get("reasoning"))
+                    tot_t = safe_nonneg_int(tok.get("total"))
+                    cache_d = tok.get("cache") if isinstance(tok.get("cache"), dict) else {}
+                    c_r = safe_nonneg_int(cache_d.get("read", tok.get("cache_read")))
+                    c_w = safe_nonneg_int(cache_d.get("write", tok.get("cache_write")))
+                    if tot_t > 0 and reas_t > 0 and (u_in + c_r + c_w + out_t == tot_t):
+                        step_gen = out_t
+                    else:
+                        step_gen = out_t + reas_t
+                    last_step_tokens = step_gen if step_gen > 0 else None
+                else:
+                    last_step_tokens = None
+                continue
             if etype != "error":
                 continue
 
+            saw_error_after_last_step_finish = True
             provider_error_count += 1
             ev_sc, ev_txt = _extract_error_event_status_and_text(ev)
             ev_kind, norm_sc = _classify_provider_error(ev_sc, ev_txt)
@@ -608,13 +633,25 @@ def extract_agent_runtime_diagnostics(
         exc_type_clean == "NonZeroAgentExitCodeError" and saw_epipe and provider_error_count == 0
     )
     is_timeout = exc_type_clean in _TIMEOUT_EXC_NAMES or "timeout" in exc_type_clean.lower()
+    is_provider_exit = provider_error_kind is not None and (
+        bool(exc_type_clean) or last_jsonl_type == "error"
+    )
+    output_token_limit_hit = bool(
+        last_step_finish_reason == "length"
+        and not saw_error_after_last_step_finish
+        and not is_timeout
+        and not is_provider_exit
+        and (not exc_type_clean or benign_epipe_exit)
+    )
 
-    if benign_epipe_exit:
-        agent_exit_status = "benign_epipe"
-    elif is_timeout:
+    if is_timeout:
         agent_exit_status = "agent_timeout"
-    elif provider_error_kind is not None and (bool(exc_type_clean) or last_jsonl_type == "error"):
+    elif is_provider_exit:
         agent_exit_status = "provider_api_error"
+    elif output_token_limit_hit:
+        agent_exit_status = "output_token_limit"
+    elif benign_epipe_exit:
+        agent_exit_status = "benign_epipe"
     elif bool(exc_type_clean):
         agent_exit_status = "agent_error"
     else:
@@ -622,6 +659,8 @@ def extract_agent_runtime_diagnostics(
 
     return {
         "benign_epipe_exit": benign_epipe_exit,
+        "output_token_limit_hit": output_token_limit_hit,
+        "last_step_tokens": last_step_tokens,
         "provider_error_count": provider_error_count,
         "provider_status_code": provider_status_code,
         "provider_error_kind": provider_error_kind,

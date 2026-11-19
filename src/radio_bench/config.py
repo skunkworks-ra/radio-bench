@@ -356,6 +356,7 @@ class ModelSpec:
     opencode_version: str | None = None
     thinking_levels: tuple[str, ...] = ("default",)
     context_window_tokens: int = 131072
+    max_output_tokens: int | None = None
     max_concurrent_trials: int | None = None
     host_gateway_required: bool = False
     disable_web_search: bool = True
@@ -737,6 +738,14 @@ def load_models_config(
         )
         t_levels = tuple(str(x) for x in (raw_m.get("thinking_levels") or ["default"]))
         aliases = tuple(str(x) for x in (raw_m.get("aliases") or []))
+        max_out_raw = raw_m.get("max_output_tokens")
+        max_out: int | None = None
+        if max_out_raw is not None:
+            max_out = int(max_out_raw)
+            if max_out < 1:
+                raise ValueError(
+                    f"models.{key}.max_output_tokens must be >= 1, got {max_out_raw!r}"
+                )
         max_conc_raw = raw_m.get("max_concurrent_trials")
         max_conc: int | None = None
         if max_conc_raw is not None:
@@ -765,6 +774,7 @@ def load_models_config(
             else None,
             thinking_levels=t_levels or ("default",),
             context_window_tokens=int(raw_m.get("context_window_tokens", 131072)),
+            max_output_tokens=max_out,
             max_concurrent_trials=max_conc,
             host_gateway_required=bool(raw_m.get("host_gateway_required", False)),
             disable_web_search=bool(raw_m.get("disable_web_search", True)),

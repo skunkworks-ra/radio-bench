@@ -87,6 +87,8 @@ class TrialRecord(dict[str, Any]):
         if kwargs:
             self.update(kwargs)
         self.setdefault("agent_exit_status", "ok")
+        self.setdefault("output_token_limit_hit", False)
+        self.setdefault("last_step_tokens", None)
         self.setdefault("provider_error_kind", None)
         self.setdefault("provider_status_code", None)
         self.setdefault("provider_error_count", 0)
@@ -156,6 +158,8 @@ CSV_BASE_COLUMNS: tuple[str, ...] = (
     "exception_type",
     "exception_message",
     "agent_exit_status",
+    "output_token_limit_hit",
+    "last_step_tokens",
     "provider_error_kind",
     "provider_status_code",
     "provider_error_count",
@@ -1352,6 +1356,8 @@ def collect_single_trial(job_dir: Path, trial_dir: Path) -> dict[str, Any]:
         "exception_type": exception_type,
         "exception_message": exception_message,
         "agent_exit_status": runtime_diag["agent_exit_status"],
+        "output_token_limit_hit": bool(runtime_diag["output_token_limit_hit"]),
+        "last_step_tokens": runtime_diag["last_step_tokens"],
         "provider_error_kind": runtime_diag["provider_error_kind"],
         "provider_status_code": runtime_diag["provider_status_code"],
         "provider_error_count": runtime_diag["provider_error_count"],
@@ -1397,10 +1403,12 @@ def summarize_run_health(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]
     benign_epipe_exits = 0
     provider_api_errors = 0
     recovered_provider_errors = 0
+    output_token_limits = 0
     agent_timeouts = 0
     agent_errors = 0
     provider_error_trials: list[dict[str, Any]] = []
     recovered_provider_error_trials: list[dict[str, Any]] = []
+    output_token_limit_trials: list[dict[str, Any]] = []
     timeout_trials: list[dict[str, Any]] = []
     agent_error_trials: list[dict[str, Any]] = []
 
@@ -1412,6 +1420,8 @@ def summarize_run_health(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]
             benign_epipe_exits += 1
         elif status == "provider_api_error":
             provider_api_errors += 1
+        elif status == "output_token_limit":
+            output_token_limits += 1
         elif status == "agent_timeout":
             agent_timeouts += 1
         else:
@@ -1450,7 +1460,28 @@ def summarize_run_health(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]
                     "provider_error_count": p_cnt,
                 }
             )
-        if status == "agent_timeout":
+        if status == "output_token_limit":
+            lst_tok = rec.get("last_step_tokens")
+            output_token_limit_trials.append(
+                {
+                    "trial_name": str(rec.get("trial_name") or ""),
+                    "base_task": str(rec.get("base_task") or ""),
+                    "stage": str(rec.get("stage") or ""),
+                    "arm": str(rec.get("arm") or ""),
+                    "model_name": str(rec.get("model_name") or ""),
+                    "n_turns": safe_nonneg_int(rec.get("n_turns")),
+                    "last_step_tokens": (
+                        int(lst_tok)
+                        if isinstance(lst_tok, (int, float))
+                        and not isinstance(lst_tok, bool)
+                        and int(lst_tok) > 0
+                        else None
+                    ),
+                    "reward": float(rec.get("reward") or 0.0),
+                    "passed": int(rec.get("passed") or 0),
+                }
+            )
+        elif status == "agent_timeout":
             timeout_trials.append(
                 {
                     "trial_name": str(rec.get("trial_name") or ""),
@@ -1484,10 +1515,12 @@ def summarize_run_health(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]
             "benign_epipe_exits": benign_epipe_exits,
             "provider_api_errors": provider_api_errors,
             "recovered_provider_errors": recovered_provider_errors,
+            "output_token_limits": output_token_limits,
             "agent_timeouts": agent_timeouts,
             "agent_errors": agent_errors,
             "provider_error_trials": provider_error_trials,
             "recovered_provider_error_trials": recovered_provider_error_trials,
+            "output_token_limit_trials": output_token_limit_trials,
             "timeout_trials": timeout_trials,
             "agent_error_trials": agent_error_trials,
         }

@@ -280,12 +280,16 @@ def _build_single_agent_dict(
         if thinking_level != "default":
             kwargs["variant"] = thinking_level
 
+        ctx_tokens = int(model.context_window_tokens)
+        out_limit = (
+            int(model.max_output_tokens)
+            if (model.max_output_tokens is not None and int(model.max_output_tokens) > 0)
+            else (min(65536, max(8192, ctx_tokens // 4)) if ctx_tokens > 0 else 0)
+        )
         oc_cfg: dict[str, Any] = {}
-        if int(model.context_window_tokens) > 0 and "/" in model.model_name:
+        if ctx_tokens > 0 and "/" in model.model_name:
             provider_id, model_id = model.model_name.split("/", 1)
             if provider_id.strip() and model_id.strip():
-                ctx_tokens = int(model.context_window_tokens)
-                out_tokens = min(65536, max(8192, ctx_tokens // 4))
                 oc_cfg = {
                     "provider": {
                         provider_id.strip(): {
@@ -293,7 +297,7 @@ def _build_single_agent_dict(
                                 model_id.strip(): {
                                     "limit": {
                                         "context": ctx_tokens,
-                                        "output": out_tokens,
+                                        "output": out_limit,
                                     }
                                 }
                             }
@@ -309,6 +313,23 @@ def _build_single_agent_dict(
             kwargs["opencode_config"] = oc_cfg
 
         agent_dict["kwargs"] = kwargs
+        eff_out_limit = out_limit
+        if "/" in model.model_name:
+            p_id, m_id = model.model_name.split("/", 1)
+            merged_lim = (
+                oc_cfg.get("provider", {})
+                .get(p_id.strip(), {})
+                .get("models", {})
+                .get(m_id.strip(), {})
+                .get("limit", {})
+            )
+            merged_out = merged_lim.get("output") if isinstance(merged_lim, Mapping) else None
+            if isinstance(merged_out, int) and not isinstance(merged_out, bool) and merged_out > 0:
+                eff_out_limit = merged_out
+        if eff_out_limit > 32000:
+            agent_dict.setdefault("env", {})["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] = str(
+                eff_out_limit
+            )
     else:
         raise ValueError(f"Unsupported harness {model.harness!r} on model {model.key!r}")
 
@@ -320,7 +341,7 @@ def _build_single_agent_dict(
         and model.api_key_env
         and not eff_env.get(model.api_key_env, "").strip()
     ):
-        agent_dict["env"] = {model.api_key_env: "local-placeholder"}
+        agent_dict.setdefault("env", {})[model.api_key_env] = "local-placeholder"
 
     return agent_dict
 

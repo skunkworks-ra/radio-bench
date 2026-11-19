@@ -1470,3 +1470,90 @@ def test_part3_opencode_mcp_timeout_safe_retries_and_pixi_run_job(tmp_path: Path
         for srv_name, port in custom_ports.items():
             assert f"http://127.0.0.1:{port}/mcp" in cmd_t
             assert f'"{srv_name}"' in cmd_t
+
+
+def test_opencode_max_output_tokens_and_experimental_env_cap(tmp_path: Path) -> None:
+    """Verify ModelSpec.max_output_tokens TOML parsing and OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX."""
+    from harbor.models.job.config import AgentConfig
+
+    toml_file = tmp_path / "models_max_out.toml"
+    toml_file.write_text(
+        "\n".join(
+            [
+                "[models.reasoning_large]",
+                'harness = "opencode"',
+                'model_name = "tejas/MiniMax-M3"',
+                'api_format = "openai_chat_completions"',
+                'base_url = "https://example.org/v1"',
+                'api_key_env = "TACC_API_KEY"',
+                "context_window_tokens = 1048576",
+                "max_output_tokens = 131072",
+                "",
+                "[models.local_small]",
+                'harness = "opencode"',
+                'model_name = "local/qwen"',
+                'base_url = "http://host.containers.internal:8080/v1"',
+                'api_key_env = "LOCAL_LLM_API_KEY"',
+                "host_gateway_required = true",
+                "context_window_tokens = 65536",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    loaded = load_models_config(config_path=toml_file, env=_clean_bench_env())
+    m_large = loaded.models["reasoning_large"]
+    assert m_large.max_output_tokens == 131_072
+    entry_large = rj._build_agent_entry(
+        m_large, "default", job_n_concurrent=2, env={"TACC_API_KEY": "dummy"}
+    )
+    validated_large = AgentConfig.model_validate(entry_large)
+    assert validated_large.env == {"OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "131072"}
+    assert entry_large["kwargs"]["opencode_config"]["provider"]["tejas"]["models"]["MiniMax-M3"][
+        "limit"
+    ] == {"context": 1_048_576, "output": 131_072}
+
+    # <= 32000 output cap does NOT inject OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX
+    m_small = loaded.models["local_small"]
+    assert m_small.max_output_tokens is None
+    entry_small = rj._build_agent_entry(
+        m_small, "default", job_n_concurrent=1, env=_clean_bench_env()
+    )
+    validated_small = AgentConfig.model_validate(entry_small)
+    assert validated_small.env == {"LOCAL_LLM_API_KEY": "local-placeholder"}
+
+    # host_gateway_required + max_output_tokens > 32000 preserves BOTH env keys
+    m_both = ModelSpec(
+        key="local_reasoning",
+        harness="opencode",
+        model_name="local/qwq",
+        api_key_env="LOCAL_LLM_API_KEY",
+        host_gateway_required=True,
+        context_window_tokens=131_072,
+        max_output_tokens=96_000,
+    )
+    entry_both = rj._build_agent_entry(
+        m_both, "default", job_n_concurrent=1, env=_clean_bench_env()
+    )
+    validated_both = AgentConfig.model_validate(entry_both)
+    assert validated_both.env == {
+        "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "96000",
+        "LOCAL_LLM_API_KEY": "local-placeholder",
+    }
+
+    # Invalid max_output_tokens (< 1) raises ValueError
+    bad_toml = tmp_path / "bad_max_out.toml"
+    bad_toml.write_text(
+        "\n".join(
+            [
+                "[models.bad_m]",
+                'harness = "opencode"',
+                'model_name = "tejas/MiniMax-M3"',
+                "max_output_tokens = 0",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="max_output_tokens"):
+        load_models_config(config_path=bad_toml, env=_clean_bench_env())
