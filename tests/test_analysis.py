@@ -1828,7 +1828,10 @@ def test_wave5_taxonomy_diagnostics_and_scientific_overlays(tmp_path: Path) -> N
     cfg_file = write_casaconfig_local(bench_cfg)
     if cfg_file.is_file():
         os.environ.setdefault("CASASITECONFIG", str(cfg_file))
-    import casatools
+    if sys.platform == "darwin":
+        casatools = pytest.importorskip("casatools")
+    else:
+        import casatools
 
     ws_trial = tmp_path / "overlay_trial"
     ws_dir = ws_trial / "artifacts" / "workspace"
@@ -2589,7 +2592,11 @@ def test_v02_post_review_collect_stages_taxonomy_and_cli_regressions(
     (spec_dir / "instruction.md").write_text("# Inspect\n", encoding="utf-8")
     (spec_dir / "solve.py").write_text("print('ok')\n", encoding="utf-8")
     deep_work = tmp_path / ("long_dir_segment_" * 7)
-    cfg_long = load_bench_config(repo_root=synth_repo, env={"RADIO_BENCH_WORK_DIR": str(deep_work)})
+    cfg_long = load_bench_config(
+        repo_root=synth_repo,
+        env={"RADIO_BENCH_WORK_DIR": str(deep_work)},
+        host_os="linux",
+    )
     loaded_spec = load_task_spec(spec_dir, data_root=data_dir, cfg=cfg_long)
     assert loaded_spec.task_id == "legacy_custom"
     assert loaded_spec.stage == "inspect"
@@ -2628,6 +2635,8 @@ def test_v02_post_review_collect_stages_taxonomy_and_cli_regressions(
         returncode = 0
         stdout = "999\n"
 
+    # Hosts without /proc (macOS) expose no oom_score_adj; pin it so the Podman path is exercised.
+    monkeypatch.setattr(rb_cli, "_read_self_oom_score_adj", lambda: 0, raising=False)
     monkeypatch.setattr(rb_cli.subprocess, "run", lambda *a, **kw: _DummyCompleted())
     monkeypatch.setattr(rb_cli.subprocess, "Popen", lambda *a, **kw: _DummyProc())
     with (

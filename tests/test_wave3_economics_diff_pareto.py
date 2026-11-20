@@ -8,6 +8,7 @@ import math
 import os
 import shutil
 import sqlite3
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,8 @@ def _ensure_local_casa() -> Any:
         import os
 
         os.environ.setdefault("CASASITECONFIG", str(cfile))
+    if sys.platform == "darwin":
+        return pytest.importorskip("casatools")
     import casatools
 
     return casatools

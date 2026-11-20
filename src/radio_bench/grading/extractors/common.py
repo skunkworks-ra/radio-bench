@@ -10,6 +10,7 @@ import math
 import os
 import re
 import struct
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,28 +76,31 @@ _MS_SUBTABLE_NAMES: frozenset[str] = frozenset(
 )
 
 
+def _running_in_container() -> bool:
+    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+
+
 def resolve_scratch_root(scratch_root: Path | None = None) -> Path:
     """Resolve a writable scratch root strictly outside `/tmp`."""
+    from radio_bench.config import is_under_slash_tmp, load_bench_config, reject_slash_tmp
+
     if scratch_root is not None:
-        resolved = Path(scratch_root).resolve()
-        if str(resolved) == "/tmp" or str(resolved).startswith("/tmp/"):
-            raise ValueError(f"scratch_root must never use /tmp: {resolved}")
+        resolved = reject_slash_tmp(scratch_root, label="scratch_root")
         resolved.mkdir(parents=True, exist_ok=True)
         return resolved
 
     env_tmp = os.environ.get("TMPDIR", "").strip()
-    if env_tmp and env_tmp != "/tmp" and not env_tmp.startswith("/tmp/"):
+    if env_tmp and not is_under_slash_tmp(env_tmp):
         cand = Path(env_tmp).resolve()
-        if str(cand) != "/tmp" and not str(cand).startswith("/tmp/"):
+        if not is_under_slash_tmp(cand):
             cand.mkdir(parents=True, exist_ok=True)
             return cand
 
-    var_tmp = Path("/var/tmp/radio-bench-verifier")
-    if Path("/var/tmp").exists() and os.access("/var/tmp", os.W_OK):
-        var_tmp.mkdir(parents=True, exist_ok=True)
-        return var_tmp
-
-    from radio_bench.config import load_bench_config
+    if _running_in_container():
+        var_tmp = Path("/var/tmp/radio-bench-verifier")
+        if Path("/var/tmp").exists() and os.access("/var/tmp", os.W_OK):
+            var_tmp.mkdir(parents=True, exist_ok=True)
+            return var_tmp
 
     cfg_tmp = load_bench_config().tmp_dir
     cfg_tmp.mkdir(parents=True, exist_ok=True)
@@ -144,10 +148,16 @@ def has_active_table_lock(table_dir: Path) -> bool:
         except OSError:
             continue
         try:
-            # Linux x86_64 struct flock: l_type(h), l_whence(h), l_start(q), l_len(q), l_pid(i)
-            probe = struct.pack("hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 0, 0)
-            res = fcntl.fcntl(fd, fcntl.F_GETLK, probe)
-            l_type = struct.unpack("hhqqi", res)[0]
+            if sys.platform == "darwin":
+                # Darwin struct flock: l_start(q), l_len(q), l_pid(i), l_type(h), l_whence(h)
+                probe = struct.pack("qqihh", 0, 0, 0, fcntl.F_WRLCK, os.SEEK_SET)
+                res = fcntl.fcntl(fd, fcntl.F_GETLK, probe)
+                l_type = struct.unpack("qqihh", res)[3]
+            else:
+                # Linux x86_64 struct flock: l_type(h), l_whence(h), l_start(q), l_len(q), l_pid(i)
+                probe = struct.pack("hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 0, 0)
+                res = fcntl.fcntl(fd, fcntl.F_GETLK, probe)
+                l_type = struct.unpack("hhqqi", res)[0]
             if l_type != fcntl.F_UNLCK:
                 return True
         except OSError:

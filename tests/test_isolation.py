@@ -10,6 +10,7 @@ import stat
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -257,7 +258,14 @@ def test_arm_skill_and_mcp_isolation() -> None:
 
         assert AGENT_NETWORK_MODE == "pasta"
         assert VERIFIER_NETWORK_MODE == "none"
-        assert env_compose["services"]["main"]["network_mode"] == "pasta"
+        main_net = env_compose["services"]["main"].get("network_mode")
+        compiled_engine = "podman" if main_net == "pasta" else "docker"
+        assert compiled_engine == BENCH_CFG.engine, (
+            f"{task_dir.name} compiled for {compiled_engine!r} but bench config engine is "
+            f"{BENCH_CFG.engine!r}; rerun build_tasks"
+        )
+        if compiled_engine == "docker":
+            assert main_net is None
         assert "networks" not in env_compose
         assert ver_compose["services"]["main"]["network_mode"] == "none"
         assert "networks" not in ver_compose
@@ -607,7 +615,7 @@ def test_job_yaml_configs_and_opencode_nrp_provider(
 
     cfg = JobConfig.model_validate(yaml.safe_load(raw_text))
     assert cfg.jobs_dir == BENCH_CFG.runs_dir
-    assert cfg.environment.type == EnvironmentType.PODMAN
+    assert cfg.environment.type == EnvironmentType(BENCH_CFG.engine)
     assert cfg.environment.delete is True
     assert cfg.n_attempts == expected_attempts
     assert 1 <= cfg.n_concurrent_trials <= max_concurrency
@@ -679,7 +687,6 @@ def test_openmp_anti_thrashing_in_specs_containerfile_solvers_and_verifier_tclea
 ) -> None:
     """Verify 3C391 CPU/timeout budgets, Containerfile ENV, solve.py, and verifier tclean OpenMP env."""
     import subprocess
-    from typing import Any
 
     import radio_bench.grading.cal_metrics as cm
 
@@ -746,3 +753,186 @@ def test_openmp_anti_thrashing_in_specs_containerfile_solvers_and_verifier_tclea
     assert captured["env"]["OPENBLAS_NUM_THREADS"] == "1"
     assert captured["env"]["MKL_NUM_THREADS"] == "1"
     assert captured["env"]["NUMEXPR_NUM_THREADS"] == "1"
+
+
+def _mounts_have_selinux_z(volumes: list[str]) -> bool:
+    return any(v.endswith(",z") or ",z," in v or v.endswith(":z") for v in volumes)
+
+
+def test_podman_compose_keeps_pasta_selinux_z_and_has_no_log_chmod() -> None:
+    """Explicit engine=podman preserves Linux invariants on any host OS."""
+    from radio_bench.build_tasks import _build_environment_compose, _build_verifier_compose
+
+    env = _build_environment_compose(
+        ARM_FULL,
+        cpus=4,
+        has_seed_workspace=True,
+        has_calibrators_ms=False,
+        sidecar_image="localhost/radio-bench-mcp-sidecar:latest",
+        mcp_ports={"ms-inspect": 8000, "ms-modify": 8001, "ms-create": 8002},
+        engine="podman",
+    )
+    main = env["services"]["main"]
+    assert main["network_mode"] == "pasta"
+    assert "platform" not in main
+    assert "platform" not in env["services"]["mcp-servers"]
+    assert "./data:/seed_data:ro,z" in main["volumes"]
+    assert "./skills:/skills:ro,z" in main["volumes"]
+    assert "./seed_workspace:/seed_workspace:ro,z" in main["volumes"]
+    assert "/logs/agent" not in " ".join(main["command"])
+
+    ver = _build_verifier_compose(verifier_cpus=2, engine="podman")
+    assert ".:/tests:ro,z" in ver["services"]["main"]["volumes"]
+    assert "platform" not in ver["services"]["main"]
+
+
+def test_docker_compose_omits_pasta_and_selinux_z_and_sets_platform() -> None:
+    """engine=docker uses the default bridge, plain :ro mounts, and per-service platform."""
+    from radio_bench.build_tasks import _build_environment_compose, _build_verifier_compose
+
+    env = _build_environment_compose(
+        ARM_FULL,
+        cpus=4,
+        has_seed_workspace=True,
+        has_calibrators_ms=True,
+        sidecar_image="localhost/radio-bench-mcp-sidecar:latest",
+        mcp_ports={"ms-inspect": 8000, "ms-modify": 8001, "ms-create": 8002},
+        engine="docker",
+        platform="linux/amd64",
+    )
+    services = env["services"]
+    main = services["main"]
+    assert "network_mode" not in main
+    assert "pasta" not in yaml.safe_dump(env)
+    assert main["platform"] == "linux/amd64"
+    assert main["extra_hosts"] == ["mcp-servers:127.0.0.1"]
+    assert not _mounts_have_selinux_z(main["volumes"])
+    assert "./data:/seed_data:ro" in main["volumes"]
+    assert "./skills:/skills:ro" in main["volumes"]
+    assert "./seed_workspace:/seed_workspace:ro" in main["volumes"]
+    assert "workspace_vol:/workspace" in main["volumes"]
+    assert "agent_tmp:/var/tmp" in main["volumes"]
+
+    sidecar = services["mcp-servers"]
+    assert sidecar["network_mode"] == "service:main"
+    assert sidecar["platform"] == "linux/amd64"
+
+    cmd = " ".join(main["command"])
+    chmod_line = (
+        "mkdir -p /logs/agent /logs/verifier && chmod 1777 /logs/agent /logs/verifier "
+        "2>/dev/null || true"
+    )
+    assert chmod_line in main["command"][-1].splitlines()
+    assert "chmod 1777 /var/tmp" in cmd
+    # Log dir fix must run before the workspace staging and ready marker.
+    assert cmd.index("/logs/agent") < cmd.index("touch /workspace/.ready")
+
+    ver = _build_verifier_compose(verifier_cpus=2, engine="docker", platform="linux/amd64")
+    ver_main = ver["services"]["main"]
+    assert ver_main["network_mode"] == "none"
+    assert ver_main["platform"] == "linux/amd64"
+    assert ".:/tests:ro" in ver_main["volumes"]
+    assert not _mounts_have_selinux_z(ver_main["volumes"])
+
+
+def test_docker_compose_without_platform_or_tools_omits_optional_keys() -> None:
+    from radio_bench.build_tasks import _build_environment_compose
+
+    env = _build_environment_compose(
+        ARM_NONE,
+        cpus=2,
+        has_seed_workspace=False,
+        has_calibrators_ms=False,
+        sidecar_image="localhost/radio-bench-mcp-sidecar:latest",
+        mcp_ports={"ms-inspect": 8000, "ms-modify": 8001, "ms-create": 8002},
+        engine="docker",
+        platform="",
+    )
+    assert "mcp-servers" not in env["services"]
+    assert "platform" not in env["services"]["main"]
+    assert "extra_hosts" not in env["services"]["main"]
+    assert "network_mode" not in env["services"]["main"]
+
+
+def _synthetic_task_spec(root: Path) -> Any:
+    """Build a self-contained TaskSpec (no repo data/ or task_specs/ dependency)."""
+    from radio_bench.build_tasks import TaskSpec
+
+    spec_dir = root / "spec"
+    data_dir = root / "data"
+    input_ms = data_dir / "input.ms"
+    input_ms.mkdir(parents=True)
+    (input_ms / "table.dat").write_bytes(b"synthetic")
+    spec_dir.mkdir()
+    instruction = spec_dir / "instruction.md"
+    instruction.write_text("# Synthetic task\n", encoding="utf-8")
+    solve = spec_dir / "solve.py"
+    solve.write_text("print('ok')\n", encoding="utf-8")
+    rubric = spec_dir / "rubric.json"
+    rubric.write_text("{}\n", encoding="utf-8")
+    ground_truth = data_dir / "ground_truth.json"
+    ground_truth.write_text("{}\n", encoding="utf-8")
+    return TaskSpec(
+        spec_dir=spec_dir,
+        task_id="synthetic_inspect",
+        suite="synth",
+        stage="inspect",
+        is_e2e=False,
+        difficulty="easy",
+        category="radio",
+        tags=["inspect"],
+        data_dir=data_dir,
+        input_ms=input_ms,
+        ground_truth=ground_truth,
+        extra_test_files=[],
+        agent_timeout_sec=60.0,
+        verifier_timeout_sec=60.0,
+        cpus=2,
+        memory_mb=2048,
+        instruction_path=instruction,
+        solve_path=solve,
+        rubric_path=rubric,
+        extract_config_json="{}\n",
+    )
+
+
+def test_compile_variant_threads_engine_and_platform_into_both_compose_files(
+    tmp_path: Path,
+) -> None:
+    from radio_bench.build_tasks import compile_variant
+
+    spec = _synthetic_task_spec(tmp_path / "synthetic")
+    skills_dir = tmp_path / "unused_exported_skills"
+
+    docker_dir = compile_variant(
+        spec,
+        ARM_TOOLS,
+        output_dir=tmp_path / "docker_out",
+        exported_skills_dir=skills_dir,
+        engine="docker",
+        platform="linux/amd64",
+    )
+    d_env = yaml.safe_load(
+        (docker_dir / "environment" / "docker-compose.yaml").read_text(encoding="utf-8")
+    )
+    d_ver = yaml.safe_load(
+        (docker_dir / "tests" / "docker-compose.yaml").read_text(encoding="utf-8")
+    )
+    assert "network_mode" not in d_env["services"]["main"]
+    assert d_env["services"]["main"]["platform"] == "linux/amd64"
+    assert d_env["services"]["mcp-servers"]["platform"] == "linux/amd64"
+    assert d_env["services"]["mcp-servers"]["network_mode"] == "service:main"
+    assert d_ver["services"]["main"]["platform"] == "linux/amd64"
+    assert not _mounts_have_selinux_z(d_ver["services"]["main"]["volumes"])
+
+    podman_dir = compile_variant(
+        spec,
+        ARM_TOOLS,
+        output_dir=tmp_path / "podman_out",
+        exported_skills_dir=skills_dir,
+    )
+    p_env = yaml.safe_load(
+        (podman_dir / "environment" / "docker-compose.yaml").read_text(encoding="utf-8")
+    )
+    assert p_env["services"]["main"]["network_mode"] == "pasta"
+    assert "platform" not in p_env["services"]["main"]

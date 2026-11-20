@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rootless Podman image builder and automated container isolation / MCP smoke verifier.
+# Container image builder (Podman or Docker) and automated isolation / MCP smoke verifier.
 # Resolves all directories and pack sources from bench.toml (+ bench.local.toml / env) -- never /tmp.
 
 set -euo pipefail
@@ -119,12 +119,31 @@ fi
 
 eval "$(PYTHONPATH="$REPO_ROOT_INIT/src:${PYTHONPATH:-}" "${CFG_CMD[@]}")"
 
+CONTAINER_CLI="${CONTAINER_CLI:-podman}"
+RADIO_BENCH_ENGINE="${RADIO_BENCH_ENGINE:-$CONTAINER_CLI}"
+RADIO_BENCH_PLATFORM="${RADIO_BENCH_PLATFORM:-}"
+
 export TMPDIR="$CONTAINER_TMPDIR"
 export CONTAINER_TMPDIR
 export MPLCONFIGDIR
 export CASASITECONFIG
 export DOCKER_CONFIG
 export DOCKER_HOST
+export CONTAINER_CLI
+export RADIO_BENCH_ENGINE
+export RADIO_BENCH_PLATFORM
+
+BUILD_FLAGS=()
+if [ "$CONTAINER_CLI" = "podman" ]; then
+    BUILD_FLAGS+=(--pull=missing)
+elif [ "$CONTAINER_CLI" = "docker" ]; then
+    export DOCKER_BUILDKIT=1
+    export BUILDX_BUILDER=default
+fi
+if [ -n "$RADIO_BENCH_PLATFORM" ]; then
+    BUILD_FLAGS+=(--platform "$RADIO_BENCH_PLATFORM")
+fi
+
 mkdir -p "$CONTAINER_TMPDIR" "$MPLCONFIGDIR"
 
 STAGE_ROOT=""
@@ -140,12 +159,12 @@ STAGE_ROOT="$(mktemp -d "$CONTAINER_TMPDIR/image_stage.XXXXXX")"
 if [ "$VERIFIER_ONLY" -eq 0 ] && [ "$SIDECAR_ONLY" -eq 0 ]; then
     echo "[build_images] Staging CASA measures data from ${HOST_CASA_DATA}..."
     mkdir -p "$STAGE_ROOT/casa_ctx"
-    cp -a "$HOST_CASA_DATA" "$STAGE_ROOT/casa_ctx/casa-data"
+    cp -RL "$HOST_CASA_DATA" "$STAGE_ROOT/casa_ctx/casa-data"
     chmod -R a+rX "$STAGE_ROOT/casa_ctx/casa-data"
 
     echo "[build_images] Building localhost/radio-bench-casa-base:latest..."
-    podman build \
-        --pull=missing \
+    "$CONTAINER_CLI" build \
+        ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} \
         --target casa-base \
         -t localhost/radio-bench-casa-base:latest \
         -f "$REPO_ROOT/images/agent-base.Containerfile" \
@@ -160,8 +179,8 @@ if [ "$VERIFIER_ONLY" -eq 0 ] && [ "$SIDECAR_ONLY" -eq 0 ]; then
     chmod 0755 "$STAGE_ROOT/agent_ctx/run-step.sh"
 
     echo "[build_images] Building localhost/radio-bench-agent-base:latest..."
-    podman build \
-        --pull=missing \
+    "$CONTAINER_CLI" build \
+        ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} \
         --target agent-base \
         -t localhost/radio-bench-agent-base:latest \
         -f "$REPO_ROOT/images/agent-base.Containerfile" \
@@ -188,8 +207,8 @@ if [ "$VERIFIER_ONLY" -eq 0 ]; then
     chmod 0755 "$STAGE_ROOT/sidecar_ctx/serve_mcp_sidecar.py"
 
     echo "[build_images] Building ${SIDECAR_IMAGE} (pack=${PACK_ID}, sha=${RADIO_ANALYST_SHA})..."
-    podman build \
-        --pull=missing \
+    "$CONTAINER_CLI" build \
+        ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} \
         --build-arg "RADIO_ANALYST_SHA=${RADIO_ANALYST_SHA}" \
         --build-arg "PACK_ID=${PACK_ID}" \
         -t "$SIDECAR_IMAGE" \
@@ -197,7 +216,7 @@ if [ "$VERIFIER_ONLY" -eq 0 ]; then
         "$STAGE_ROOT/sidecar_ctx"
 
     if [ "$PACK_ID" = "$DEFAULT_PACK" ]; then
-        podman tag "$SIDECAR_IMAGE" localhost/radio-bench-mcp-sidecar:latest
+        "$CONTAINER_CLI" tag "$SIDECAR_IMAGE" localhost/radio-bench-mcp-sidecar:latest
     fi
 
     rm -rf "$STAGE_ROOT/sidecar_ctx"
@@ -215,8 +234,8 @@ if [ "$SIDECAR_ONLY" -eq 0 ]; then
     chmod -R a+rX "$STAGE_ROOT/verifier_ctx/radio-bench-src"
 
     echo "[build_images] Building localhost/radio-bench-verifier:latest..."
-    podman build \
-        --pull=missing \
+    "$CONTAINER_CLI" build \
+        ${BUILD_FLAGS[@]+"${BUILD_FLAGS[@]}"} \
         -t localhost/radio-bench-verifier:latest \
         -f "$REPO_ROOT/images/verifier.Containerfile" \
         "$STAGE_ROOT/verifier_ctx"
@@ -224,8 +243,8 @@ if [ "$SIDECAR_ONLY" -eq 0 ]; then
     rm -rf "$STAGE_ROOT/verifier_ctx"
 fi
 
-echo "[build_images] Pruning superseded dangling Podman image layers..."
-podman image prune -f || true
+echo "[build_images] Pruning superseded dangling ${CONTAINER_CLI} image layers..."
+"$CONTAINER_CLI" image prune -f || true
 
 if [ "$SKIP_SMOKE" -eq 0 ]; then
     echo "[build_images] Running automated container isolation and MCP HTTP smoke checks..."

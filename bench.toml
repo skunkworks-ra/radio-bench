@@ -12,8 +12,16 @@ prompts_dir = "./task_specs"
 casa_data_dir = "~/.casa/data"
 
 [runtime]
-docker_host = "unix:///run/user/${UID}/podman/podman.sock"
 container_tmpdir = "./.work/podman_tmp"
+
+[runtime.linux]
+engine = "podman"
+docker_host = "unix:///run/user/${UID}/podman/podman.sock"
+
+[runtime.darwin]
+engine = "docker"
+docker_host = "auto"
+platform = "linux/amd64"
 
 [packs.ra_00a11ea]
 description = "Frozen v0.1 radio-analyst baseline"

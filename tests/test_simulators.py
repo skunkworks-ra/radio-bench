@@ -17,7 +17,11 @@ if str(REPO_ROOT) not in sys.path:
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from radio_bench.config import is_under_slash_tmp, load_bench_config, write_casaconfig_local  # noqa: E402
+from radio_bench.config import (  # noqa: E402
+    is_under_slash_tmp,
+    load_bench_config,
+    write_casaconfig_local,
+)
 
 BENCH_CFG = load_bench_config()
 
@@ -37,10 +41,15 @@ if not os.access(os.environ.get("HOME", "/"), os.W_OK):
     os.environ["HOME"] = str(BENCH_CFG.tmp_dir)
 
 import astropy.units as u  # noqa: E402
-import casatasks  # noqa: E402
-import casatools  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
+
+if sys.platform == "darwin":
+    casatasks = pytest.importorskip("casatasks")
+    casatools = pytest.importorskip("casatools")
+else:
+    import casatasks  # noqa: E402
+    import casatools  # noqa: E402
 from astropy.coordinates import SkyCoord  # noqa: E402
 
 from data_builders.build_3c391_checkpoints import (  # noqa: E402

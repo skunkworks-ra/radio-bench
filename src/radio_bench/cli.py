@@ -18,9 +18,9 @@ from radio_bench.config import (
     BenchConfig,
     add_config_cli_args,
     config_from_cli_args,
+    ensure_docker_cli_plugins,
     prepare_runtime_env,
 )
-from radio_bench.podman_env import ensure_docker_compose_plugin
 
 
 def _prepare_env_with_compose(
@@ -29,7 +29,7 @@ def _prepare_env_with_compose(
     config_path: Path | None = None,
 ) -> dict[str, str]:
     env = prepare_runtime_env(cfg, config_path=config_path)
-    compose_cfg = ensure_docker_compose_plugin(cfg.docker_config_dir)
+    compose_cfg = ensure_docker_cli_plugins(cfg.docker_config_dir, env=env)
     if compose_cfg is not None:
         env["DOCKER_CONFIG"] = str(compose_cfg)
     pixi_bin = str(Path(sys.executable).resolve().parent)
@@ -43,16 +43,23 @@ def _prepare_env_with_compose(
     return env
 
 
+def _read_self_oom_score_adj() -> int:
+    return int(Path("/proc/self/oom_score_adj").read_text(encoding="utf-8").strip())
+
+
 @contextlib.contextmanager
 def _podman_exec_safe_socket_env(
     cfg: BenchConfig, base_env: dict[str, str]
 ) -> Iterator[dict[str, str]]:
     """Provide a rootless Podman API socket safe against systemd `OOMScoreAdjust > 0` `crun` exec errors."""
     env = dict(base_env)
+    if cfg.engine != "podman":
+        yield env
+        return
     env.setdefault("PODMAN_COMPOSE_WARNING_LOGS", "false")
     needs_local_svc = False
     try:
-        self_oom = int(Path("/proc/self/oom_score_adj").read_text(encoding="utf-8").strip())
+        self_oom = _read_self_oom_score_adj()
         proc_oom = subprocess.run(
             ["systemctl", "--user", "show", "podman.service", "-p", "OOMScoreAdjust", "--value"],
             capture_output=True,
@@ -337,11 +344,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if extra and extra[0] == "--":
         extra = extra[1:]
 
-    # Also allow `--config` / `--work-dir` / `--data-dir` / `--runs-dir` placed AFTER the subcommand!
+    # Also allow config CLI flags placed AFTER the subcommand!
     post_cfg_parser = argparse.ArgumentParser(add_help=False)
     add_config_cli_args(post_cfg_parser)
     post_args, extra = post_cfg_parser.parse_known_args(extra)
-    for attr in ("config", "work_dir", "data_dir", "runs_dir"):
+    for attr in ("config", "work_dir", "data_dir", "runs_dir", "engine", "platform"):
         if getattr(post_args, attr, None) is not None and getattr(args, attr, None) is None:
             setattr(args, attr, getattr(post_args, attr))
 

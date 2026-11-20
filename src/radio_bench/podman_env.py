@@ -23,6 +23,7 @@ from radio_bench.config import (
     BenchConfig,
     add_config_cli_args,
     config_from_cli_args,
+    ensure_docker_cli_plugins,
     is_under_slash_tmp,
     load_bench_config,
     reject_slash_tmp,
@@ -30,10 +31,13 @@ from radio_bench.config import (
 
 CommandRunner = Callable[[list[str], dict[str, str]], subprocess.CompletedProcess[str]]
 
+_MIN_DOCKER_NCPU = 4
+_MIN_DOCKER_MEM_BYTES = 8 * 1024**3
+
 
 @dataclass(frozen=True)
 class PodmanEnvReport:
-    """Structured readiness report for rootless Podman + Compose + Harbor."""
+    """Structured readiness report for Podman/Docker + Compose + Harbor."""
 
     uid: int
     socket_path: str
@@ -51,6 +55,11 @@ class PodmanEnvReport:
     tmpdir_not_slash_tmp: bool
     ok: bool
     errors: list[str] = field(default_factory=list)
+    engine: str = "podman"
+    platform: str | None = None
+    docker_ncpu: int | None = None
+    docker_mem_bytes: int | None = None
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -69,38 +78,14 @@ def ensure_docker_compose_plugin(
     docker_config_dir: Path | None = None,
     compose_binary: Path | None = None,
 ) -> Path | None:
-    """Ensure DOCKER_CONFIG/cli-plugins/docker-compose points at an executable binary."""
-    cfg_dir = (
-        docker_config_dir
-        if docker_config_dir is not None
-        else load_bench_config().docker_config_dir
+    """Ensure DOCKER_CONFIG/cli-plugins has docker-compose (and buildx + auth) configured."""
+    res = ensure_docker_cli_plugins(
+        docker_config_dir=docker_config_dir,
+        compose_binary=compose_binary,
     )
-    reject_slash_tmp(cfg_dir, label="docker_config_dir")
-    binary = compose_binary
-    if binary is None:
-        which_compose = shutil.which("docker-compose")
-        if which_compose:
-            binary = Path(which_compose)
-        else:
-            candidate = Path(sys.executable).resolve().parent / "docker-compose"
-            if candidate.is_file():
-                binary = candidate
-
-    if binary is None or not binary.is_file():
-        return None
-
-    plugin_dir = cfg_dir / "cli-plugins"
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-    plugin_link = plugin_dir / "docker-compose"
-    if plugin_link.is_symlink() or plugin_link.exists():
-        try:
-            if plugin_link.resolve() == binary.resolve():
-                return cfg_dir
-        except OSError:
-            pass
-        plugin_link.unlink(missing_ok=True)
-    plugin_link.symlink_to(binary)
-    return cfg_dir
+    if res is not None and (res / "cli-plugins" / "docker-compose").exists():
+        return res
+    return None
 
 
 def ensure_podman_socket(
@@ -168,11 +153,14 @@ def build_podman_env(
     eff_work = test_root if test_root is not None else resolved_cfg.work_dir  # type: ignore[union-attr]
     _ = data_root  # retained for call-site backward compatibility
 
-    if uid is not None or resolved_cfg is None:
+    if resolved_cfg is not None:
+        env.setdefault("DOCKER_HOST", resolved_cfg.docker_host)
+        env.setdefault("RADIO_BENCH_ENGINE", resolved_cfg.engine)
+        if resolved_cfg.platform:
+            env.setdefault("RADIO_BENCH_PLATFORM", resolved_cfg.platform)
+    else:
         sock = default_podman_socket(uid=uid)
         env.setdefault("DOCKER_HOST", f"unix://{sock}")
-    else:
-        env.setdefault("DOCKER_HOST", resolved_cfg.docker_host)
 
     tmpdir = eff_work / "tmp"
     mpl_dir = eff_work / "mplconfig"
@@ -197,7 +185,7 @@ def build_podman_env(
         env.setdefault("CASASITECONFIG", str(casa_cfg))
 
     if not _is_under_slash_tmp(eff_work):
-        cfg_dir = ensure_docker_compose_plugin(eff_work / "docker_config")
+        cfg_dir = ensure_docker_cli_plugins(eff_work / "docker_config", env=env)
         if cfg_dir is not None:
             env.setdefault("DOCKER_CONFIG", str(cfg_dir))
 
@@ -236,11 +224,14 @@ def check_podman_env(
     base_env: Mapping[str, str] | None = None,
     runner: CommandRunner = _default_runner,
 ) -> PodmanEnvReport:
-    """Verify rootless podman.sock, Compose v2, Harbor CLI, and configured non-/tmp storage."""
+    """Verify container runtime socket (Podman or Docker), Compose v2, Harbor CLI, and non-/tmp storage."""
     resolved_uid = os.getuid() if uid is None else uid
     resolved_cfg = cfg
     if resolved_cfg is None and (test_root is None or data_root is None or runs_root is None):
         resolved_cfg = load_bench_config(uid=resolved_uid)
+
+    engine = resolved_cfg.engine if resolved_cfg is not None else "podman"
+    platform = resolved_cfg.platform if resolved_cfg is not None else None
 
     eff_work = test_root if test_root is not None else resolved_cfg.work_dir  # type: ignore[union-attr]
     eff_data = data_root if data_root is not None else resolved_cfg.data_dir  # type: ignore[union-attr]
@@ -258,12 +249,13 @@ def check_podman_env(
         uid=resolved_uid,
         test_root=eff_work,
         data_root=eff_data,
-        cfg=resolved_cfg if test_root is None else None,
+        cfg=resolved_cfg,
     )
     if socket_path is not None:
         env["DOCKER_HOST"] = f"unix://{sock}"
 
     errors: list[str] = []
+    warnings: list[str] = []
 
     storage_paths_ok = True
     for label, root in (
@@ -286,13 +278,14 @@ def check_podman_env(
     if not tmpdir_not_slash_tmp:
         errors.append(f"TMPDIR must not use /tmp, got: {tmpdir!r}")
 
-    if ensure_socket:
+    if ensure_socket and engine == "podman":
         ensure_podman_socket(
             sock,
             env=env,
             runner=None if runner is _default_runner else runner,
         )
 
+    socket_label = "Podman socket" if engine == "podman" else "Docker socket"
     socket_exists = False
     socket_is_unix_socket = False
     try:
@@ -300,9 +293,9 @@ def check_podman_env(
         socket_exists = True
         socket_is_unix_socket = stat.S_ISSOCK(st.st_mode)
         if not socket_is_unix_socket:
-            errors.append(f"Podman socket path is not a Unix socket: {sock}")
+            errors.append(f"{socket_label} path is not a Unix socket: {sock}")
     except OSError as exc:
-        errors.append(f"Podman socket unavailable at {sock}: {exc}")
+        errors.append(f"{socket_label} unavailable at {sock}: {exc}")
 
     docker_host = env.get("DOCKER_HOST", "")
     expected_prefix = "unix://"
@@ -322,23 +315,70 @@ def check_podman_env(
 
     podman_version: str | None = None
     podman_rootless: bool | None = None
-    proc_info = runner(
-        ["podman", "info", "--format", "{{.Version.Version}}|{{.Host.Security.Rootless}}"],
-        env,
-    )
-    if proc_info.returncode == 0:
-        parts = proc_info.stdout.strip().split("|")
-        podman_version = parts[0].strip() if parts else None
-        if len(parts) > 1:
-            podman_rootless = parts[1].strip().lower() == "true"
-            if not podman_rootless:
-                errors.append("Podman is not running in rootless mode.")
-    else:
-        errors.append(f"podman info failed (rc={proc_info.returncode}): {proc_info.stderr.strip()}")
+    docker_ncpu: int | None = None
+    docker_mem_bytes: int | None = None
 
+    if engine == "podman":
+        proc_info = runner(
+            ["podman", "info", "--format", "{{.Version.Version}}|{{.Host.Security.Rootless}}"],
+            env,
+        )
+        if proc_info.returncode == 0:
+            parts = proc_info.stdout.strip().split("|")
+            podman_version = parts[0].strip() if parts else None
+            if len(parts) > 1:
+                podman_rootless = parts[1].strip().lower() == "true"
+                if not podman_rootless:
+                    errors.append("Podman is not running in rootless mode.")
+        else:
+            errors.append(
+                f"podman info failed (rc={proc_info.returncode}): {proc_info.stderr.strip()}"
+            )
+    else:
+        proc_info = runner(
+            ["docker", "info", "--format", "{{.ServerVersion}}|{{.NCPU}}|{{.MemTotal}}"],
+            env,
+        )
+        if proc_info.returncode == 0:
+            parts = proc_info.stdout.strip().split("|")
+            if len(parts) > 1 and parts[1].strip():
+                try:
+                    docker_ncpu = int(parts[1].strip())
+                except ValueError:
+                    docker_ncpu = None
+            if len(parts) > 2 and parts[2].strip():
+                try:
+                    docker_mem_bytes = int(parts[2].strip())
+                except ValueError:
+                    docker_mem_bytes = None
+            if (docker_ncpu is not None and docker_ncpu < _MIN_DOCKER_NCPU) or (
+                docker_mem_bytes is not None and docker_mem_bytes < _MIN_DOCKER_MEM_BYTES
+            ):
+                ncpu_str = str(docker_ncpu) if docker_ncpu is not None else "unknown"
+                mem_gib_str = (
+                    f"{docker_mem_bytes / (1024**3):.1f} GiB"
+                    if docker_mem_bytes is not None
+                    else "unknown"
+                )
+                warnings.append(
+                    f"Docker VM resources ({ncpu_str} CPUs, {mem_gib_str} RAM) are below "
+                    "recommended minimums (>= 4 CPUs / 8 GiB for Suite S, >= 8 CPUs / 12 GiB "
+                    "for Suite R). On macOS with Colima, resize via: "
+                    "colima start --cpu 8 --memory 16 --vm-type vz --vz-rosetta"
+                )
+        else:
+            errors.append(
+                f"docker info failed (rc={proc_info.returncode}): {proc_info.stderr.strip()}"
+            )
+
+    compose_candidates = (
+        (["docker", "compose"],)
+        if engine == "docker"
+        else (["docker", "compose"], ["podman", "compose"])
+    )
     compose_cmd: list[str] | None = None
     compose_version: str | None = None
-    for candidate in (["docker", "compose"], ["podman", "compose"]):
+    for candidate in compose_candidates:
         proc_comp = runner([*candidate, "version"], env)
         if proc_comp.returncode == 0:
             compose_cmd = candidate
@@ -347,7 +387,12 @@ def check_podman_env(
             )
             break
     if compose_cmd is None:
-        errors.append("Neither 'docker compose version' nor 'podman compose version' succeeded.")
+        if engine == "docker":
+            errors.append("'docker compose version' failed.")
+        else:
+            errors.append(
+                "Neither 'docker compose version' nor 'podman compose version' succeeded."
+            )
 
     harbor_version: str | None = None
     try:
@@ -355,14 +400,16 @@ def check_podman_env(
     except importlib.metadata.PackageNotFoundError:
         errors.append("Python package 'harbor' is not installed.")
 
+    engine_ok = (
+        (podman_version is not None and podman_rootless is True) if engine == "podman" else True
+    )
     ok = (
         storage_paths_ok
         and tmpdir_not_slash_tmp
         and socket_exists
         and socket_is_unix_socket
         and socket_api_ok
-        and podman_version is not None
-        and podman_rootless is True
+        and engine_ok
         and compose_cmd is not None
         and harbor_version is not None
         and not errors
@@ -385,6 +432,11 @@ def check_podman_env(
         tmpdir_not_slash_tmp=tmpdir_not_slash_tmp,
         ok=ok,
         errors=errors,
+        engine=engine,
+        platform=platform,
+        docker_ncpu=docker_ncpu,
+        docker_mem_bytes=docker_mem_bytes,
+        warnings=warnings,
     )
 
 
@@ -398,6 +450,33 @@ def default_aardvark_dns_dir(uid: int | None = None) -> Path:
     return Path(f"/run/user/{resolved_uid}/containers/networks/aardvark-dns")
 
 
+def _parse_ps_json(raw: str) -> list[dict[str, object]]:
+    """Parse container JSON output from Podman (JSON array) or Docker (NDJSON / single object)."""
+    text = raw.strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        items: list[dict[str, object]] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                items.append(obj)
+        return items
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    if isinstance(parsed, dict):
+        return [parsed]
+    return []
+
+
 def cleanup_stale_harbor_resources(
     *,
     include_running: bool = False,
@@ -405,86 +484,105 @@ def cleanup_stale_harbor_resources(
     runner: CommandRunner = _default_runner,
     aardvark_dir: Path | None = None,
     cfg: BenchConfig | None = None,
+    engine: str | None = None,
 ) -> dict[str, object]:
     """Remove leaked Harbor trial containers, networks, named volumes, and dead aardvark pids."""
-    env = build_podman_env(base_env, cfg=cfg)
+    resolved_cfg = cfg if cfg is not None else load_bench_config(env=base_env)
+    cli = engine if engine is not None else resolved_cfg.engine
+    env = build_podman_env(base_env, cfg=resolved_cfg)
     removed_containers: list[str] = []
     removed_volumes: list[str] = []
     removed_networks: list[str] = []
     removed_stale_pids: list[str] = []
 
-    proc_ps = runner(["podman", "ps", "-a", "--format", "json"], env)
+    proc_ps = runner([cli, "ps", "-a", "--format", "json"], env)
     if proc_ps.returncode == 0 and proc_ps.stdout.strip():
-        try:
-            items = json.loads(proc_ps.stdout)
-        except json.JSONDecodeError:
-            items = []
+        items = _parse_ps_json(proc_ps.stdout)
         for item in items:
-            names = item.get("Names") or []
-            if isinstance(names, str):
-                names = [names]
+            raw_names = item.get("Names") or []
+            if isinstance(raw_names, str):
+                names = [n.strip() for n in raw_names.split(",") if n.strip()]
+            elif isinstance(raw_names, list):
+                names = [str(n) for n in raw_names if str(n).strip()]
+            else:
+                names = []
             state = str(item.get("State", "")).lower()
             if not any(tok in n for n in names for tok in HARBOR_CONTAINER_TOKENS):
                 continue
             if not include_running and state == "running":
                 continue
-            cid = str(item.get("Id", ""))
-            nets = item.get("Networks") or []
+            cid = str(item.get("Id") or item.get("ID") or "")
+            raw_nets = item.get("Networks") or []
+            if isinstance(raw_nets, str):
+                nets = [n.strip() for n in raw_nets.split(",") if n.strip()]
+            elif isinstance(raw_nets, list):
+                nets = [str(n).strip() for n in raw_nets if str(n).strip()]
+            else:
+                nets = []
             for net in nets:
-                runner(["podman", "network", "disconnect", "-f", str(net), cid], env)
-            rm_proc = runner(["podman", "rm", "-f", "--ignore", cid], env)
+                runner([cli, "network", "disconnect", "-f", net, cid], env)
+            rm_cmd = (
+                [cli, "rm", "-f", "--ignore", cid] if cli == "podman" else [cli, "rm", "-f", cid]
+            )
+            rm_proc = runner(rm_cmd, env)
             if rm_proc.returncode == 0:
                 removed_containers.append(names[0] if names else cid[:12])
 
-    proc_vol = runner(["podman", "volume", "ls", "--format", "{{.Name}}"], env)
+    proc_vol = runner([cli, "volume", "ls", "--format", "{{.Name}}"], env)
     if proc_vol.returncode == 0:
         for vname in proc_vol.stdout.splitlines():
             vname = vname.strip()
             if vname.endswith(HARBOR_VOLUME_SUFFIXES):
-                rv = runner(["podman", "volume", "rm", "-f", vname], env)
+                rv = runner([cli, "volume", "rm", "-f", vname], env)
                 if rv.returncode == 0:
                     removed_volumes.append(vname)
 
-    proc_net = runner(["podman", "network", "ls", "--format", "{{.Name}}"], env)
+    proc_net = runner([cli, "network", "ls", "--format", "{{.Name}}"], env)
     if proc_net.returncode == 0:
         for nname in proc_net.stdout.splitlines():
             nname = nname.strip()
             if any(tok in nname for tok in HARBOR_NETWORK_TOKENS):
-                rn = runner(["podman", "network", "rm", "-f", nname], env)
+                net_rm_cmd = (
+                    [cli, "network", "rm", "-f", nname]
+                    if cli == "podman"
+                    else [cli, "network", "rm", nname]
+                )
+                rn = runner(net_rm_cmd, env)
                 if rn.returncode == 0:
                     removed_networks.append(nname)
 
-    dns_dir = aardvark_dir if aardvark_dir is not None else default_aardvark_dns_dir()
-    try:
-        dns_exists = dns_dir.is_dir()
-    except OSError:
-        dns_exists = False
-    if dns_exists:
+    if cli == "podman" or aardvark_dir is not None:
+        dns_dir = aardvark_dir if aardvark_dir is not None else default_aardvark_dns_dir()
         try:
-            pid_files = sorted(dns_dir.glob("*.pid"))
+            dns_exists = dns_dir.is_dir()
         except OSError:
-            pid_files = []
-        for pid_file in pid_files:
+            dns_exists = False
+        if dns_exists:
             try:
-                raw_pid = pid_file.read_text(encoding="utf-8").strip()
+                pid_files = sorted(dns_dir.glob("*.pid"))
             except OSError:
-                continue
-            try:
-                pid = int(raw_pid)
-            except ValueError:
-                continue
-            if pid <= 0:
-                continue
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+                pid_files = []
+            for pid_file in pid_files:
                 try:
-                    pid_file.unlink()
-                    removed_stale_pids.append(str(pid_file))
+                    raw_pid = pid_file.read_text(encoding="utf-8").strip()
+                except OSError:
+                    continue
+                try:
+                    pid = int(raw_pid)
+                except ValueError:
+                    continue
+                if pid <= 0:
+                    continue
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    try:
+                        pid_file.unlink()
+                        removed_stale_pids.append(str(pid_file))
+                    except (PermissionError, OSError):
+                        pass
                 except (PermissionError, OSError):
                     pass
-            except (PermissionError, OSError):
-                pass
 
     return {
         "removed_containers": removed_containers,
@@ -504,14 +602,21 @@ def smoke_compose_teardown(
 ) -> dict[str, object]:
     """Smoke-test Compose up/down lifecycle for offline verifier and loopback MCP sidecar."""
     resolved_cfg = cfg if cfg is not None else load_bench_config()
+    cli = resolved_cfg.engine
+    platform = resolved_cfg.platform
     tmp_base = scratch_root if scratch_root is not None else resolved_cfg.tmp_dir
     reject_slash_tmp(tmp_base, label="scratch_root")
     pack = resolved_cfg.get_pack(pack_id)
     env = build_podman_env(base_env, cfg=resolved_cfg)
     errors: list[str] = []
 
+    compose_candidates = (
+        (["docker", "compose"],)
+        if cli == "docker"
+        else (["docker", "compose"], ["podman", "compose"])
+    )
     compose_cmd: list[str] | None = None
-    for candidate in (["docker", "compose"], ["podman", "compose"]):
+    for candidate in compose_candidates:
         proc_comp = runner([*candidate, "version"], env)
         if proc_comp.returncode == 0:
             compose_cmd = candidate
@@ -522,7 +627,11 @@ def smoke_compose_teardown(
             "verifier": {"ok": False},
             "tools": {"ok": False},
             "leftover_volumes": [],
-            "errors": ["Neither 'docker compose version' nor 'podman compose version' succeeded."],
+            "errors": [
+                "'docker compose version' failed."
+                if cli == "docker"
+                else "Neither 'docker compose version' nor 'podman compose version' succeeded."
+            ],
         }
 
     tmp_base.mkdir(parents=True, exist_ok=True)
@@ -542,15 +651,16 @@ def smoke_compose_teardown(
     try:
         # (a) Verifier compose project (network_mode: none, verifier_ws:/workspace)
         ver_file = ver_dir / "docker-compose.yaml"
+        ver_main: dict[str, object] = {
+            "image": "localhost/radio-bench-verifier:latest",
+            "network_mode": "none",
+            "command": ["sleep", "infinity"],
+            "volumes": ["verifier_ws:/workspace"],
+        }
+        if platform:
+            ver_main["platform"] = platform
         ver_spec = {
-            "services": {
-                "main": {
-                    "image": "localhost/radio-bench-verifier:latest",
-                    "network_mode": "none",
-                    "command": ["sleep", "infinity"],
-                    "volumes": ["verifier_ws:/workspace"],
-                }
-            },
+            "services": {"main": ver_main},
             "volumes": {"verifier_ws": {}},
         }
         ver_file.write_text(yaml.safe_dump(ver_spec, sort_keys=False), encoding="utf-8")
@@ -590,7 +700,7 @@ def smoke_compose_teardown(
                 f"verifier compose down failed (rc={ver_down.returncode}): {ver_down.stderr.strip()}"
             )
 
-        # (b) Tools compose project (pasta + extra_hosts + service:main + RADIO_MCP_HOST=127.0.0.1)
+        # (b) Tools compose project (pasta on podman / default bridge on docker + service:main)
         tools_file = tools_dir / "docker-compose.yaml"
         main_cmd = "\n".join(
             [
@@ -620,23 +730,32 @@ def smoke_compose_teardown(
             "RADIO_MCP_PORT_MS_MODIFY": str(pack.mcp_ports.get("ms-modify", 8001)),
             "RADIO_MCP_PORT_MS_CREATE": str(pack.mcp_ports.get("ms-create", 8002)),
         }
+        tools_main: dict[str, object] = {
+            "image": "localhost/radio-bench-agent-base:latest",
+            "extra_hosts": ["mcp-servers:127.0.0.1"],
+            "environment": {"TMPDIR": "/var/tmp"},
+            "command": ["bash", "-lc", main_cmd],
+            "volumes": ["workspace_vol:/workspace", "agent_tmp:/var/tmp"],
+        }
+        if cli == "podman":
+            tools_main["network_mode"] = "pasta"
+        if platform:
+            tools_main["platform"] = platform
+
+        tools_sidecar: dict[str, object] = {
+            "image": pack.sidecar_image,
+            "network_mode": "service:main",
+            "environment": sidecar_env,
+            "command": ["bash", "-lc", sidecar_cmd],
+            "volumes": ["workspace_vol:/workspace", "agent_tmp:/var/tmp"],
+        }
+        if platform:
+            tools_sidecar["platform"] = platform
+
         tools_spec = {
             "services": {
-                "main": {
-                    "image": "localhost/radio-bench-agent-base:latest",
-                    "network_mode": "pasta",
-                    "extra_hosts": ["mcp-servers:127.0.0.1"],
-                    "environment": {"TMPDIR": "/var/tmp"},
-                    "command": ["bash", "-lc", main_cmd],
-                    "volumes": ["workspace_vol:/workspace", "agent_tmp:/var/tmp"],
-                },
-                "mcp-servers": {
-                    "image": pack.sidecar_image,
-                    "network_mode": "service:main",
-                    "environment": sidecar_env,
-                    "command": ["bash", "-lc", sidecar_cmd],
-                    "volumes": ["workspace_vol:/workspace", "agent_tmp:/var/tmp"],
-                },
+                "main": tools_main,
+                "mcp-servers": tools_sidecar,
             },
             "volumes": {
                 "workspace_vol": {},
@@ -690,7 +809,7 @@ def smoke_compose_teardown(
             )
             exec_proc = runner(
                 [
-                    "podman",
+                    cli,
                     "exec",
                     main_cid,
                     "/opt/casa-venv/bin/python",
@@ -727,7 +846,7 @@ def smoke_compose_teardown(
                 f"tools compose down failed (rc={tools_down.returncode}): {tools_down.stderr.strip()}"
             )
 
-        vol_ls = runner(["podman", "volume", "ls", "--format", "{{.Name}}"], env)
+        vol_ls = runner([cli, "volume", "ls", "--format", "{{.Name}}"], env)
         if vol_ls.returncode == 0:
             prefixes = (f"{proj_ver}_", f"{proj_tools}_")
             leftover_volumes = [
@@ -737,7 +856,7 @@ def smoke_compose_teardown(
                 errors.append(f"leftover smoke compose volumes: {leftover_volumes}")
         else:
             errors.append(
-                f"podman volume ls failed (rc={vol_ls.returncode}): {vol_ls.stderr.strip()}"
+                f"{cli} volume ls failed (rc={vol_ls.returncode}): {vol_ls.stderr.strip()}"
             )
 
         tools_ok = (

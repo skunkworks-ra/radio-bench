@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -181,15 +182,19 @@ CANONICAL_PRESETS: dict[str, JobPreset] = {
 }
 
 
-def write_host_gateway_compose(jobs_dir: Path) -> Path:
-    """Write Podman pasta host-gateway Compose overlay for local host inference servers."""
+def write_host_gateway_compose(
+    jobs_dir: Path,
+    *,
+    hostname: str = "host.containers.internal",
+) -> Path:
+    """Write host-gateway Compose overlay for local host inference servers."""
     reject_slash_tmp(jobs_dir, label="jobs_dir")
     jobs_dir.mkdir(parents=True, exist_ok=True)
     overlay_path = jobs_dir / "host_gateway_compose.yaml"
     overlay_spec = {
         "services": {
             "main": {
-                "extra_hosts": ["host.containers.internal:host-gateway"],
+                "extra_hosts": [f"{hostname}:host-gateway"],
             }
         }
     }
@@ -234,6 +239,7 @@ def _build_single_agent_dict(
     thinking_level: str = "default",
     *,
     job_n_concurrent: int = 1,
+    engine: str = "podman",
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Translate one `(ModelSpec, thinking_level)` into a Harbor 0.25.0 AgentConfig dict."""
@@ -246,6 +252,10 @@ def _build_single_agent_dict(
                 f"Model {model.key!r} requires environment variable {model.base_url_env} "
                 "(or base_url in models.local.toml) to render job configuration"
             )
+    if engine == "docker" and resolved_base_url and "host.containers.internal" in resolved_base_url:
+        resolved_base_url = resolved_base_url.replace(
+            "host.containers.internal", "host.docker.internal"
+        )
 
     if model.harness == "claude-code":
         agent_dict: dict[str, Any] = {
@@ -371,10 +381,13 @@ def compile_job_dict(
     cfg: BenchConfig | None = None,
     models_cfg: ModelsConfig | None = None,
     env: Mapping[str, str] | None = None,
+    host_os: str | None = None,
 ) -> dict[str, Any]:
     """Build and validate a Harbor 0.25.0 JobConfig dictionary."""
     eff_env = os.environ if env is None else env
-    resolved_cfg = cfg if cfg is not None else load_bench_config(env=eff_env)
+    raw_os = (host_os if host_os is not None else sys.platform).strip().lower()
+    eff_host_os = "darwin" if raw_os.startswith("darwin") else "linux"
+    resolved_cfg = cfg if cfg is not None else load_bench_config(env=eff_env, host_os=eff_host_os)
     resolved_models = models_cfg if models_cfg is not None else load_models_config(env=eff_env)
 
     eff_tasks_dir = tasks_dir if tasks_dir is not None else resolved_cfg.tasks_dir
@@ -431,6 +444,7 @@ def compile_job_dict(
                         m,
                         lvl,
                         job_n_concurrent=n_concurrent_trials,
+                        engine=resolved_cfg.engine,
                         env=eff_env,
                     )
                 )
@@ -471,12 +485,18 @@ def compile_job_dict(
         )
 
     env_dict: dict[str, Any] = {
-        "type": "podman",
+        "type": resolved_cfg.engine,
         "delete": True,
     }
     if any(m.host_gateway_required for m in selected_models):
-        overlay_path = write_host_gateway_compose(eff_jobs_dir)
-        env_dict["extra_docker_compose"] = [str(overlay_path)]
+        if resolved_cfg.engine == "podman":
+            overlay_path = write_host_gateway_compose(
+                eff_jobs_dir, hostname="host.containers.internal"
+            )
+            env_dict["extra_docker_compose"] = [str(overlay_path)]
+        elif eff_host_os != "darwin":
+            overlay_path = write_host_gateway_compose(eff_jobs_dir, hostname="host.docker.internal")
+            env_dict["extra_docker_compose"] = [str(overlay_path)]
 
     job_dict: dict[str, Any] = {
         "job_name": job_name,
@@ -503,6 +523,7 @@ def render_preset_job(
     cfg: BenchConfig | None = None,
     models_cfg: ModelsConfig | None = None,
     env: Mapping[str, str] | None = None,
+    host_os: str | None = None,
 ) -> Path:
     """Render one canonical preset YAML file into `<work_dir>/jobs/<preset>.yaml`."""
     if preset_name not in CANONICAL_PRESETS:
@@ -511,7 +532,7 @@ def render_preset_job(
         )
     preset = CANONICAL_PRESETS[preset_name]
     eff_env = os.environ if env is None else env
-    resolved_cfg = cfg if cfg is not None else load_bench_config(env=eff_env)
+    resolved_cfg = cfg if cfg is not None else load_bench_config(env=eff_env, host_os=host_os)
     resolved_models = models_cfg if models_cfg is not None else load_models_config(env=eff_env)
     target_dir = output_dir if output_dir is not None else resolved_cfg.jobs_dir
     reject_slash_tmp(target_dir, label="output_dir")
@@ -534,6 +555,7 @@ def render_preset_job(
         cfg=resolved_cfg,
         models_cfg=resolved_models,
         env=eff_env,
+        host_os=host_os,
     )
     out_path = target_dir / f"{preset.name}.yaml"
     out_path.write_text(yaml.safe_dump(job_dict, sort_keys=False), encoding="utf-8")
@@ -548,10 +570,11 @@ def render_all_presets(
     cfg: BenchConfig | None = None,
     models_cfg: ModelsConfig | None = None,
     env: Mapping[str, str] | None = None,
+    host_os: str | None = None,
 ) -> dict[str, Path]:
     """Render all 6 canonical preset job YAML files under `<work_dir>/jobs/`."""
     eff_env = os.environ if env is None else env
-    resolved_cfg = cfg if cfg is not None else load_bench_config(env=eff_env)
+    resolved_cfg = cfg if cfg is not None else load_bench_config(env=eff_env, host_os=host_os)
     resolved_models = models_cfg if models_cfg is not None else load_models_config(env=eff_env)
     written: dict[str, Path] = {}
     for preset_name in CANONICAL_PRESETS:
@@ -563,6 +586,7 @@ def render_all_presets(
             cfg=resolved_cfg,
             models_cfg=resolved_models,
             env=eff_env,
+            host_os=host_os,
         )
     return written
 

@@ -722,26 +722,39 @@ def _build_environment_compose(
     has_calibrators_ms: bool,
     sidecar_image: str,
     mcp_ports: dict[str, int],
+    engine: str = "podman",
+    platform: str | None = None,
 ) -> dict[str, Any]:
     """Build environment/docker-compose.yaml for ``arm`` and ``pack``."""
     has_skills = arm in SKILL_ARMS
     has_tools = arm in TOOL_ARMS
+    is_docker = engine == "docker"
+    ro_suffix = ":ro" if is_docker else ":ro,z"
+    eff_platform = platform.strip() if isinstance(platform, str) and platform.strip() else None
     runtime_env = _build_runtime_env(str(cpus))
 
-    main_volumes = ["./data:/seed_data:ro,z"]
+    main_volumes = [f"./data:/seed_data{ro_suffix}"]
     if has_skills:
-        main_volumes.append("./skills:/skills:ro,z")
+        main_volumes.append(f"./skills:/skills{ro_suffix}")
     if has_seed_workspace:
-        main_volumes.append("./seed_workspace:/seed_workspace:ro,z")
+        main_volumes.append(f"./seed_workspace:/seed_workspace{ro_suffix}")
     main_volumes.extend(["workspace_vol:/workspace", "agent_tmp:/var/tmp"])
 
     startup_lines = [
         "set -euo pipefail",
         "mkdir -p /var/tmp/mplconfig",
         "chmod 1777 /var/tmp /var/tmp/mplconfig",
-        "rm -rf /workspace/input.ms /workspace/calibrators.ms /workspace/.ready /workspace/.ws_owned",
-        "cp -a --no-preserve=ownership /seed_data/input.ms /workspace/input.ms",
     ]
+    if is_docker:
+        startup_lines.append(
+            "mkdir -p /logs/agent /logs/verifier && chmod 1777 /logs/agent /logs/verifier 2>/dev/null || true"
+        )
+    startup_lines.extend(
+        [
+            "rm -rf /workspace/input.ms /workspace/calibrators.ms /workspace/.ready /workspace/.ws_owned",
+            "cp -a --no-preserve=ownership /seed_data/input.ms /workspace/input.ms",
+        ]
+    )
     if has_calibrators_ms:
         startup_lines.append(
             "cp -a --no-preserve=ownership /seed_data/calibrators.ms /workspace/calibrators.ms"
@@ -814,11 +827,18 @@ def _build_environment_compose(
 
     main_service: dict[str, Any] = {
         "image": AGENT_IMAGE,
-        "network_mode": AGENT_NETWORK_MODE,
-        "environment": dict(runtime_env),
-        "command": ["bash", "-lc", "\n".join(startup_lines)],
-        "volumes": main_volumes,
     }
+    if eff_platform:
+        main_service["platform"] = eff_platform
+    if not is_docker:
+        main_service["network_mode"] = AGENT_NETWORK_MODE
+    main_service.update(
+        {
+            "environment": dict(runtime_env),
+            "command": ["bash", "-lc", "\n".join(startup_lines)],
+            "volumes": main_volumes,
+        }
+    )
     if has_tools:
         main_service["extra_hosts"] = ["mcp-servers:127.0.0.1"]
 
@@ -848,13 +868,20 @@ def _build_environment_compose(
             if sidecar_image.startswith("${")
             else f"${{RADIO_BENCH_SIDECAR_IMAGE:-{sidecar_image}}}"
         )
-        services["mcp-servers"] = {
+        sidecar_service: dict[str, Any] = {
             "image": sidecar_image_ref,
-            "network_mode": "service:main",
-            "environment": sidecar_env,
-            "command": ["bash", "-lc", sidecar_cmd],
-            "volumes": ["workspace_vol:/workspace", "agent_tmp:/var/tmp"],
         }
+        if eff_platform:
+            sidecar_service["platform"] = eff_platform
+        sidecar_service.update(
+            {
+                "network_mode": "service:main",
+                "environment": sidecar_env,
+                "command": ["bash", "-lc", sidecar_cmd],
+                "volumes": ["workspace_vol:/workspace", "agent_tmp:/var/tmp"],
+            }
+        )
+        services["mcp-servers"] = sidecar_service
 
     return {
         "services": services,
@@ -865,26 +892,41 @@ def _build_environment_compose(
     }
 
 
-def _build_verifier_compose(*, verifier_cpus: int) -> dict[str, Any]:
+def _build_verifier_compose(
+    *,
+    verifier_cpus: int,
+    engine: str = "podman",
+    platform: str | None = None,
+) -> dict[str, Any]:
     """Build isolated tests/docker-compose.yaml."""
+    is_docker = engine == "docker"
+    ro_suffix = ":ro" if is_docker else ":ro,z"
+    eff_platform = platform.strip() if isinstance(platform, str) and platform.strip() else None
     ver_env = _build_runtime_env(str(verifier_cpus))
+    main_service: dict[str, Any] = {
+        "image": VERIFIER_IMAGE,
+    }
+    if eff_platform:
+        main_service["platform"] = eff_platform
+    main_service.update(
+        {
+            "network_mode": VERIFIER_NETWORK_MODE,
+            "environment": dict(ver_env),
+            "command": [
+                "bash",
+                "-lc",
+                "mkdir -p /var/tmp/mplconfig && chmod 1777 /var/tmp /var/tmp/mplconfig && exec sleep infinity",
+            ],
+            "volumes": [
+                f".:/tests{ro_suffix}",
+                "verifier_ws:/workspace",
+                "verifier_tmp:/var/tmp",
+            ],
+        }
+    )
     return {
         "services": {
-            "main": {
-                "image": VERIFIER_IMAGE,
-                "network_mode": VERIFIER_NETWORK_MODE,
-                "environment": dict(ver_env),
-                "command": [
-                    "bash",
-                    "-lc",
-                    "mkdir -p /var/tmp/mplconfig && chmod 1777 /var/tmp /var/tmp/mplconfig && exec sleep infinity",
-                ],
-                "volumes": [
-                    ".:/tests:ro,z",
-                    "verifier_ws:/workspace",
-                    "verifier_tmp:/var/tmp",
-                ],
-            }
+            "main": main_service,
         },
         "volumes": {
             "verifier_ws": {},
@@ -1017,6 +1059,8 @@ def compile_variant(
     pack: PackConfig | None = None,
     analyst_sha: str | None = None,
     include_pack_in_name: bool = False,
+    engine: str = "podman",
+    platform: str | None = None,
 ) -> Path:
     """Compile a single Harbor task directory under ``output_dir``."""
     reject_slash_tmp(output_dir, label="output_dir")
@@ -1080,6 +1124,8 @@ def compile_variant(
         has_calibrators_ms=spec.input_calibrators_ms is not None,
         sidecar_image=eff_pack.sidecar_image,
         mcp_ports=eff_pack.mcp_ports,
+        engine=engine,
+        platform=platform,
     )
     _write_text_file(
         env_dir / "docker-compose.yaml",
@@ -1152,7 +1198,11 @@ def compile_variant(
         "--workspace /workspace --tests-dir /tests --log-dir /logs/verifier\n"
     )
     _write_text_file(tests_dir / "test.sh", test_sh, mode=0o755)
-    verifier_compose = _build_verifier_compose(verifier_cpus=spec.effective_verifier_cpus)
+    verifier_compose = _build_verifier_compose(
+        verifier_cpus=spec.effective_verifier_cpus,
+        engine=engine,
+        platform=platform,
+    )
     _write_text_file(
         tests_dir / "docker-compose.yaml",
         yaml.safe_dump(verifier_compose, sort_keys=False),
@@ -1243,6 +1293,8 @@ def build_all_tasks(
                     pack=p_cfg,
                     analyst_sha=p_sha,
                     include_pack_in_name=include_pack_in_name,
+                    engine=resolved_cfg.engine,
+                    platform=resolved_cfg.platform,
                 )
                 emitted.append(variant_dir.name)
                 by_suite[spec.suite] = by_suite.get(spec.suite, 0) + 1

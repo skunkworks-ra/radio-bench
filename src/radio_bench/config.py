@@ -8,7 +8,9 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
+import sys
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -24,6 +26,8 @@ DEFAULT_MCP_PORTS: dict[str, int] = {
 
 _HEX_REF_RE = re.compile(r"^[0-9a-fA-F]{4,40}$")
 _SCP_GIT_RE = re.compile(r"^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:.+")
+_VALID_ENGINES: frozenset[str] = frozenset({"podman", "docker"})
+_DOCKER_CONFIG_SAFE_KEYS: tuple[str, ...] = ("auths", "credsStore", "credHelpers", "proxies")
 
 _BUILTIN_PACKS: dict[str, dict[str, Any]] = {
     "ra_00a11ea": {
@@ -174,12 +178,46 @@ _BUILTIN_MODELS_RAW: dict[str, Any] = {
 }
 
 
+def _normalize_host_os(host_os: str | None = None) -> str:
+    if host_os is None:
+        return "darwin" if sys.platform == "darwin" else "linux"
+    raw = str(host_os).strip().lower()
+    if raw.startswith("darwin"):
+        return "darwin"
+    if raw.startswith("linux"):
+        return "linux"
+    raise ValueError(f"Unsupported host_os {host_os!r}; expected 'linux' or 'darwin'")
+
+
+def _expand_user(path_str: str, *, env: Mapping[str, str] | None = None) -> str:
+    """Expand leading `~` using `env['HOME']` when provided for hermetic tests."""
+    if path_str == "~" or path_str.startswith("~/"):
+        home = (env or {}).get("HOME", "").strip() if env is not None else ""
+        if home:
+            return home if path_str == "~" else os.path.join(home, path_str[2:])
+    return os.path.expanduser(path_str)
+
+
+def _get_home_dir(env: Mapping[str, str] | None = None) -> Path:
+    home = (env or {}).get("HOME", "").strip() if env is not None else ""
+    return Path(home) if home else Path.home()
+
+
+def _is_tmp_prefix(path_str: str) -> bool:
+    return (
+        path_str == "/tmp"
+        or path_str.startswith("/tmp/")
+        or path_str == "/private/tmp"
+        or path_str.startswith("/private/tmp/")
+    )
+
+
 def resolve_repo_root(env: Mapping[str, str] | None = None) -> Path:
     """Resolve the repository root without touching sys.executable."""
     eff_env = os.environ if env is None else env
     raw_override = eff_env.get("RADIO_BENCH_REPO_ROOT", "").strip()
     if raw_override:
-        return Path(os.path.expanduser(raw_override)).resolve()
+        return Path(_expand_user(raw_override, env=eff_env)).resolve()
 
     src_cand = Path(__file__).resolve().parents[2]
     if (src_cand / "bench.toml").is_file() or (src_cand / "pyproject.toml").is_file():
@@ -193,35 +231,43 @@ def resolve_repo_root(env: Mapping[str, str] | None = None) -> Path:
 
 
 def is_under_slash_tmp(path: Path | str) -> bool:
-    """Return True if path is syntactically or after symlink resolution under /tmp."""
+    """Return True if path is syntactically or after symlink resolution under /tmp or /private/tmp."""
     raw = str(path).strip()
     if not raw:
         return False
-    if raw == "/tmp" or raw.startswith("/tmp/"):
+    if _is_tmp_prefix(raw):
         return True
     p = Path(raw)
-    if p == Path("/tmp") or Path("/tmp") in p.parents:
+    if (
+        p in (Path("/tmp"), Path("/private/tmp"))
+        or Path("/tmp") in p.parents
+        or Path("/private/tmp") in p.parents
+    ):
         return True
     try:
         resolved = str(p.expanduser().resolve())
     except OSError:
         return False
-    return resolved == "/tmp" or resolved.startswith("/tmp/")
+    return _is_tmp_prefix(resolved)
 
 
 def reject_slash_tmp(path: Path | str, label: str = "path") -> Path:
-    """Validate that path is neither syntactically nor via symlinks under /tmp."""
+    """Validate that path is neither syntactically nor via symlinks under /tmp or /private/tmp."""
     raw = str(path).strip()
     if not raw:
         raise ValueError(f"{label} must not be empty")
-    if raw == "/tmp" or raw.startswith("/tmp/"):
+    if _is_tmp_prefix(raw):
         raise ValueError(f"{label} must not use /tmp: {path}")
     p = Path(os.path.expanduser(raw))
-    if p == Path("/tmp") or Path("/tmp") in p.parents:
+    if (
+        p in (Path("/tmp"), Path("/private/tmp"))
+        or Path("/tmp") in p.parents
+        or Path("/private/tmp") in p.parents
+    ):
         raise ValueError(f"{label} must not use /tmp: {path}")
     resolved = p.resolve()
     res_str = str(resolved)
-    if res_str == "/tmp" or res_str.startswith("/tmp/"):
+    if _is_tmp_prefix(res_str):
         raise ValueError(f"{label} resolves under /tmp: {path} -> {resolved}")
     return resolved
 
@@ -237,13 +283,14 @@ def _resolve_config_path(
     repo_root: Path,
     label: str,
     uid: int | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> Path:
-    expanded = os.path.expanduser(_expand_tokens(str(raw_value).strip(), uid=uid))
+    expanded = _expand_user(_expand_tokens(str(raw_value).strip(), uid=uid), env=env)
     if not expanded:
         raise ValueError(f"{label} must not be empty")
     raw_path = Path(expanded)
     # Check raw syntactic /tmp before anchoring relative paths.
-    if str(raw_path) == "/tmp" or str(raw_path).startswith("/tmp/"):
+    if _is_tmp_prefix(str(raw_path)):
         raise ValueError(f"{label} must not use /tmp: {raw_value}")
     anchored = raw_path if raw_path.is_absolute() else (repo_root / raw_path)
     return reject_slash_tmp(anchored, label=label)
@@ -284,6 +331,19 @@ class BenchConfig:
     container_tmpdir: Path
     default_pack: str
     packs: dict[str, PackConfig]
+    engine: str = "podman"
+    platform: str | None = None
+
+    def __post_init__(self) -> None:
+        norm_engine = str(self.engine).strip().lower()
+        if norm_engine not in _VALID_ENGINES:
+            raise ValueError(
+                f"Unsupported container engine {self.engine!r}; expected 'podman' or 'docker'"
+            )
+        object.__setattr__(self, "engine", norm_engine)
+        if self.platform is not None:
+            norm_platform = str(self.platform).strip()
+            object.__setattr__(self, "platform", norm_platform or None)
 
     @property
     def tasks_dir(self) -> Path:
@@ -418,16 +478,142 @@ def _extract_flat_settings(doc: Mapping[str, Any]) -> dict[str, Any]:
         "docker_host",
         "container_tmpdir",
         "default_pack",
+        "engine",
+        "platform",
     ):
-        if top_key in doc and doc[top_key] is not None:
+        if top_key in doc and doc[top_key] is not None and not isinstance(doc[top_key], Mapping):
             merged[top_key] = doc[top_key]
     for section_name in ("paths", "runtime"):
         sec = doc.get(section_name)
         if isinstance(sec, Mapping):
             for k, v in sec.items():
-                if v is not None:
+                if v is not None and not isinstance(v, Mapping):
                     merged[k] = v
     return merged
+
+
+def _extract_os_runtime_settings(doc: Mapping[str, Any], host_os: str) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    runtime_sec = doc.get("runtime")
+    if isinstance(runtime_sec, Mapping):
+        os_sec = runtime_sec.get(host_os)
+        if isinstance(os_sec, Mapping):
+            for k, v in os_sec.items():
+                if v is not None and not isinstance(v, Mapping):
+                    merged[k] = v
+    return merged
+
+
+def _is_live_unix_socket_path(sock_path: Path) -> bool:
+    if is_under_slash_tmp(sock_path):
+        return False
+    try:
+        return stat.S_ISSOCK(sock_path.stat().st_mode)
+    except OSError:
+        return False
+
+
+def _read_docker_current_context(home: Path) -> str:
+    cfg_path = home / ".docker" / "config.json"
+    try:
+        if not cfg_path.is_file():
+            return ""
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    return str(raw.get("currentContext") or "").strip()
+
+
+def _lookup_docker_context_endpoint(
+    home: Path,
+    context_name: str,
+    *,
+    env: Mapping[str, str],
+) -> str | None:
+    meta_root = home / ".docker" / "contexts" / "meta"
+    try:
+        if not meta_root.is_dir():
+            return None
+        children = sorted(meta_root.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return None
+    for child in children:
+        meta_file = child / "meta.json"
+        try:
+            if not meta_file.is_file():
+                continue
+            raw = json.loads(meta_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(raw, dict) or str(raw.get("Name") or "").strip() != context_name:
+            continue
+        endpoints = raw.get("Endpoints")
+        if not isinstance(endpoints, dict):
+            continue
+        docker_ep = endpoints.get("docker")
+        if not isinstance(docker_ep, dict):
+            continue
+        host_val = str(docker_ep.get("Host") or "").strip()
+        if not host_val:
+            continue
+        if host_val.startswith("unix://"):
+            sock_raw = host_val[len("unix://") :]
+            sock_exp = _expand_user(sock_raw, env=env)
+            if is_under_slash_tmp(sock_exp):
+                continue
+            return f"unix://{sock_exp}"
+        return host_val
+    return None
+
+
+def _resolve_auto_docker_host(
+    *,
+    engine: str,
+    host_os: str,
+    env: Mapping[str, str],
+    uid: int | None = None,
+) -> str:
+    """Resolve `docker_host = "auto"` read-only using `env['HOME']` and live socket probes."""
+    if engine == "podman" and host_os == "linux":
+        resolved_uid = os.getuid() if uid is None else uid
+        return f"unix:///run/user/{resolved_uid}/podman/podman.sock"
+
+    home = _get_home_dir(env)
+    env_ctx = env.get("DOCKER_CONTEXT", "").strip()
+    if env_ctx:
+        ctx_name = "" if env_ctx == "default" else env_ctx
+    else:
+        ctx_name = _read_docker_current_context(home)
+        if ctx_name == "default":
+            ctx_name = ""
+
+    configured_endpoint: str | None = None
+    if ctx_name:
+        configured_endpoint = _lookup_docker_context_endpoint(home, ctx_name, env=env)
+        if configured_endpoint and configured_endpoint.startswith("unix://"):
+            sock_cand = Path(configured_endpoint[len("unix://") :])
+            if _is_live_unix_socket_path(sock_cand):
+                return configured_endpoint
+
+    probe_sockets = (
+        home / ".colima" / "default" / "docker.sock",
+        home / ".orbstack" / "run" / "docker.sock",
+        home / ".docker" / "run" / "docker.sock",
+        home / ".rd" / "docker.sock",
+        Path("/var/run/docker.sock"),
+    )
+    for sock_cand in probe_sockets:
+        if _is_live_unix_socket_path(sock_cand):
+            return f"unix://{sock_cand}"
+
+    if configured_endpoint:
+        return configured_endpoint
+
+    if host_os == "darwin":
+        return f"unix://{home / '.colima' / 'default' / 'docker.sock'}"
+    return "unix:///var/run/docker.sock"
 
 
 def _merge_pack_dicts(
@@ -463,6 +649,9 @@ def load_bench_config(
     docker_host: str | None = None,
     container_tmpdir: Path | str | None = None,
     default_pack: str | None = None,
+    engine: str | None = None,
+    platform: str | None = None,
+    host_os: str | None = None,
     env: Mapping[str, str] | None = None,
     uid: int | None = None,
     ignore_local_config: bool = False,
@@ -472,11 +661,26 @@ def load_bench_config(
     Side-effect-free: never creates directories or validates pack analyst_src existence.
     """
     eff_env = os.environ if env is None else env
+    resolved_os = _normalize_host_os(host_os)
     resolved_repo = repo_root.resolve() if repo_root is not None else resolve_repo_root(eff_env)
 
     # Track setting value + priority rank:
-    # 0 = builtin default, 1 = bench.toml (or explicit config_path), 2 = bench.local.toml,
-    # 3 = environment variables, 4 = explicit function/CLI arguments.
+    # 0 = OS-aware builtin default
+    # 1 = bench.toml (or explicit config_path) [runtime]/top-level
+    # 2 = bench.toml (or explicit config_path) [runtime.<os>]
+    # 3 = bench.local.toml [runtime]/top-level
+    # 4 = bench.local.toml [runtime.<os>]
+    # 5 = environment variables
+    # 6 = explicit function/CLI arguments
+    if resolved_os == "darwin":
+        builtin_engine = "docker"
+        builtin_docker_host = "auto"
+        builtin_platform: str | None = "linux/amd64"
+    else:
+        builtin_engine = "podman"
+        builtin_docker_host = "unix:///run/user/${UID}/podman/podman.sock"
+        builtin_platform = None
+
     values: dict[str, tuple[Any, int]] = {
         "work_dir": ("./.work", 0),
         "data_dir": ("./data", 0),
@@ -484,9 +688,11 @@ def load_bench_config(
         "casaguides_dir": ("./data/casaguides", 0),
         "prompts_dir": ("./task_specs", 0),
         "casa_data_dir": ("~/.casa/data", 0),
-        "docker_host": ("unix:///run/user/${UID}/podman/podman.sock", 0),
+        "docker_host": (builtin_docker_host, 0),
         "container_tmpdir": ("./.work/podman_tmp", 0),
         "default_pack": (DEFAULT_PACK_ID, 0),
+        "engine": (builtin_engine, 0),
+        "platform": (builtin_platform, 0),
     }
 
     raw_packs: dict[str, dict[str, Any]] = {}
@@ -494,20 +700,24 @@ def load_bench_config(
 
     env_cfg_override = eff_env.get("RADIO_BENCH_CONFIG", "").strip()
     if config_path is not None:
-        base_toml_path = Path(os.path.expanduser(str(config_path)))
+        base_toml_path = Path(_expand_user(str(config_path), env=eff_env))
         if not base_toml_path.is_file():
             raise FileNotFoundError(f"Explicit config file not found: {base_toml_path}")
         base_doc = tomllib.loads(base_toml_path.read_text(encoding="utf-8"))
         for k, v in _extract_flat_settings(base_doc).items():
             values[k] = (v, 1)
+        for k, v in _extract_os_runtime_settings(base_doc, resolved_os).items():
+            values[k] = (v, 2)
         _merge_pack_dicts(raw_packs, base_doc.get("packs"))
     elif env_cfg_override:
-        env_toml_path = Path(os.path.expanduser(env_cfg_override))
+        env_toml_path = Path(_expand_user(env_cfg_override, env=eff_env))
         if not env_toml_path.is_file():
             raise FileNotFoundError(f"RADIO_BENCH_CONFIG file not found: {env_toml_path}")
         base_doc = tomllib.loads(env_toml_path.read_text(encoding="utf-8"))
         for k, v in _extract_flat_settings(base_doc).items():
             values[k] = (v, 1)
+        for k, v in _extract_os_runtime_settings(base_doc, resolved_os).items():
+            values[k] = (v, 2)
         _merge_pack_dicts(raw_packs, base_doc.get("packs"))
     else:
         committed_toml = resolved_repo / "bench.toml"
@@ -515,6 +725,8 @@ def load_bench_config(
             committed_doc = tomllib.loads(committed_toml.read_text(encoding="utf-8"))
             for k, v in _extract_flat_settings(committed_doc).items():
                 values[k] = (v, 1)
+            for k, v in _extract_os_runtime_settings(committed_doc, resolved_os).items():
+                values[k] = (v, 2)
             _merge_pack_dicts(raw_packs, committed_doc.get("packs"))
 
         if not ignore_local_config:
@@ -522,7 +734,9 @@ def load_bench_config(
             if local_toml.is_file():
                 local_doc = tomllib.loads(local_toml.read_text(encoding="utf-8"))
                 for k, v in _extract_flat_settings(local_doc).items():
-                    values[k] = (v, 2)
+                    values[k] = (v, 3)
+                for k, v in _extract_os_runtime_settings(local_doc, resolved_os).items():
+                    values[k] = (v, 4)
                 _merge_pack_dicts(raw_packs, local_doc.get("packs"))
 
     env_map = {
@@ -535,11 +749,13 @@ def load_bench_config(
         "docker_host": "DOCKER_HOST",
         "container_tmpdir": "CONTAINER_TMPDIR",
         "default_pack": "RADIO_BENCH_DEFAULT_PACK",
+        "engine": "RADIO_BENCH_ENGINE",
+        "platform": "RADIO_BENCH_PLATFORM",
     }
     for key, env_var in env_map.items():
         env_val = eff_env.get(env_var, "").strip()
         if env_val:
-            values[key] = (env_val, 3)
+            values[key] = (env_val, 5)
 
     cli_overrides: dict[str, Any] = {
         "work_dir": work_dir,
@@ -551,28 +767,53 @@ def load_bench_config(
         "docker_host": docker_host,
         "container_tmpdir": container_tmpdir,
         "default_pack": default_pack,
+        "engine": engine,
     }
     for key, cli_val in cli_overrides.items():
         if cli_val is not None and str(cli_val).strip():
-            values[key] = (cli_val, 4)
+            values[key] = (cli_val, 6)
+    if platform is not None:
+        values["platform"] = (str(platform).strip() or None, 6)
+
+    resolved_engine = str(values["engine"][0]).strip().lower()
+    if resolved_engine not in _VALID_ENGINES:
+        raise ValueError(
+            f"Unsupported container engine {values['engine'][0]!r}; expected 'podman' or 'docker'"
+        )
+    raw_platform = values["platform"][0]
+    resolved_platform: str | None = (
+        (str(raw_platform).strip() or None) if raw_platform is not None else None
+    )
 
     resolved_work = _resolve_config_path(
-        values["work_dir"][0], repo_root=resolved_repo, label="work_dir", uid=uid
+        values["work_dir"][0], repo_root=resolved_repo, label="work_dir", uid=uid, env=eff_env
     )
     resolved_data = _resolve_config_path(
-        values["data_dir"][0], repo_root=resolved_repo, label="data_dir", uid=uid
+        values["data_dir"][0], repo_root=resolved_repo, label="data_dir", uid=uid, env=eff_env
     )
     resolved_runs = _resolve_config_path(
-        values["runs_dir"][0], repo_root=resolved_repo, label="runs_dir", uid=uid
+        values["runs_dir"][0], repo_root=resolved_repo, label="runs_dir", uid=uid, env=eff_env
     )
     resolved_casaguides = _resolve_config_path(
-        values["casaguides_dir"][0], repo_root=resolved_repo, label="casaguides_dir", uid=uid
+        values["casaguides_dir"][0],
+        repo_root=resolved_repo,
+        label="casaguides_dir",
+        uid=uid,
+        env=eff_env,
     )
     resolved_prompts = _resolve_config_path(
-        values["prompts_dir"][0], repo_root=resolved_repo, label="prompts_dir", uid=uid
+        values["prompts_dir"][0],
+        repo_root=resolved_repo,
+        label="prompts_dir",
+        uid=uid,
+        env=eff_env,
     )
     resolved_casa_data = _resolve_config_path(
-        values["casa_data_dir"][0], repo_root=resolved_repo, label="casa_data_dir", uid=uid
+        values["casa_data_dir"][0],
+        repo_root=resolved_repo,
+        label="casa_data_dir",
+        uid=uid,
+        env=eff_env,
     )
 
     work_rank = values["work_dir"][1]
@@ -581,13 +822,26 @@ def load_bench_config(
         resolved_ctmp = reject_slash_tmp(resolved_work / "podman_tmp", label="container_tmpdir")
     else:
         resolved_ctmp = _resolve_config_path(
-            ctmp_val, repo_root=resolved_repo, label="container_tmpdir", uid=uid
+            ctmp_val,
+            repo_root=resolved_repo,
+            label="container_tmpdir",
+            uid=uid,
+            env=eff_env,
         )
 
-    resolved_docker_host = _expand_tokens(str(values["docker_host"][0]).strip(), uid=uid)
+    raw_docker_host = _expand_tokens(str(values["docker_host"][0]).strip(), uid=uid)
+    if raw_docker_host.lower() == "auto":
+        resolved_docker_host = _resolve_auto_docker_host(
+            engine=resolved_engine,
+            host_os=resolved_os,
+            env=eff_env,
+            uid=uid,
+        )
+    else:
+        resolved_docker_host = raw_docker_host
     if resolved_docker_host.startswith("unix://"):
         sock_raw = resolved_docker_host[len("unix://") :]
-        sock_expanded = os.path.expanduser(sock_raw)
+        sock_expanded = _expand_user(sock_raw, env=eff_env)
         reject_slash_tmp(sock_expanded, label="docker_host")
         resolved_docker_host = f"unix://{sock_expanded}"
 
@@ -602,6 +856,7 @@ def load_bench_config(
                 repo_root=resolved_repo,
                 label=f"packs.{pack_id}.analyst_src",
                 uid=uid,
+                env=eff_env,
             )
         ports_raw = pdata.get("mcp_ports") or DEFAULT_MCP_PORTS
         ports = {str(k): int(v) for k, v in ports_raw.items()}
@@ -634,6 +889,8 @@ def load_bench_config(
         container_tmpdir=resolved_ctmp,
         default_pack=resolved_default_pack,
         packs=packs,
+        engine=resolved_engine,
+        platform=resolved_platform,
     )
 
 
@@ -695,13 +952,13 @@ def load_models_config(
 
     env_models_path = eff_env.get("RADIO_BENCH_MODELS_CONFIG", "").strip()
     if config_path is not None:
-        explicit = Path(os.path.expanduser(str(config_path)))
+        explicit = Path(_expand_user(str(config_path), env=eff_env))
         if not explicit.is_file():
             raise FileNotFoundError(f"Explicit models config not found: {explicit}")
         merged_doc = {"models": {}, "parity_pairs": []}
         _merge_models_doc(merged_doc, tomllib.loads(explicit.read_text(encoding="utf-8")))
     elif env_models_path:
-        explicit_env = Path(os.path.expanduser(env_models_path))
+        explicit_env = Path(_expand_user(env_models_path, env=eff_env))
         if not explicit_env.is_file():
             raise FileNotFoundError(f"RADIO_BENCH_MODELS_CONFIG file not found: {explicit_env}")
         merged_doc = {"models": {}, "parity_pairs": []}
@@ -904,7 +1161,7 @@ def materialize_pack_source(
         return clone_dir, full_sha, short_sha
 
     expanded = Path(os.path.expanduser(src))
-    if str(expanded) == "/tmp" or str(expanded).startswith("/tmp/"):
+    if _is_tmp_prefix(str(expanded)):
         raise ValueError(f"packs.{pack.pack_id}.analyst_src must not use /tmp: {src}")
     local_repo = expanded if expanded.is_absolute() else (eff_repo_root / expanded)
     local_repo = reject_slash_tmp(local_repo, label=f"packs.{pack.pack_id}.analyst_src")
@@ -940,7 +1197,7 @@ def write_casaconfig_local(cfg: BenchConfig) -> Path:
 
 
 def add_config_cli_args(parser: argparse.ArgumentParser) -> None:
-    """Attach canonical `--config`, `--work-dir`, `--data-dir`, and `--runs-dir` CLI options."""
+    """Attach canonical config, path, engine, and platform CLI options."""
     parser.add_argument("--config", type=Path, default=None, help="Explicit bench.toml path.")
     parser.add_argument(
         "--work-dir",
@@ -960,6 +1217,141 @@ def add_config_cli_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Override runs_dir (highest CLI precedence).",
     )
+    parser.add_argument(
+        "--engine",
+        choices=("podman", "docker"),
+        default=None,
+        help="Override container engine (podman or docker; highest CLI precedence).",
+    )
+    parser.add_argument(
+        "--platform",
+        type=str,
+        default=None,
+        help="Override container target platform (e.g. linux/amd64; highest CLI precedence).",
+    )
+
+
+def _link_docker_cli_plugin(plugin_dir: Path, name: str, binary: Path | None) -> bool:
+    if binary is None or not binary.is_file():
+        return False
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    plugin_link = plugin_dir / name
+    if plugin_link.is_symlink() or plugin_link.exists():
+        try:
+            if plugin_link.resolve() == binary.resolve():
+                return True
+        except OSError:
+            pass
+        plugin_link.unlink(missing_ok=True)
+    plugin_link.symlink_to(binary)
+    return True
+
+
+def _sync_docker_config_auth(docker_config_dir: Path, *, home: Path) -> bool:
+    """Copy safe auth/proxy keys from `<home>/.docker/config.json` into `<docker_config_dir>/config.json`."""
+    src_cfg = home / ".docker" / "config.json"
+    dst_cfg = docker_config_dir / "config.json"
+    try:
+        if not src_cfg.is_file():
+            return False
+        if src_cfg.resolve() == dst_cfg.resolve():
+            return False
+        raw = json.loads(src_cfg.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(raw, dict):
+        return False
+
+    safe_payload: dict[str, Any] = {
+        key: raw[key] for key in _DOCKER_CONFIG_SAFE_KEYS if key in raw and raw[key] is not None
+    }
+    if not safe_payload:
+        return False
+
+    docker_config_dir.mkdir(parents=True, exist_ok=True)
+    merged: dict[str, Any] = {}
+    try:
+        if dst_cfg.is_file():
+            existing = json.loads(dst_cfg.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                merged.update(existing)
+    except (OSError, ValueError, TypeError):
+        pass
+    merged.update(safe_payload)
+    serialized = json.dumps(merged, indent=2) + "\n"
+    try:
+        if dst_cfg.is_file() and dst_cfg.read_text(encoding="utf-8") == serialized:
+            return True
+    except OSError:
+        pass
+    dst_cfg.write_text(serialized, encoding="utf-8")
+    return True
+
+
+def ensure_docker_cli_plugins(
+    docker_config_dir: Path | None = None,
+    *,
+    compose_binary: Path | None = None,
+    buildx_binary: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> Path | None:
+    """Symlink docker-compose and docker-buildx into `<docker_config_dir>/cli-plugins` and sync safe auth keys."""
+    eff_env = os.environ if env is None else env
+    cfg_dir = (
+        docker_config_dir
+        if docker_config_dir is not None
+        else load_bench_config(env=eff_env).docker_config_dir
+    )
+    reject_slash_tmp(cfg_dir, label="docker_config_dir")
+
+    home = _get_home_dir(eff_env)
+    search_path = eff_env.get("PATH")
+    py_bin_dir = Path(sys.executable).resolve().parent
+
+    system_plugin_dirs = (
+        Path("/opt/homebrew/lib/docker/cli-plugins"),
+        Path("/usr/local/lib/docker/cli-plugins"),
+        Path("/usr/libexec/docker/cli-plugins"),
+    )
+
+    eff_compose: Path | None = compose_binary
+    if eff_compose is None:
+        which_compose = shutil.which("docker-compose", path=search_path)
+        if which_compose:
+            eff_compose = Path(which_compose)
+        else:
+            for cand in (
+                py_bin_dir / "docker-compose",
+                home / ".docker" / "cli-plugins" / "docker-compose",
+                *(d / "docker-compose" for d in system_plugin_dirs),
+            ):
+                if cand.is_file():
+                    eff_compose = cand
+                    break
+
+    eff_buildx: Path | None = buildx_binary
+    if eff_buildx is None:
+        which_buildx = shutil.which("docker-buildx", path=search_path)
+        if which_buildx:
+            eff_buildx = Path(which_buildx)
+        else:
+            for cand in (
+                py_bin_dir / "docker-buildx",
+                home / ".docker" / "cli-plugins" / "docker-buildx",
+                *(d / "docker-buildx" for d in system_plugin_dirs),
+            ):
+                if cand.is_file():
+                    eff_buildx = cand
+                    break
+
+    plugin_dir = cfg_dir / "cli-plugins"
+    linked_compose = _link_docker_cli_plugin(plugin_dir, "docker-compose", eff_compose)
+    linked_buildx = _link_docker_cli_plugin(plugin_dir, "docker-buildx", eff_buildx)
+    _sync_docker_config_auth(cfg_dir, home=home)
+
+    if linked_compose or linked_buildx:
+        return cfg_dir
+    return None
 
 
 def config_from_cli_args(args: argparse.Namespace) -> BenchConfig:
@@ -969,6 +1361,8 @@ def config_from_cli_args(args: argparse.Namespace) -> BenchConfig:
         work_dir=getattr(args, "work_dir", None),
         data_dir=getattr(args, "data_dir", None),
         runs_dir=getattr(args, "runs_dir", None),
+        engine=getattr(args, "engine", None),
+        platform=getattr(args, "platform", None),
     )
 
 
@@ -1020,6 +1414,7 @@ def prepare_runtime_env(
     ):
         subdir.mkdir(parents=True, exist_ok=True)
 
+    ensure_docker_cli_plugins(resolved_cfg.docker_config_dir, env=eff_base)
     casa_cfg_path = write_casaconfig_local(resolved_cfg)
 
     exported_vars: dict[str, str] = {
@@ -1030,6 +1425,8 @@ def prepare_runtime_env(
         "DOCKER_CONFIG": str(resolved_cfg.docker_config_dir),
         "DOCKER_HOST": resolved_cfg.docker_host,
         "CONTAINER_TMPDIR": str(resolved_cfg.container_tmpdir),
+        "RADIO_BENCH_ENGINE": resolved_cfg.engine,
+        "RADIO_BENCH_PLATFORM": resolved_cfg.platform or "",
         "RADIO_BENCH_WORK_DIR": str(resolved_cfg.work_dir),
         "RADIO_BENCH_DATA_DIR": str(resolved_cfg.data_dir),
         "RADIO_BENCH_RUNS_DIR": str(resolved_cfg.runs_dir),
@@ -1039,7 +1436,7 @@ def prepare_runtime_env(
     }
     if config_path is not None and str(config_path).strip():
         exported_vars["RADIO_BENCH_CONFIG"] = str(
-            Path(os.path.expanduser(str(config_path))).resolve()
+            Path(_expand_user(str(config_path), env=eff_base)).resolve()
         )
 
     eff_base.update(exported_vars)
@@ -1084,6 +1481,9 @@ def main(argv: list[str] | None = None) -> int:
             "CASASITECONFIG": env["CASASITECONFIG"],
             "DOCKER_CONFIG": env["DOCKER_CONFIG"],
             "DOCKER_HOST": env["DOCKER_HOST"],
+            "CONTAINER_CLI": cfg.engine,
+            "RADIO_BENCH_ENGINE": cfg.engine,
+            "RADIO_BENCH_PLATFORM": cfg.platform or "",
             "DEFAULT_PACK": cfg.default_pack,
             "PACK_ID": pack.pack_id,
             "SIDECAR_IMAGE": pack.sidecar_image,
@@ -1107,6 +1507,8 @@ def main(argv: list[str] | None = None) -> int:
         "casaguides_dir": str(cfg.casaguides_dir),
         "prompts_dir": str(cfg.prompts_dir),
         "casa_data_dir": str(cfg.casa_data_dir),
+        "engine": cfg.engine,
+        "platform": cfg.platform,
         "docker_host": cfg.docker_host,
         "container_tmpdir": str(cfg.container_tmpdir),
         "default_pack": cfg.default_pack,

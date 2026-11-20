@@ -10,6 +10,7 @@ import multiprocessing as mp
 import os
 import shutil
 import struct
+import sys
 import types
 from pathlib import Path
 from typing import Any
@@ -31,11 +32,16 @@ Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
 write_casaconfig_local(BENCH_CFG)
 os.environ.setdefault("CASASITECONFIG", str(BENCH_CFG.casaconfig_path))
 
-import casatasks  # noqa: E402
-import casatools  # noqa: E402
 import harbor.verifier.verifier as hv  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
+
+if sys.platform == "darwin":
+    casatasks = pytest.importorskip("casatasks")
+    casatools = pytest.importorskip("casatools")
+else:
+    import casatasks  # noqa: E402
+    import casatools  # noqa: E402
 
 from radio_bench.grading import (  # noqa: E402
     grade_calibrate,
@@ -487,7 +493,12 @@ def test_precal_unity_model_and_overflagging_adversarial(
 def _hold_write_lock_worker(lock_file_str: str, ready_evt: Any, release_evt: Any) -> None:
     fd = os.open(lock_file_str, os.O_RDWR)
     try:
-        lock_spec = struct.pack("hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 1, 0)
+        if sys.platform == "darwin":
+            # Darwin struct flock: (l_start, l_len, l_pid, l_type, l_whence)
+            lock_spec = struct.pack("qqihh", 0, 0, 0, fcntl.F_WRLCK, os.SEEK_SET)
+        else:
+            # Linux x86_64 struct flock: (l_type, l_whence, l_start, l_len, l_pid)
+            lock_spec = struct.pack("hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 1, 0)
         fcntl.fcntl(fd, fcntl.F_SETLK, lock_spec)
         ready_evt.set()
         release_evt.wait(timeout=10.0)

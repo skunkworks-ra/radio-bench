@@ -220,21 +220,132 @@ class StreamableHTTPMCPClient:
         return self.request("tools/call", {"name": name, "arguments": arguments})
 
 
-def generate_minimal_smoke_ms(ms_path: Path, *, cfg: BenchConfig | None = None) -> None:
+_CONTAINER_GENERATE_SMOKE_MS_SNIPPET = """
+import shutil, sys
+from pathlib import Path
+from casatools import componentlist, ctsys, measures, simulator, table
+
+ms_path = Path(sys.argv[1])
+cl_path = ms_path.parent / (ms_path.name + ".cl")
+if ms_path.exists():
+    shutil.rmtree(ms_path)
+if cl_path.exists():
+    shutil.rmtree(cl_path)
+ms_path.parent.mkdir(parents=True, exist_ok=True)
+cfg_file = Path(ctsys.resolve("alma/simmos")) / "vla.d.cfg"
+x, y, z, diam, antnames = [], [], [], [], []
+for raw in cfg_file.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    parts = line.split()
+    x.append(float(parts[0]))
+    y.append(float(parts[1]))
+    z.append(float(parts[2]))
+    diam.append(float(parts[3]))
+    antnames.append(parts[4] if len(parts) > 4 else f"ea{len(x):02d}")
+    if len(x) == 3:
+        break
+try:
+    me = measures()
+    try:
+        pos = me.observatory("VLA")
+        direction = me.direction("J2000", "13h31m08.3s", "+30d30m33s")
+        ref_epoch = me.epoch("UTC", "2026-01-01/00:00:00")
+    finally:
+        me.done()
+    sm = simulator()
+    try:
+        sm.open(ms=str(ms_path))
+        sm.setconfig(
+            telescopename="VLA", x=x, y=y, z=z, dishdiameter=diam,
+            mount=["ALT-AZ"] * len(x), antname=antnames,
+            coordsystem="global", referencelocation=pos,
+        )
+        sm.setspwindow(
+            spwname="spw0", freq="1.4GHz", deltafreq="1MHz",
+            freqresolution="1MHz", nchannels=8, stokes="RR RL LR LL",
+        )
+        sm.setfeed(mode="perfect R L", pol=[""])
+        sm.setfield(sourcename="smoke_target", sourcedirection=direction)
+        sm.setlimits(shadowlimit=0.001, elevationlimit="8deg")
+        sm.setauto(autocorrwt=0.0)
+        sm.settimes(integrationtime="10s", usehourangle=True, referencetime=ref_epoch)
+        sm.observe("smoke_target", "spw0", starttime="-1min", stoptime="+1min")
+    finally:
+        sm.close()
+        sm.done()
+    cl = componentlist()
+    try:
+        cl.done()
+        cl.addcomponent(dir=direction, flux=1.0, fluxunit="Jy", freq="1.4GHz", shape="point")
+        cl.rename(str(cl_path))
+    finally:
+        cl.close()
+        cl.done()
+    sm2 = simulator()
+    try:
+        sm2.openfromms(str(ms_path))
+        sm2.setvp()
+        sm2.predict(complist=str(cl_path))
+    finally:
+        sm2.close()
+        sm2.done()
+    tb = table()
+    try:
+        tb.open(str(ms_path), nomodify=False)
+        tb.putcol("DATA", tb.getcol("MODEL_DATA"))
+    finally:
+        tb.close()
+        tb.done()
+finally:
+    shutil.rmtree(cl_path, ignore_errors=True)
+""".strip()
+
+
+def generate_minimal_smoke_ms(
+    ms_path: Path,
+    *,
+    cfg: BenchConfig | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
     """Create a 3-antenna VLA-D smoke MS in configured work_dir for MCP HTTP probing."""
     reject_slash_tmp(ms_path, label="ms_path")
     resolved_cfg = cfg if cfg is not None else load_bench_config()
-    casa_cfg = write_casaconfig_local(resolved_cfg)
-    os.environ.setdefault("CASASITECONFIG", str(casa_cfg))
-    from casatools import componentlist, ctsys, measures, simulator, table
 
     if ms_path.exists():
         shutil.rmtree(ms_path)
     cl_path = ms_path.parent / (ms_path.name + ".cl")
     if cl_path.exists():
         shutil.rmtree(cl_path)
-
     ms_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        casa_cfg = write_casaconfig_local(resolved_cfg)
+        os.environ.setdefault("CASASITECONFIG", str(casa_cfg))
+        from casatools import componentlist, ctsys, measures, simulator, table
+    except ImportError as exc:
+        run_env = dict(env) if env is not None else build_podman_env(cfg=resolved_cfg)
+        engine = resolved_cfg.engine
+        platform = resolved_cfg.platform
+        mount_opts = "rw,z" if engine == "podman" else "rw"
+        proc = run_offline_container(
+            CASA_BASE_IMAGE,
+            ["python", "-c", _CONTAINER_GENERATE_SMOKE_MS_SNIPPET, f"/workspace/{ms_path.name}"],
+            run_env,
+            timeout_s=120.0,
+            extra_podman_args=["-v", f"{ms_path.parent}:/workspace:{mount_opts}"],
+            label="gen-smoke-ms",
+            engine=engine,
+            platform=platform,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Failed to generate smoke MS inside {CASA_BASE_IMAGE} "
+                f"(rc={proc.returncode}): {proc.stderr.strip()}"
+            ) from exc
+        return
+
     cfg_file = Path(ctsys.resolve("alma/simmos")) / "vla.d.cfg"
     x, y, z, diam, antnames = [], [], [], [], []
     for raw in cfg_file.read_text().splitlines():
@@ -356,11 +467,13 @@ def load_pinned_tool_manifest(
 def reap_stale_smoke_containers(
     env: dict[str, str],
     patterns: tuple[str, ...] = ("^radio-bench-sidecar-smoke-", "^radio-bench-offline-smoke-"),
+    *,
+    engine: str = "podman",
 ) -> None:
     """Force-remove any leftover smoke containers from prior interrupted runs."""
     for pattern in patterns:
         proc_ps = subprocess.run(
-            ["podman", "ps", "-aq", "--filter", f"name={pattern}"],
+            [engine, "ps", "-aq", "--filter", f"name={pattern}"],
             env=env,
             capture_output=True,
             text=True,
@@ -369,7 +482,7 @@ def reap_stale_smoke_containers(
         )
         for cid in proc_ps.stdout.split():
             subprocess.run(
-                ["podman", "rm", "-f", "-t", "0", cid],
+                [engine, "rm", "-f", cid],
                 env=env,
                 capture_output=True,
                 text=True,
@@ -386,23 +499,27 @@ def run_offline_container(
     timeout_s: float = 60.0,
     extra_podman_args: list[str] | None = None,
     label: str = "check",
+    engine: str = "podman",
+    platform: str | None = None,
 ) -> ContainerRunResult:
-    """Run a named `--network=none` container with timeout handling and guaranteed `rm -f -t 0`."""
+    """Run a named `--network=none` container with timeout handling and guaranteed `rm -f`."""
     cname = f"radio-bench-offline-smoke-{label}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    podman_cmd = [
-        "podman",
+    platform_args = ["--platform", platform] if platform else []
+    run_cmd = [
+        engine,
         "run",
         "--rm",
         "--name",
         cname,
         "--network=none",
+        *platform_args,
         *(extra_podman_args or []),
         image,
         *cmd_args,
     ]
     try:
         proc = subprocess.run(
-            podman_cmd,
+            run_cmd,
             env=env,
             capture_output=True,
             text=True,
@@ -434,7 +551,7 @@ def run_offline_container(
         )
     finally:
         subprocess.run(
-            ["podman", "rm", "-f", "-t", "0", cname],
+            [engine, "rm", "-f", cname],
             env=env,
             capture_output=True,
             text=True,
@@ -443,7 +560,12 @@ def run_offline_container(
         )
 
 
-def check_casa_base_offline(env: dict[str, str]) -> dict[str, Any]:
+def check_casa_base_offline(
+    env: dict[str, str],
+    *,
+    engine: str = "podman",
+    platform: str | None = None,
+) -> dict[str, Any]:
     """Verify CASA 6.7.6.14 + measures/ephemeris tables run offline in casa-base."""
     proc = run_offline_container(
         CASA_BASE_IMAGE,
@@ -451,6 +573,8 @@ def check_casa_base_offline(env: dict[str, str]) -> dict[str, Any]:
         env,
         timeout_s=60.0,
         label="casa-base",
+        engine=engine,
+        platform=platform,
     )
     ok = proc.returncode == 0 and "6.7.6-14 6.7.6.14 True True" in proc.stdout
     return {
@@ -460,7 +584,12 @@ def check_casa_base_offline(env: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def check_agent_base_offline_and_isolation(env: dict[str, str]) -> dict[str, Any]:
+def check_agent_base_offline_and_isolation(
+    env: dict[str, str],
+    *,
+    engine: str = "podman",
+    platform: str | None = None,
+) -> dict[str, Any]:
     """Verify CASA 6.7.6.14 runs offline as analyst (1000:1000) in agent-base and forbidden imports fail."""
     proc_casa = run_offline_container(
         AGENT_IMAGE,
@@ -469,6 +598,8 @@ def check_agent_base_offline_and_isolation(env: dict[str, str]) -> dict[str, Any
         timeout_s=60.0,
         extra_podman_args=["--user", "1000:1000"],
         label="agent-casa",
+        engine=engine,
+        platform=platform,
     )
     casa_ok = proc_casa.returncode == 0 and "6.7.6-14 6.7.6.14 True True" in proc_casa.stdout
 
@@ -498,6 +629,8 @@ def check_agent_base_offline_and_isolation(env: dict[str, str]) -> dict[str, Any
         timeout_s=45.0,
         extra_podman_args=["--user", "1000:1000"],
         label="agent-bins",
+        engine=engine,
+        platform=platform,
     )
     binaries_ok = proc_bins.returncode == 0
 
@@ -512,6 +645,8 @@ def check_agent_base_offline_and_isolation(env: dict[str, str]) -> dict[str, Any
             timeout_s=30.0,
             extra_podman_args=["--user", "1000:1000"],
             label=f"agent-iso-{mod.replace('_', '-')}",
+            engine=engine,
+            platform=platform,
         )
         blocked = proc_imp.returncode != 0 and "ModuleNotFoundError" in proc_imp.stderr
         isolation_results[mod] = {
@@ -535,7 +670,12 @@ def check_agent_base_offline_and_isolation(env: dict[str, str]) -> dict[str, Any
     }
 
 
-def check_verifier_offline(env: dict[str, str]) -> dict[str, Any]:
+def check_verifier_offline(
+    env: dict[str, str],
+    *,
+    engine: str = "podman",
+    platform: str | None = None,
+) -> dict[str, Any]:
     """Verify isolated verifier image runs CASA + measures/ephemeris + radio_bench offline."""
     code = (
         f"{OFFLINE_CASA_SNIPPET}; "
@@ -548,6 +688,8 @@ def check_verifier_offline(env: dict[str, str]) -> dict[str, Any]:
         env,
         timeout_s=60.0,
         label="verifier",
+        engine=engine,
+        platform=platform,
     )
     ok = (
         proc.returncode == 0
@@ -588,10 +730,16 @@ def _extract_tool_data(res: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _resolve_published_port(cname: str, container_port: int, env: dict[str, str]) -> int:
+def _resolve_published_port(
+    cname: str,
+    container_port: int,
+    env: dict[str, str],
+    *,
+    engine: str = "podman",
+) -> int:
     """Query the ephemeral 127.0.0.1 host port bound to `container_port` in `cname`."""
     proc = subprocess.run(
-        ["podman", "port", cname, f"{container_port}/tcp"],
+        [engine, "port", cname, f"{container_port}/tcp"],
         env=env,
         capture_output=True,
         text=True,
@@ -636,36 +784,42 @@ def check_mcp_sidecar_http(
     """Start mcp-sidecar and verify uid 1000, sidecar offload, run-step handoff, and all tools."""
     reject_slash_tmp(smoke_dir, label="smoke_dir")
     resolved_cfg = cfg if cfg is not None else load_bench_config()
+    engine = resolved_cfg.engine
+    platform = resolved_cfg.platform
+    mount_opts = "rw,z" if engine == "podman" else "rw"
+    platform_args = ["--platform", platform] if platform else []
     pack = resolved_cfg.get_pack(pack_id)
 
-    reap_stale_smoke_containers(env, patterns=("^radio-bench-sidecar-smoke-",))
+    reap_stale_smoke_containers(env, patterns=("^radio-bench-sidecar-smoke-",), engine=engine)
 
     ws_dir = smoke_dir / "workspace"
     if ws_dir.exists():
-        subprocess.run(
-            ["podman", "unshare", "rm", "-rf", str(ws_dir)],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        if engine == "podman":
+            subprocess.run(
+                ["podman", "unshare", "rm", "-rf", str(ws_dir)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
         shutil.rmtree(ws_dir, ignore_errors=True)
     ws_dir.mkdir(parents=True, exist_ok=True)
     smoke_ms = ws_dir / "smoke.ms"
     if cfg is None:
         generate_minimal_smoke_ms(smoke_ms)
     else:
-        generate_minimal_smoke_ms(smoke_ms, cfg=cfg)
+        generate_minimal_smoke_ms(smoke_ms, cfg=cfg, env=env)
     _make_tree_world_writable(ws_dir)
-    subprocess.run(
-        ["podman", "unshare", "chown", "-R", "1000:1000", str(ws_dir)],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    if engine == "podman":
+        subprocess.run(
+            ["podman", "unshare", "chown", "-R", "1000:1000", str(ws_dir)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
 
     if pack_id is None and cfg is None:
         manifest = load_pinned_tool_manifest()
@@ -708,12 +862,13 @@ def check_mcp_sidecar_http(
         try:
             proc_start = subprocess.run(
                 [
-                    "podman",
+                    engine,
                     "run",
                     "-d",
                     "--rm",
                     "--name",
                     cname,
+                    *platform_args,
                     *port_publish_args,
                     "-e",
                     f"RADIO_MCP_PORT_MS_INSPECT={int(pack.mcp_ports.get('ms-inspect', 8000))}",
@@ -722,7 +877,7 @@ def check_mcp_sidecar_http(
                     "-e",
                     f"RADIO_MCP_PORT_MS_CREATE={int(pack.mcp_ports.get('ms-create', 8002))}",
                     "-v",
-                    f"{ws_dir}:/workspace:rw,z",
+                    f"{ws_dir}:/workspace:{mount_opts}",
                     sidecar_image,
                 ],
                 env=env,
@@ -739,7 +894,7 @@ def check_mcp_sidecar_http(
 
             proc_uid = subprocess.run(
                 [
-                    "podman",
+                    engine,
                     "exec",
                     cname,
                     "sh",
@@ -765,7 +920,7 @@ def check_mcp_sidecar_http(
 
             for server_name, (container_port, expected_count) in server_counts.items():
                 try:
-                    host_port = _resolve_published_port(cname, container_port, env)
+                    host_port = _resolve_published_port(cname, container_port, env, engine=engine)
                 except Exception as exc:
                     failures.append(
                         {
@@ -791,7 +946,7 @@ def check_mcp_sidecar_http(
                             time.sleep(0.5)
                     if not ready:
                         proc_logs = subprocess.run(
-                            ["podman", "logs", cname],
+                            [engine, "logs", cname],
                             env=env,
                             capture_output=True,
                             text=True,
@@ -944,7 +1099,7 @@ def check_mcp_sidecar_http(
             }
         finally:
             subprocess.run(
-                ["podman", "rm", "-f", "-t", "0", cname],
+                [engine, "rm", "-f", cname],
                 env=env,
                 capture_output=True,
                 text=True,
@@ -964,8 +1119,15 @@ def check_mcp_sidecar_http(
                 ],
                 env,
                 timeout_s=90.0,
-                extra_podman_args=["--user", "1000:1000", "-v", f"{ws_dir}:/workspace:rw,z"],
+                extra_podman_args=[
+                    "--user",
+                    "1000:1000",
+                    "-v",
+                    f"{ws_dir}:/workspace:{mount_opts}",
+                ],
                 label="agent-run-step",
+                engine=engine,
+                platform=platform,
             )
             rc_file = ws_dir / "flag_data.py.rc"
             log_file = ws_dir / "flag_data.py.log"
@@ -989,14 +1151,15 @@ def check_mcp_sidecar_http(
                     }
                 )
     finally:
-        subprocess.run(
-            ["podman", "unshare", "chown", "-R", "0:0", str(ws_dir)],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
+        if engine == "podman":
+            subprocess.run(
+                ["podman", "unshare", "chown", "-R", "0:0", str(ws_dir)],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
 
     ok = (
         total_advertised == expected_total
@@ -1032,16 +1195,18 @@ def run_all_smoke_checks(
     cfg: BenchConfig | None = None,
 ) -> dict[str, Any]:
     resolved_cfg = cfg if cfg is not None else load_bench_config()
+    engine = resolved_cfg.engine
+    platform = resolved_cfg.platform
     out_dir = smoke_dir or (resolved_cfg.work_dir / "smoke")
     reject_slash_tmp(out_dir, label="smoke_dir")
     out_dir.mkdir(parents=True, exist_ok=True)
     env = build_podman_env(cfg=resolved_cfg)
-    reap_stale_smoke_containers(env)
+    reap_stale_smoke_containers(env, engine=engine)
     t0 = time.monotonic()
 
-    casa_base_res = check_casa_base_offline(env)
-    agent_res = check_agent_base_offline_and_isolation(env)
-    verifier_res = check_verifier_offline(env)
+    casa_base_res = check_casa_base_offline(env, engine=engine, platform=platform)
+    agent_res = check_agent_base_offline_and_isolation(env, engine=engine, platform=platform)
+    verifier_res = check_verifier_offline(env, engine=engine, platform=platform)
     sidecar_res = check_mcp_sidecar_http(env, out_dir, pack_id=pack_id, cfg=resolved_cfg)
 
     elapsed_s = round(time.monotonic() - t0, 2)

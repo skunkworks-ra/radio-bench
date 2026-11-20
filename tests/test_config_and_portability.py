@@ -6,6 +6,7 @@ import errno
 import json
 import logging
 import os
+import socket
 import stat
 import subprocess
 import sys
@@ -87,7 +88,7 @@ def test_fresh_clone_repo_relative_defaults_and_missing_toml_fallback(tmp_path: 
     committed_bench = (rb_cfg.resolve_repo_root() / "bench.toml").read_text(encoding="utf-8")
     (fake_repo / "bench.toml").write_text(committed_bench, encoding="utf-8")
 
-    cfg = load_bench_config(repo_root=fake_repo, env=_clean_bench_env(), uid=4242)
+    cfg = load_bench_config(repo_root=fake_repo, env=_clean_bench_env(), uid=4242, host_os="linux")
     assert cfg.repo_root == fake_repo.resolve()
     assert cfg.work_dir == (fake_repo / ".work").resolve()
     assert cfg.data_dir == (fake_repo / "data").resolve()
@@ -95,6 +96,8 @@ def test_fresh_clone_repo_relative_defaults_and_missing_toml_fallback(tmp_path: 
     assert cfg.casaguides_dir == (fake_repo / "data" / "casaguides").resolve()
     assert cfg.prompts_dir == (fake_repo / "task_specs").resolve()
     assert cfg.casa_data_dir == Path(os.path.expanduser("~/.casa/data")).resolve()
+    assert cfg.engine == "podman"
+    assert cfg.platform is None
     assert cfg.docker_host == "unix:///run/user/4242/podman/podman.sock"
     assert cfg.container_tmpdir == (fake_repo / ".work" / "podman_tmp").resolve()
     assert cfg.default_pack == "ra_00a11ea"
@@ -106,7 +109,9 @@ def test_fresh_clone_repo_relative_defaults_and_missing_toml_fallback(tmp_path: 
     # Fallback when bench.toml and configs/models.toml are absent on disk.
     bare_dir = tmp_path / "bare_no_toml"
     bare_dir.mkdir()
-    bare_cfg = load_bench_config(repo_root=bare_dir, env=_clean_bench_env(), uid=1001)
+    bare_cfg = load_bench_config(
+        repo_root=bare_dir, env=_clean_bench_env(), uid=1001, host_os="linux"
+    )
     assert bare_cfg.work_dir == (bare_dir / ".work").resolve()
     assert bare_cfg.docker_host == "unix:///run/user/1001/podman/podman.sock"
     bare_models = load_models_config(repo_root=bare_dir, env=_clean_bench_env())
@@ -243,7 +248,8 @@ def test_slash_tmp_rejection_direct_and_symlink_while_permitting_var_tmp(tmp_pat
 
     # /var/tmp is NOT /tmp and must be permitted (container scratch invariant).
     resolved_var_tmp = reject_slash_tmp("/var/tmp/radio_bench_container_ok", label="var_tmp")
-    assert str(resolved_var_tmp).startswith("/var/tmp/")
+    expected_var_tmp_prefix = f"{Path('/var/tmp').resolve()}/"
+    assert str(resolved_var_tmp).startswith(expected_var_tmp_prefix)
 
     prepared = prepare_runtime_env(ok_cfg, base_env=_clean_bench_env())
     assert prepared["TMPDIR"] == str(ok_cfg.tmp_dir)
@@ -480,7 +486,7 @@ def test_single_vs_multipack_task_compilation_lint_and_collector_roundtrip(
         + "\n",
         encoding="utf-8",
     )
-    mp_cfg = load_bench_config(repo_root=fake_repo, env=_clean_bench_env())
+    mp_cfg = load_bench_config(repo_root=fake_repo, env=_clean_bench_env(), host_os="linux")
 
     # 1. Single-pack compile -> <task_id>__<arm>
     out_single = work_dir / "tasks_single"
@@ -700,6 +706,7 @@ def test_models_registry_pricing_parity_and_render_jobs_validation(
     monkeypatch.delenv("LOCAL_LLM_API_KEY", raising=False)
 
     gw_jobs_dir = tmp_path / "gw_jobs"
+    linux_podman_cfg = load_bench_config(env=test_env, host_os="linux")
     all_models_job: dict[str, Any] = compile_job_dict(
         job_name="all_endpoints_smoke",
         suites=["synth"],
@@ -716,8 +723,10 @@ def test_models_registry_pricing_parity_and_render_jobs_validation(
         thinking_levels=None,
         pack_ids=["ra_00a11ea", "ra_rescue"],
         jobs_out_dir=gw_jobs_dir,
+        cfg=linux_podman_cfg,
         models_cfg=c_models,
         env=test_env,
+        host_os="linux",
     )
     yaml_path = gw_jobs_dir / "all_endpoints_smoke.yaml"
     yaml_path.write_text(yaml.safe_dump(all_models_job, sort_keys=False), encoding="utf-8")
@@ -1872,3 +1881,417 @@ def test_radiobench_opencode_factory_and_runtime_guards(
     with pytest.raises(NonZeroAgentExitCodeError, match="HTTP 400") as exc_nolog_info:
         asyncio.run(ag_nolog.run("do task", env_broken, AgentContext()))
     assert not isinstance(exc_nolog_info.value, ApiError)
+
+
+# ---------------------------------------------------------------------------
+# macOS / Docker portability: runtime selection, docker_host auto, plugins, jobs
+# ---------------------------------------------------------------------------
+
+
+def _write_runtime_repo(root: Path, bench_text: str, local_text: str | None = None) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "bench.toml").write_text(bench_text, encoding="utf-8")
+    if local_text is not None:
+        (root / "bench.local.toml").write_text(local_text, encoding="utf-8")
+    return root
+
+
+_RUNTIME_BENCH_TOML = "\n".join(
+    [
+        "[runtime]",
+        'container_tmpdir = "./.work/podman_tmp"',
+        "[runtime.linux]",
+        'engine = "podman"',
+        'docker_host = "unix:///run/user/${UID}/podman/podman.sock"',
+        "[runtime.darwin]",
+        'engine = "docker"',
+        'docker_host = "unix:///var/run/docker.sock"',
+        'platform = "linux/amd64"',
+    ]
+)
+
+
+def test_runtime_linux_vs_darwin_table_selection(tmp_path: Path) -> None:
+    repo = _write_runtime_repo(tmp_path / "rt_repo", _RUNTIME_BENCH_TOML + "\n")
+
+    lin = load_bench_config(repo_root=repo, env=_clean_bench_env(), uid=4242, host_os="linux")
+    assert lin.engine == "podman"
+    assert lin.platform is None
+    assert lin.docker_host == "unix:///run/user/4242/podman/podman.sock"
+
+    mac = load_bench_config(repo_root=repo, env=_clean_bench_env(), uid=4242, host_os="darwin")
+    assert mac.engine == "docker"
+    assert mac.platform == "linux/amd64"
+    assert mac.docker_host == "unix:///var/run/docker.sock"
+
+    # Nested [runtime.<os>] tables must never leak as flat keys.
+    assert mac.container_tmpdir == (repo / ".work" / "podman_tmp").resolve()
+
+    with pytest.raises(ValueError, match="engine"):
+        load_bench_config(repo_root=repo, env=_clean_bench_env(), host_os="linux", engine="nerdctl")
+
+
+def test_runtime_precedence_local_toml_env_and_cli(tmp_path: Path) -> None:
+    local_toml = "\n".join(
+        [
+            "[runtime.darwin]",
+            'platform = "linux/arm64"',
+            'engine = "docker"',
+        ]
+    )
+    repo = _write_runtime_repo(tmp_path / "rt_prec", _RUNTIME_BENCH_TOML + "\n", local_toml + "\n")
+
+    # bench.local.toml [runtime.darwin] beats bench.toml [runtime.darwin].
+    cfg_local = load_bench_config(repo_root=repo, env=_clean_bench_env(), host_os="darwin")
+    assert cfg_local.platform == "linux/arm64"
+    assert cfg_local.engine == "docker"
+
+    # ignore_local_config falls back to the committed bench.toml.
+    cfg_committed = load_bench_config(
+        repo_root=repo, env=_clean_bench_env(), host_os="darwin", ignore_local_config=True
+    )
+    assert cfg_committed.platform == "linux/amd64"
+
+    # Env vars beat bench.local.toml.
+    env_over = {
+        **_clean_bench_env(),
+        "RADIO_BENCH_PLATFORM": "linux/s390x",
+        "RADIO_BENCH_ENGINE": "podman",
+    }
+    cfg_env = load_bench_config(repo_root=repo, env=env_over, host_os="darwin")
+    assert cfg_env.platform == "linux/s390x"
+    assert cfg_env.engine == "podman"
+
+    # Explicit function/CLI args beat env vars; empty platform normalizes to None.
+    cfg_cli = load_bench_config(
+        repo_root=repo, env=env_over, host_os="darwin", engine="docker", platform="linux/amd64"
+    )
+    assert cfg_cli.engine == "docker"
+    assert cfg_cli.platform == "linux/amd64"
+    cfg_empty = load_bench_config(repo_root=repo, env=env_over, host_os="darwin", platform="")
+    assert cfg_empty.platform is None
+
+
+def _bind_unix_socket(path: Path) -> socket.socket:
+    """Bind a unix socket via a relative name to stay under the macOS 104-byte path limit."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    prev = os.getcwd()
+    os.chdir(path.parent)
+    try:
+        srv.bind(path.name)
+    finally:
+        os.chdir(prev)
+    return srv
+
+
+def _write_docker_context(home: Path, name: str, host: str, *, current: str | None) -> None:
+    meta_dir = home / ".docker" / "contexts" / "meta" / f"hash_{name}"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    (meta_dir / "meta.json").write_text(
+        json.dumps({"Name": name, "Endpoints": {"docker": {"Host": host}}}), encoding="utf-8"
+    )
+    if current is not None:
+        (home / ".docker" / "config.json").write_text(
+            json.dumps({"currentContext": current}), encoding="utf-8"
+        )
+
+
+def _auto_cfg(tmp_path: Path, home: Path, extra_env: dict[str, str] | None = None) -> Any:
+    repo = _write_runtime_repo(
+        tmp_path / "auto_repo",
+        "\n".join(["[runtime.darwin]", 'engine = "docker"', 'docker_host = "auto"']) + "\n",
+    )
+    env = {**_clean_bench_env(), "HOME": str(home), **(extra_env or {})}
+    return load_bench_config(repo_root=repo, env=env, host_os="darwin")
+
+
+def _hide_system_docker_socket(monkeypatch: pytest.MonkeyPatch) -> None:
+    orig = rb_cfg._is_live_unix_socket_path
+
+    def _probe(p: Path) -> bool:
+        if Path(p) == Path("/var/run/docker.sock"):
+            return False
+        return orig(p)
+
+    monkeypatch.setattr(rb_cfg, "_is_live_unix_socket_path", _probe)
+
+
+def test_docker_host_auto_current_context_env_context_and_stale_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hide_system_docker_socket(monkeypatch)
+    home = tmp_path / "h"
+    colima_sock = home / ".colima" / "default" / "docker.sock"
+    ctx_sock = home / "c1" / "d.sock"
+    other_sock = home / "c2" / "d.sock"
+    srv_colima = _bind_unix_socket(colima_sock)
+    srv_ctx = _bind_unix_socket(ctx_sock)
+    srv_other = _bind_unix_socket(other_sock)
+    try:
+        _write_docker_context(home, "ctx1", f"unix://{ctx_sock}", current="ctx1")
+        _write_docker_context(home, "ctx2", f"unix://{other_sock}", current=None)
+
+        # currentContext with a live socket wins over the Colima probe and uses eff_env HOME.
+        cfg1 = _auto_cfg(tmp_path, home)
+        assert cfg1.docker_host == f"unix://{ctx_sock}"
+
+        # DOCKER_CONTEXT env beats config.json currentContext.
+        cfg2 = _auto_cfg(tmp_path, home, {"DOCKER_CONTEXT": "ctx2"})
+        assert cfg2.docker_host == f"unix://{other_sock}"
+
+        # DOCKER_CONTEXT=default skips contexts and probes live sockets.
+        cfg3 = _auto_cfg(tmp_path, home, {"DOCKER_CONTEXT": "default"})
+        assert cfg3.docker_host == f"unix://{colima_sock}"
+
+        # Stale context endpoint (regular file, not a socket) is skipped for a live probe.
+        stale = home / "stale" / "d.sock"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("not a socket", encoding="utf-8")
+        _write_docker_context(home, "ctx1", f"unix://{stale}", current="ctx1")
+        cfg4 = _auto_cfg(tmp_path, home)
+        assert cfg4.docker_host == f"unix://{colima_sock}"
+    finally:
+        for srv in (srv_colima, srv_ctx, srv_other):
+            srv.close()
+
+
+def test_docker_host_auto_offline_fallbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _hide_system_docker_socket(monkeypatch)
+
+    # Nothing configured and nothing live: deterministic Colima default under eff_env HOME.
+    home_a = tmp_path / "ha"
+    home_a.mkdir()
+    cfg_a = _auto_cfg(tmp_path, home_a)
+    assert cfg_a.docker_host == f"unix://{home_a / '.colima' / 'default' / 'docker.sock'}"
+
+    # Configured context with a dead endpoint is used when no live socket exists.
+    home_b = tmp_path / "hb"
+    dead = home_b / "dead" / "d.sock"
+    _write_docker_context(home_b, "offline", f"unix://{dead}", current="offline")
+    cfg_b = _auto_cfg(tmp_path, home_b)
+    assert cfg_b.docker_host == f"unix://{dead}"
+
+
+def test_private_tmp_rejected_while_private_var_tmp_permitted() -> None:
+    assert rb_cfg.is_under_slash_tmp("/private/tmp") is True
+    assert rb_cfg.is_under_slash_tmp("/private/tmp/x/y") is True
+    assert rb_cfg.is_under_slash_tmp("/private/var/tmp/x") is False
+    with pytest.raises(ValueError, match="/tmp"):
+        reject_slash_tmp("/private/tmp/radio_bench_forbidden", label="private_tmp")
+    ok = reject_slash_tmp("/private/var/tmp/radio_bench_ok", label="private_var_tmp")
+    assert str(ok).endswith("radio_bench_ok")
+
+
+def test_ensure_docker_cli_plugins_links_compose_buildx_and_copies_auth_keys(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    (home / ".docker").mkdir(parents=True)
+    (home / ".docker" / "config.json").write_text(
+        json.dumps(
+            {
+                "auths": {"ghcr.io": {"auth": "c2VjcmV0"}},
+                "credsStore": "osxkeychain",
+                "credHelpers": {"gcr.io": "gcloud"},
+                "proxies": {"default": {"httpProxy": "http://proxy.example:3128"}},
+                "currentContext": "desktop-linux",
+                "plugins": {"x": {"y": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_compose = bin_dir / "docker-compose"
+    fake_buildx = bin_dir / "docker-buildx"
+    for p in (fake_compose, fake_buildx):
+        p.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        p.chmod(0o755)
+
+    cfg_dir = tmp_path / "docker_cfg"
+    env = {**_clean_bench_env(), "HOME": str(home)}
+    result = rb_cfg.ensure_docker_cli_plugins(
+        cfg_dir, compose_binary=fake_compose, buildx_binary=fake_buildx, env=env
+    )
+    assert result == cfg_dir
+    for name, target in (("docker-compose", fake_compose), ("docker-buildx", fake_buildx)):
+        link = cfg_dir / "cli-plugins" / name
+        assert link.is_symlink()
+        assert link.resolve() == target.resolve()
+
+    copied = json.loads((cfg_dir / "config.json").read_text(encoding="utf-8"))
+    assert set(copied) == {"auths", "credsStore", "credHelpers", "proxies"}
+    assert copied["credsStore"] == "osxkeychain"
+    assert "currentContext" not in copied
+
+    # Idempotent second call keeps the same links and config.
+    again = rb_cfg.ensure_docker_cli_plugins(
+        cfg_dir, compose_binary=fake_compose, buildx_binary=fake_buildx, env=env
+    )
+    assert again == cfg_dir
+    assert json.loads((cfg_dir / "config.json").read_text(encoding="utf-8")) == copied
+
+    with pytest.raises(ValueError, match="/tmp"):
+        rb_cfg.ensure_docker_cli_plugins(Path("/tmp/bad_plugin_cfg"), env=env)
+
+
+def _fresh_repo_for_jobs(tmp_path: Path) -> Path:
+    fake_repo = tmp_path / "jobs_repo"
+    fake_repo.mkdir()
+    committed = (rb_cfg.resolve_repo_root() / "bench.toml").read_text(encoding="utf-8")
+    (fake_repo / "bench.toml").write_text(committed, encoding="utf-8")
+    return fake_repo
+
+
+def _local_gateway_models() -> ModelsConfig:
+    return ModelsConfig(
+        models={
+            "local_gw": ModelSpec(
+                key="local_gw",
+                harness="opencode",
+                model_name="local/qwen",
+                api_format="openai_chat_completions",
+                base_url="http://host.containers.internal:8080/v1",
+                api_key_env="LOCAL_LLM_API_KEY",
+                host_gateway_required=True,
+            )
+        },
+        parity_pairs=(),
+    )
+
+
+def test_render_jobs_docker_darwin_vs_linux_vs_podman_host_gateway(tmp_path: Path) -> None:
+    repo = _fresh_repo_for_jobs(tmp_path)
+    env = _clean_bench_env()
+    models = _local_gateway_models()
+
+    def _compile(cfg: Any, host_os: str, label: str) -> tuple[dict[str, Any], Path]:
+        jobs_dir = tmp_path / f"jobs_{label}"
+        job = compile_job_dict(
+            job_name=f"gw_{label}",
+            suites=["synth"],
+            arms=[ARM_NONE],
+            task_scope="stage",
+            model_keys=["local_gw"],
+            jobs_out_dir=jobs_dir,
+            cfg=cfg,
+            models_cfg=models,
+            env=env,
+            host_os=host_os,
+        )
+        return job, jobs_dir / "host_gateway_compose.yaml"
+
+    docker_kwargs: dict[str, Any] = {
+        "engine": "docker",
+        "docker_host": "unix:///var/run/docker.sock",
+    }
+
+    # Darwin + docker: type docker, host.docker.internal rewrite, NO host-gateway overlay.
+    cfg_mac = load_bench_config(repo_root=repo, env=env, host_os="darwin", **docker_kwargs)
+    job_mac, overlay_mac = _compile(cfg_mac, "darwin", "mac")
+    assert job_mac["environment"]["type"] == "docker"
+    assert "extra_docker_compose" not in job_mac["environment"]
+    assert not overlay_mac.exists()
+    assert job_mac["agents"][0]["base_url"] == "http://host.docker.internal:8080/v1"
+
+    # Linux + docker: host.docker.internal:host-gateway overlay.
+    cfg_lin = load_bench_config(repo_root=repo, env=env, host_os="linux", **docker_kwargs)
+    job_lin, overlay_lin = _compile(cfg_lin, "linux", "lin")
+    assert job_lin["environment"]["type"] == "docker"
+    assert job_lin["environment"]["extra_docker_compose"] == [str(overlay_lin)]
+    assert job_lin["agents"][0]["base_url"] == "http://host.docker.internal:8080/v1"
+    overlay_doc = yaml.safe_load(overlay_lin.read_text(encoding="utf-8"))
+    assert overlay_doc["services"]["main"]["extra_hosts"] == ["host.docker.internal:host-gateway"]
+
+    # Linux + podman keeps the legacy overlay and hostname.
+    cfg_pod = load_bench_config(repo_root=repo, env=env, host_os="linux")
+    job_pod, overlay_pod = _compile(cfg_pod, "linux", "pod")
+    assert job_pod["environment"]["type"] == "podman"
+    assert job_pod["agents"][0]["base_url"] == "http://host.containers.internal:8080/v1"
+    overlay_pod_doc = yaml.safe_load(overlay_pod.read_text(encoding="utf-8"))
+    assert overlay_pod_doc["services"]["main"]["extra_hosts"] == [
+        "host.containers.internal:host-gateway"
+    ]
+
+    for job in (job_mac, job_lin, job_pod):
+        JobConfig.model_validate(job)
+
+
+def test_cli_engine_and_platform_flags_via_add_config_cli_args(tmp_path: Path) -> None:
+    import argparse
+
+    repo = _write_runtime_repo(tmp_path / "cli_rt", _RUNTIME_BENCH_TOML + "\n")
+    parser = argparse.ArgumentParser()
+    rb_cfg.add_config_cli_args(parser)
+
+    args_none = parser.parse_args(["--config", str(repo / "bench.toml")])
+    assert args_none.engine is None
+    assert args_none.platform is None
+
+    args = parser.parse_args(
+        [
+            "--config",
+            str(repo / "bench.toml"),
+            "--engine",
+            "docker",
+            "--platform",
+            "linux/arm64",
+        ]
+    )
+    assert args.engine == "docker"
+    assert args.platform == "linux/arm64"
+    cfg = rb_cfg.config_from_cli_args(args)
+    assert cfg.engine == "docker"
+    assert cfg.platform == "linux/arm64"
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--engine", "nerdctl"])
+
+
+_LOCK_HOLDER_SCRIPT = """
+import fcntl, os, struct, sys
+fd = os.open(sys.argv[1], os.O_RDWR)
+if sys.platform == "darwin":
+    spec = struct.pack("qqihh", 0, 0, 0, fcntl.F_WRLCK, os.SEEK_SET)
+else:
+    spec = struct.pack("hhqqi", fcntl.F_WRLCK, os.SEEK_SET, 0, 1, 0)
+fcntl.fcntl(fd, fcntl.F_SETLK, spec)
+print("ready", flush=True)
+sys.stdin.readline()
+"""
+
+
+def test_has_active_table_lock_detects_cross_process_lock_without_casatools(
+    tmp_path: Path,
+) -> None:
+    from radio_bench.grading.extractors.common import has_active_table_lock
+
+    table_dir = tmp_path / "locked.ms"
+    table_dir.mkdir()
+    lock_file = table_dir / "table.lock"
+    lock_file.write_bytes(b"\x00" * 64)
+
+    assert has_active_table_lock(table_dir) is False
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", _LOCK_HOLDER_SCRIPT, str(lock_file)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "ready"
+        assert has_active_table_lock(table_dir) is True
+    finally:
+        if child.stdin is not None:
+            child.stdin.write("\n")
+            child.stdin.close()
+        child.wait(timeout=10)
+        if child.stdout is not None:
+            child.stdout.close()
+
+    assert has_active_table_lock(table_dir) is False

@@ -68,6 +68,7 @@ from radio_bench.config import (  # noqa: E402
     add_config_cli_args,
     config_from_cli_args,
     load_bench_config,
+    reject_slash_tmp,
 )
 
 SYNTH_SEED = 20261113
@@ -85,11 +86,7 @@ def __getattr__(name: str) -> Any:
 
 
 def _reject_tmp_path(path: Path, label: str) -> Path:
-    resolved = path.resolve()
-    s = str(resolved)
-    if s == "/tmp" or s.startswith("/tmp/"):
-        raise ValueError(f"{label} must never reside under /tmp: {resolved}")
-    return resolved
+    return reject_slash_tmp(path, label=label)
 
 
 def _dir_size_mb(path: Path) -> float:

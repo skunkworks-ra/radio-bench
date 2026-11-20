@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 
-from radio_bench.config import reject_slash_tmp
+from radio_bench.config import is_under_slash_tmp, reject_slash_tmp
 from radio_bench.grading.extractors import extract_workspace, resolve_scratch_root
 from radio_bench.grading.rubric import RubricEvaluationResult, evaluate_rubric
 from radio_bench.grading.schema import (
@@ -308,9 +308,10 @@ def configure_container_scratch_env(task_hint: str = "runner") -> Path:
     """Configure non-`/tmp` scratch environment (`OMP_WAIT_POLICY=PASSIVE`, `TMPDIR`, `MPLCONFIGDIR`)."""
     os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
     cur_tmp = os.environ.get("TMPDIR", "").strip()
-    if not cur_tmp or cur_tmp == "/tmp" or cur_tmp.startswith("/tmp/"):
+    in_container = Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+    if not cur_tmp or is_under_slash_tmp(cur_tmp):
         var_tmp = Path("/var/tmp")
-        if var_tmp.exists() and os.access(var_tmp, os.W_OK):
+        if in_container and var_tmp.exists() and os.access(var_tmp, os.W_OK):
             scratch = var_tmp / f"verifier_{task_hint}_{os.getpid()}"
         else:
             from radio_bench.config import load_bench_config
@@ -323,7 +324,7 @@ def configure_container_scratch_env(task_hint: str = "runner") -> Path:
     os.environ["TMPDIR"] = str(scratch)
 
     cur_mpl = os.environ.get("MPLCONFIGDIR", "").strip()
-    if not cur_mpl or cur_mpl == "/tmp" or cur_mpl.startswith("/tmp/"):
+    if not cur_mpl or is_under_slash_tmp(cur_mpl):
         mpl_dir = scratch / "mplconfig"
         mpl_dir.mkdir(parents=True, exist_ok=True)
         os.environ["MPLCONFIGDIR"] = str(mpl_dir)

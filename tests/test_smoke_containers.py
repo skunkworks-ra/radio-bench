@@ -263,7 +263,7 @@ def test_run_offline_container_teardown_on_timeout_and_error(
     rm_cmd, rm_timeout = calls[1]
     cname = run_cmd[run_cmd.index("--name") + 1]
     assert "--network=none" in run_cmd
-    assert rm_cmd == ["podman", "rm", "-f", "-t", "0", cname]
+    assert rm_cmd == ["podman", "rm", "-f", cname]
     assert rm_timeout == 30
 
     calls.clear()
@@ -278,8 +278,8 @@ def test_run_offline_container_teardown_on_timeout_and_error(
     with pytest.raises(OSError, match="podman socket unavailable"):
         run_offline_container("localhost/test:latest", ["python", "-V"], {}, timeout_s=5.0)
     assert len(calls) == 2
-    assert calls[1][0][:4] == ["podman", "rm", "-f", "-t"]
-    assert calls[1][0][4] == "0"
+    assert calls[1][0][:4] == ["podman", "rm", "-f", calls[1][0][3]]
+    assert "-t" not in calls[1][0]
     assert calls[1][1] == 30
 
 
@@ -288,13 +288,14 @@ def test_sidecar_http_teardown_on_start_timeout(
     tmp_path: Path,
 ) -> None:
     rm_calls: list[tuple[list[str], float | None]] = []
+    podman_cfg = _engine_cfg(tmp_path, engine="podman", platform=None)
 
     monkeypatch.setattr(
         sc,
         "generate_minimal_smoke_ms",
-        lambda ms_path: ms_path.mkdir(parents=True, exist_ok=True),
+        lambda ms_path, **_kw: ms_path.mkdir(parents=True, exist_ok=True),
     )
-    monkeypatch.setattr(sc, "load_pinned_tool_manifest", lambda: {"ms-inspect": {}})
+    monkeypatch.setattr(sc, "load_pinned_tool_manifest", lambda **_kw: {"ms-inspect": {}})
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         if cmd[:3] == ["podman", "run", "-d"]:
@@ -304,10 +305,183 @@ def test_sidecar_http_teardown_on_start_timeout(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(sc.subprocess, "run", fake_run)
-    report = check_mcp_sidecar_http({}, tmp_path)
+    report = check_mcp_sidecar_http({}, tmp_path / "smoke", cfg=podman_cfg)
     assert report["ok"] is False
     assert "Timed out" in report["error"]
     assert len(rm_calls) == 1
-    assert rm_calls[0][0][:5] == ["podman", "rm", "-f", "-t", "0"]
-    assert rm_calls[0][0][5].startswith("radio-bench-sidecar-smoke-")
+    assert rm_calls[0][0][:4] == ["podman", "rm", "-f", rm_calls[0][0][3]]
+    assert rm_calls[0][0][3].startswith("radio-bench-sidecar-smoke-")
+    assert "-t" not in rm_calls[0][0]
     assert rm_calls[0][1] == 30
+
+
+# ---------------------------------------------------------------------------
+# Docker CLI dispatch (macOS Colima / Docker Desktop / OrbStack)
+# ---------------------------------------------------------------------------
+
+
+def _engine_cfg(tmp_path: Path, *, engine: str, platform: str | None) -> Any:
+    import os
+
+    from radio_bench.config import load_bench_config
+
+    repo = tmp_path / f"repo_{engine}"
+    repo.mkdir(parents=True, exist_ok=True)
+    kwargs: dict[str, Any] = {
+        "engine": engine,
+        "host_os": "darwin" if engine == "docker" else "linux",
+    }
+    if engine == "docker":
+        kwargs["docker_host"] = "unix:///var/run/docker.sock"
+    kwargs["platform"] = platform if platform is not None else ""
+    return load_bench_config(
+        repo_root=repo,
+        env={"PATH": os.environ.get("PATH", "/usr/bin")},
+        uid=1000,
+        **kwargs,
+    )
+
+
+def test_run_offline_container_docker_uses_plain_rm_and_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        if cmd[:2] == ["docker", "run"]:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=5.0, output="", stderr="hung")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(sc.subprocess, "run", fake_run)
+    res = run_offline_container(
+        "localhost/test:latest",
+        ["python", "-V"],
+        {},
+        timeout_s=5.0,
+        engine="docker",
+        platform="linux/amd64",
+    )
+    assert res.timed_out is True
+    run_cmd, rm_cmd = calls[0], calls[1]
+    cname = run_cmd[run_cmd.index("--name") + 1]
+    assert run_cmd[0] == "docker"
+    assert "--network=none" in run_cmd
+    assert run_cmd[run_cmd.index("--platform") + 1] == "linux/amd64"
+    assert rm_cmd == ["docker", "rm", "-f", cname]
+    assert "-t" not in rm_cmd
+    assert not any(c[0] == "podman" for c in calls)
+
+
+def test_run_offline_container_podman_default_has_no_platform_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr(sc.subprocess, "run", fake_run)
+    res = run_offline_container("localhost/test:latest", ["python", "-V"], {})
+    assert res.returncode == 0
+    assert calls[0][0] == "podman"
+    assert "--platform" not in calls[0]
+    assert calls[1][:3] == ["podman", "rm", "-f"]
+
+
+def _sidecar_start_timeout_calls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cfg: Any
+) -> list[list[str]]:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        sc,
+        "generate_minimal_smoke_ms",
+        lambda ms_path, **_kw: ms_path.mkdir(parents=True, exist_ok=True),
+    )
+    monkeypatch.setattr(sc, "load_pinned_tool_manifest", lambda **_kw: {"ms-inspect": {}})
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        if cmd[1:3] == ["run", "-d"]:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=60.0)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(sc.subprocess, "run", fake_run)
+    report = check_mcp_sidecar_http({}, tmp_path / "smoke", cfg=cfg)
+    assert report["ok"] is False
+    return calls
+
+
+def test_sidecar_http_docker_dispatch_no_z_no_unshare_no_t0_and_platform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = _engine_cfg(tmp_path, engine="docker", platform="linux/amd64")
+    calls = _sidecar_start_timeout_calls(monkeypatch, tmp_path, cfg)
+
+    assert not any(c[0] == "podman" for c in calls)
+    assert not any("unshare" in c for c in calls)
+    run_cmd = next(c for c in calls if c[1:3] == ["run", "-d"])
+    assert run_cmd[0] == "docker"
+    assert run_cmd[run_cmd.index("--platform") + 1] == "linux/amd64"
+    mount = run_cmd[run_cmd.index("-v") + 1]
+    assert mount.endswith(":/workspace:rw")
+    assert ",z" not in mount
+    rm_cmds = [c for c in calls if c[1] == "rm" and c[2:3] == ["-f"]]
+    assert len(rm_cmds) == 1
+    assert rm_cmds[0][0] == "docker"
+    assert "-t" not in rm_cmds[0]
+    assert rm_cmds[0][3].startswith("radio-bench-sidecar-smoke-")
+
+
+def test_sidecar_http_podman_dispatch_keeps_z_unshare_and_has_no_platform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = _engine_cfg(tmp_path, engine="podman", platform=None)
+    # Pre-create the workspace so the podman unshare cleanup path runs too.
+    (tmp_path / "smoke" / "workspace").mkdir(parents=True)
+    calls = _sidecar_start_timeout_calls(monkeypatch, tmp_path, cfg)
+
+    run_cmd = next(c for c in calls if c[1:3] == ["run", "-d"])
+    assert run_cmd[0] == "podman"
+    assert "--platform" not in run_cmd
+    assert run_cmd[run_cmd.index("-v") + 1].endswith(":/workspace:rw,z")
+    assert any(c[:3] == ["podman", "unshare", "rm"] for c in calls)
+    assert any(c[:4] == ["podman", "unshare", "chown", "-R"] for c in calls)
+
+
+def test_generate_minimal_smoke_ms_falls_back_to_casa_base_image_without_host_casatools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = _engine_cfg(tmp_path, engine="docker", platform="linux/amd64")
+    # A None entry makes `from casatools import ...` raise ImportError on any host.
+    monkeypatch.setitem(__import__("sys").modules, "casatools", None)
+    monkeypatch.setenv("CASASITECONFIG", str(cfg.casaconfig_path))
+
+    captured: dict[str, Any] = {}
+
+    def fake_offline(
+        image: str, cmd_args: list[str], env: dict[str, str], **kwargs: Any
+    ) -> sc.ContainerRunResult:
+        captured.update(image=image, cmd_args=cmd_args, kwargs=kwargs)
+        return sc.ContainerRunResult(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(sc, "run_offline_container", fake_offline)
+    ms_path = tmp_path / "smoke_ws" / "smoke.ms"
+    sc.generate_minimal_smoke_ms(ms_path, cfg=cfg, env={"PATH": "/usr/bin"})
+
+    assert captured["image"] == sc.CASA_BASE_IMAGE
+    assert captured["cmd_args"][:2] == ["python", "-c"]
+    assert captured["cmd_args"][-1] == "/workspace/smoke.ms"
+    assert captured["kwargs"]["engine"] == "docker"
+    assert captured["kwargs"]["platform"] == "linux/amd64"
+    assert captured["kwargs"]["extra_podman_args"] == ["-v", f"{ms_path.parent}:/workspace:rw"]
+
+    def fake_offline_fail(
+        image: str, cmd_args: list[str], env: dict[str, str], **kwargs: Any
+    ) -> sc.ContainerRunResult:
+        return sc.ContainerRunResult(returncode=3, stdout="", stderr="boom")
+
+    monkeypatch.setattr(sc, "run_offline_container", fake_offline_fail)
+    with pytest.raises(RuntimeError, match="Failed to generate smoke MS"):
+        sc.generate_minimal_smoke_ms(ms_path, cfg=cfg, env={"PATH": "/usr/bin"})
