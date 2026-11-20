@@ -1872,3 +1872,119 @@ def test_radiobench_opencode_factory_and_runtime_guards(
     with pytest.raises(NonZeroAgentExitCodeError, match="HTTP 400") as exc_nolog_info:
         asyncio.run(ag_nolog.run("do task", env_broken, AgentContext()))
     assert not isinstance(exc_nolog_info.value, ApiError)
+
+
+def test_radiobench_opencode_install_preinstalled_fast_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify RadioBenchOpenCode.install skips super().install on matching pre-installed opencode."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from harbor.agents.installed.base import NonZeroAgentExitCodeError
+    from harbor.agents.installed.opencode import OpenCode
+    from harbor.models.job.config import AgentConfig
+
+    from radio_bench.agents import RadioBenchOpenCode
+
+    monkeypatch.setenv("TACC_API_KEY", "dummy-tacc-key")
+
+    spec = ModelSpec(
+        key="tejas_minimax_m3",
+        harness="opencode",
+        model_name="tejas/MiniMax-M3",
+        api_format="openai_chat_completions",
+        base_url="https://example.org/v1",
+        api_key_env="TACC_API_KEY",
+        opencode_version="1.19.5",
+        context_window_tokens=1_048_576,
+        max_output_tokens=16_384,
+    )
+    agent_cfg = AgentConfig.model_validate(
+        rj._build_agent_entry(spec, "default", job_n_concurrent=1)
+    )
+
+    super_calls: list[str] = []
+
+    async def _fake_super_install(self: Any, environment: Any) -> None:
+        super_calls.append(str(self.logs_dir.name))
+
+    monkeypatch.setattr(OpenCode, "install", _fake_super_install)
+
+    # 1. Pre-installed matching 1.19.5 -> skips super().install
+    ag_match = AgentFactory.create_agent_from_config(agent_cfg, logs_dir=tmp_path / "inst_match")
+    assert isinstance(ag_match, RadioBenchOpenCode)
+    checked_cmds: list[str] = []
+
+    async def _exec_match(self: Any, environment: Any, command: str, **_kw: Any) -> Any:
+        checked_cmds.append(command)
+        return SimpleNamespace(return_code=0, stdout="1.19.5\n", stderr="")
+
+    monkeypatch.setattr(
+        ag_match, "exec_as_agent", _exec_match.__get__(ag_match, RadioBenchOpenCode)
+    )
+    asyncio.run(ag_match.install(SimpleNamespace()))
+    assert super_calls == []
+    assert len(checked_cmds) == 1
+    assert "command -v opencode" in checked_cmds[0]
+    assert "command -v stdbuf" in checked_cmds[0]
+
+    # 2. Version mismatch (1.18.0 vs 1.19.5) -> falls back to super().install
+    ag_mismatch = AgentFactory.create_agent_from_config(
+        agent_cfg, logs_dir=tmp_path / "inst_mismatch"
+    )
+    assert isinstance(ag_mismatch, RadioBenchOpenCode)
+
+    async def _exec_mismatch(self: Any, environment: Any, command: str, **_kw: Any) -> Any:
+        return SimpleNamespace(return_code=0, stdout="1.18.0\n", stderr="")
+
+    monkeypatch.setattr(
+        ag_mismatch, "exec_as_agent", _exec_mismatch.__get__(ag_mismatch, RadioBenchOpenCode)
+    )
+    asyncio.run(ag_mismatch.install(SimpleNamespace()))
+    assert super_calls == ["inst_mismatch"]
+
+    # 3. Missing opencode (NonZeroAgentExitCodeError) -> falls back to super().install
+    ag_missing = AgentFactory.create_agent_from_config(
+        agent_cfg, logs_dir=tmp_path / "inst_missing"
+    )
+    assert isinstance(ag_missing, RadioBenchOpenCode)
+
+    async def _exec_missing(self: Any, environment: Any, command: str, **_kw: Any) -> Any:
+        raise NonZeroAgentExitCodeError("opencode: command not found")
+
+    monkeypatch.setattr(
+        ag_missing, "exec_as_agent", _exec_missing.__get__(ag_missing, RadioBenchOpenCode)
+    )
+    asyncio.run(ag_missing.install(SimpleNamespace()))
+    assert super_calls == ["inst_mismatch", "inst_missing"]
+
+    # 4. Digit-boundary suffix mismatch (11.19.5 vs 1.19.5) -> falls back to super().install
+    ag_suffix = AgentFactory.create_agent_from_config(agent_cfg, logs_dir=tmp_path / "inst_suffix")
+    assert isinstance(ag_suffix, RadioBenchOpenCode)
+
+    async def _exec_suffix(self: Any, environment: Any, command: str, **_kw: Any) -> Any:
+        return SimpleNamespace(return_code=0, stdout="11.19.5\n", stderr="")
+
+    monkeypatch.setattr(
+        ag_suffix, "exec_as_agent", _exec_suffix.__get__(ag_suffix, RadioBenchOpenCode)
+    )
+    asyncio.run(ag_suffix.install(SimpleNamespace()))
+    assert super_calls == ["inst_mismatch", "inst_missing", "inst_suffix"]
+
+    # 5. Unpinned version=None with empty stdout -> falls back to super().install
+    ag_unpinned = RadioBenchOpenCode(
+        logs_dir=tmp_path / "inst_unpinned",
+        model_name="nrp/glm-5",
+        version=None,
+    )
+
+    async def _exec_empty(self: Any, environment: Any, command: str, **_kw: Any) -> Any:
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        ag_unpinned, "exec_as_agent", _exec_empty.__get__(ag_unpinned, RadioBenchOpenCode)
+    )
+    asyncio.run(ag_unpinned.install(SimpleNamespace()))
+    assert super_calls == ["inst_mismatch", "inst_missing", "inst_suffix", "inst_unpinned"]

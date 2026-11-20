@@ -1423,6 +1423,8 @@ def _create_convolved_sky_image_set(
     b_major_arcsec: float,
     b_minor_arcsec: float,
     b_pa_deg: float,
+    ra_deg: float = 276.0,
+    dec_deg: float = -9.58,
 ) -> None:
     """Create a noiseless sky convolved analytically with `(b_major, b_minor, b_pa)` in Jy/beam."""
     from casatasks import imsmooth
@@ -1458,7 +1460,7 @@ def _create_convolved_sky_image_set(
             inc_rad = math.radians(cell_arcsec / 3600.0)
             cs.setunits(["rad", "rad", "", "Hz"])
             cs.setreferencepixel([cx, cy, 0.0, 0.0])
-            cs.setreferencevalue([math.radians(276.0), math.radians(-9.58), 1.0, 5.0e9])
+            cs.setreferencevalue([math.radians(ra_deg), math.radians(dec_deg), 1.0, 5.0e9])
             cs.setincrement([-inc_rad, inc_rad, 1.0, 1.0e8])
             ia.setcoordsys(cs.torecord())
         finally:
@@ -3218,3 +3220,105 @@ def test_wave3_review_diff_checkpoint_caltable_spw_calibrators_and_dirty_image(
     )
     assert exported_td["source"] == "verifier_metrics_json"
     assert exported_td["images"]["ncc"] == pytest.approx(0.9985)
+
+
+def test_diff_images_no_overlap_and_batch_diff_error_resilience(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify non-overlapping imregrid returns status=no_overlap and diff_job_directory survives errors."""
+    import radio_bench.analysis.diff as rb_diff
+
+    casatools = _ensure_local_casa()
+    ref_dir = tmp_path / "ref_img"
+    _create_convolved_sky_image_set(
+        casatools,
+        ref_dir,
+        "ref_sky",
+        npix=64,
+        cell_arcsec=2.5,
+        b_major_arcsec=12.0,
+        b_minor_arcsec=10.0,
+        b_pa_deg=0.0,
+        ra_deg=276.0,
+        dec_deg=-9.58,
+    )
+
+    # 1. Non-overlapping sky coordinates trigger real CASA imregrid RuntimeError -> status="no_overlap"
+    agt_no_ov = tmp_path / "agt_no_overlap"
+    _create_convolved_sky_image_set(
+        casatools,
+        agt_no_ov,
+        "wrong_sky",
+        npix=64,
+        cell_arcsec=2.5,
+        b_major_arcsec=12.0,
+        b_minor_arcsec=10.0,
+        b_pa_deg=0.0,
+        ra_deg=120.0,
+        dec_deg=35.0,
+    )
+    res_no_ov = diff_images(agt_no_ov, ref_dir, scratch_root=tmp_path / "sc_no_ov")
+    assert res_no_ov["status"] == "no_overlap"
+    assert "no overlap" in str(res_no_ov.get("error", "")).lower()
+    json.dumps(res_no_ov, allow_nan=False)
+
+    # 2. Batch diff_job_directory continues cleanly across no_overlap, unexpected diff_error, and ok trials
+    job_dir = tmp_path / "batch_resilience_job"
+    t_no_ov = _write_trial_fixture(
+        job_dir,
+        task_name="r1_3c391_image__11_full",
+        agent_name="opencode",
+        model_name="nrp/kimi",
+        started_at=datetime(2026, 11, 19, 10, 0, 0, tzinfo=UTC),
+    )
+    ws_no_ov = t_no_ov / "artifacts" / "workspace"
+    shutil.copytree(agt_no_ov, ws_no_ov)
+
+    t_boom = _write_trial_fixture(
+        job_dir,
+        task_name="r1_3c391_image__10_tools",
+        agent_name="opencode",
+        model_name="nrp/kimi",
+        started_at=datetime(2026, 11, 19, 10, 1, 0, tzinfo=UTC),
+    )
+    ws_boom = t_boom / "artifacts" / "workspace"
+    ws_boom.mkdir(parents=True, exist_ok=True)
+
+    t_ok = _write_trial_fixture(
+        job_dir,
+        task_name="r1_3c391_image__01_skills_casa",
+        agent_name="opencode",
+        model_name="nrp/kimi",
+        started_at=datetime(2026, 11, 19, 10, 2, 0, tzinfo=UTC),
+    )
+    ws_ok = t_ok / "artifacts" / "workspace"
+    shutil.copytree(ref_dir, ws_ok)
+
+    real_diff_workspaces = rb_diff.diff_workspaces
+
+    def _patched_diff_workspaces(agent_dir: Path, ref_d: Path, **kwargs: Any) -> dict[str, Any]:
+        if Path(agent_dir).resolve() == t_boom.resolve():
+            raise RuntimeError("Simulated unexpected CASA failure")
+        return real_diff_workspaces(agent_dir, ref_d, **kwargs)
+
+    monkeypatch.setattr(rb_diff, "diff_workspaces", _patched_diff_workspaces)
+
+    batch = rb_diff.diff_job_directory(job_dir, ref_dir, scratch_root=tmp_path / "sc_batch_res")
+    assert batch["n_written"] == 3
+    assert batch["n_skipped_no_workspace"] == 0
+    assert batch["n_diff_errors"] == 1
+    assert batch["errored_trials"] == [t_boom.name]
+
+    diffs_dir = job_dir / "analysis" / "diffs"
+    p_no_ov = json.loads((diffs_dir / f"{t_no_ov.name}.json").read_text(encoding="utf-8"))
+    assert p_no_ov["images"]["status"] == "no_overlap"
+
+    p_boom = json.loads((diffs_dir / f"{t_boom.name}.json").read_text(encoding="utf-8"))
+    assert p_boom["status"] == "diff_error"
+    assert p_boom["error_type"] == "RuntimeError"
+    assert "Simulated unexpected CASA failure" in p_boom["error"]
+
+    p_ok = json.loads((diffs_dir / f"{t_ok.name}.json").read_text(encoding="utf-8"))
+    assert p_ok["images"]["status"] == "ok"
+    assert p_ok["images"]["ncc"] > 0.99

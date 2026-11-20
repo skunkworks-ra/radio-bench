@@ -2382,82 +2382,95 @@ def diff_images(
         from casatasks import imregrid, imsmooth
 
         same_beam = _beams_nearly_identical(hdr_a0, hdr_r0)
-        if same_beam:
-            work_a = img_a_src
-            work_r = img_r_src
-            cb_maj = float(hdr_r0["b_major_arcsec"])
-            cb_min = float(hdr_r0["b_minor_arcsec"])
-            cb_pa = float(hdr_r0["b_pa_deg"])
-            beam_smoothed = False
-        else:
-            raw_cb_maj, raw_cb_min, cb_pa = _compute_enclosing_common_beam(
-                hdr_a0, hdr_r0, run_scratch
-            )
-            max_cell = max(
-                float(hdr_a0["cell_x_arcsec"]),
-                float(hdr_a0["cell_y_arcsec"]),
-                float(hdr_r0["cell_x_arcsec"]),
-                float(hdr_r0["cell_y_arcsec"]),
-            )
-            pad_arcsec = 2.2 * max_cell
-            major_pad = math.hypot(raw_cb_maj, pad_arcsec)
-            minor_pad = math.hypot(raw_cb_min, pad_arcsec)
-            if major_pad < minor_pad:
-                major_pad, minor_pad = minor_pad, major_pad
-            if abs(major_pad - minor_pad) < 1e-6 * major_pad:
-                major_pad *= 1.0 + 1e-5
+        try:
+            if same_beam:
+                work_a = img_a_src
+                work_r = img_r_src
+                cb_maj = float(hdr_r0["b_major_arcsec"])
+                cb_min = float(hdr_r0["b_minor_arcsec"])
+                cb_pa = float(hdr_r0["b_pa_deg"])
+                beam_smoothed = False
+            else:
+                raw_cb_maj, raw_cb_min, cb_pa = _compute_enclosing_common_beam(
+                    hdr_a0, hdr_r0, run_scratch
+                )
+                max_cell = max(
+                    float(hdr_a0["cell_x_arcsec"]),
+                    float(hdr_a0["cell_y_arcsec"]),
+                    float(hdr_r0["cell_x_arcsec"]),
+                    float(hdr_r0["cell_y_arcsec"]),
+                )
+                pad_arcsec = 2.2 * max_cell
+                major_pad = math.hypot(raw_cb_maj, pad_arcsec)
+                minor_pad = math.hypot(raw_cb_min, pad_arcsec)
+                if major_pad < minor_pad:
+                    major_pad, minor_pad = minor_pad, major_pad
+                if abs(major_pad - minor_pad) < 1e-6 * major_pad:
+                    major_pad *= 1.0 + 1e-5
 
-            smooth_a = run_scratch / "agent_commonbeam.im"
-            smooth_r = run_scratch / "ref_commonbeam.im"
-            imsmooth(
-                imagename=str(img_a_src),
-                kernel="gauss",
-                major=f"{major_pad:.8f}arcsec",
-                minor=f"{minor_pad:.8f}arcsec",
-                pa=f"{cb_pa:.6f}deg",
-                targetres=True,
-                outfile=str(smooth_a),
-                overwrite=True,
-            )
-            imsmooth(
-                imagename=str(img_r_src),
-                kernel="gauss",
-                major=f"{major_pad:.8f}arcsec",
-                minor=f"{minor_pad:.8f}arcsec",
-                pa=f"{cb_pa:.6f}deg",
-                targetres=True,
-                outfile=str(smooth_r),
-                overwrite=True,
-            )
-            work_a = smooth_a
-            work_r = smooth_r
-            cb_maj, cb_min = major_pad, minor_pad
-            beam_smoothed = True
+                smooth_a = run_scratch / "agent_commonbeam.im"
+                smooth_r = run_scratch / "ref_commonbeam.im"
+                imsmooth(
+                    imagename=str(img_a_src),
+                    kernel="gauss",
+                    major=f"{major_pad:.8f}arcsec",
+                    minor=f"{minor_pad:.8f}arcsec",
+                    pa=f"{cb_pa:.6f}deg",
+                    targetres=True,
+                    outfile=str(smooth_a),
+                    overwrite=True,
+                )
+                imsmooth(
+                    imagename=str(img_r_src),
+                    kernel="gauss",
+                    major=f"{major_pad:.8f}arcsec",
+                    minor=f"{minor_pad:.8f}arcsec",
+                    pa=f"{cb_pa:.6f}deg",
+                    targetres=True,
+                    outfile=str(smooth_r),
+                    overwrite=True,
+                )
+                work_a = smooth_a
+                work_r = smooth_r
+                cb_maj, cb_min = major_pad, minor_pad
+                beam_smoothed = True
 
-        need_regrid = _wcs_or_shape_differs(arr_a0.shape, hdr_a0, arr_r0.shape, hdr_r0)
-        pb_a_aligned_path: Path | None = chosen_a.pb_path
-        if need_regrid:
-            regrid_a = run_scratch / "agent_regridded.im"
-            imregrid(
-                imagename=str(work_a),
-                template=str(work_r),
-                output=str(regrid_a),
-                axes=[0, 1],
-                overwrite=True,
+            need_regrid = _wcs_or_shape_differs(arr_a0.shape, hdr_a0, arr_r0.shape, hdr_r0)
+            pb_a_aligned_path: Path | None = None if need_regrid else chosen_a.pb_path
+            if need_regrid:
+                regrid_a = run_scratch / "agent_regridded.im"
+                imregrid(
+                    imagename=str(work_a),
+                    template=str(work_r),
+                    output=str(regrid_a),
+                    axes=[0, 1],
+                    overwrite=True,
+                )
+                work_a = regrid_a
+                if chosen_a.pb_path is not None:
+                    regrid_pba = run_scratch / "agent_pb_regridded.im"
+                    with contextlib.suppress(Exception):
+                        imregrid(
+                            imagename=str(chosen_a.pb_path),
+                            template=str(work_r),
+                            output=str(regrid_pba),
+                            axes=[0, 1],
+                            overwrite=True,
+                        )
+                        if (regrid_pba / "table.dat").is_file():
+                            pb_a_aligned_path = regrid_pba
+        except Exception as exc:
+            err_msg = str(exc)
+            status = "no_overlap" if "no overlap" in err_msg.lower() else "alignment_failed"
+            return sanitize_json_tree(
+                {
+                    "status": status,
+                    "product_compared": product_kind,
+                    "agent_image": img_a_src.name,
+                    "ref_image": img_r_src.name,
+                    "error": err_msg,
+                }
             )
-            work_a = regrid_a
-            if chosen_a.pb_path is not None:
-                regrid_pba = run_scratch / "agent_pb_regridded.im"
-                with contextlib.suppress(Exception):
-                    imregrid(
-                        imagename=str(chosen_a.pb_path),
-                        template=str(work_r),
-                        output=str(regrid_pba),
-                        axes=[0, 1],
-                        overwrite=True,
-                    )
-                    if (regrid_pba / "table.dat").is_file():
-                        pb_a_aligned_path = regrid_pba
 
         try:
             arr_a, msk_a, _ = read_image_2d(work_a)
@@ -2708,6 +2721,7 @@ def diff_job_directory(
 
     written: list[str] = []
     skipped_no_workspace: list[str] = []
+    errored_trials: list[str] = []
 
     for _parent_job, tdir in discover_trial_dirs([jdir]):
         res = _read_json_dict(tdir / "result.json")
@@ -2740,7 +2754,18 @@ def diff_job_directory(
                 continue
             skipped_no_workspace.append(tname)
             continue
-        diff_payload = diff_workspaces(tdir, rdir, scratch_root=scratch_root)
+        try:
+            diff_payload = diff_workspaces(tdir, rdir, scratch_root=scratch_root)
+        except Exception as exc:
+            diff_payload = {
+                "schema_version": "0.2",
+                "status": "diff_error",
+                "agent_workspace": str(ws_cand),
+                "ref_dir": str(rdir),
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+            errored_trials.append(tname)
         diff_payload["trial_name"] = tname
         out_path = diffs_dir / f"{tname}.json"
         _atomic_write_json(out_path, diff_payload)
@@ -2753,8 +2778,10 @@ def diff_job_directory(
             "diffs_dir": str(diffs_dir),
             "n_written": len(written),
             "n_skipped_no_workspace": len(skipped_no_workspace),
+            "n_diff_errors": len(errored_trials),
             "written_files": written,
             "skipped_trials": skipped_no_workspace,
+            "errored_trials": errored_trials,
         }
     )
 
