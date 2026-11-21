@@ -744,6 +744,9 @@ class TestSuiteR3C391Checkpoints:
             assert task_gt["tolerances"]["pass_reward_min"] == pytest.approx(0.85)
 
         # Verify staged precal_masks.npz alongside ground_truth.json with relative filename
+        canonical_masks_bytes = (
+            CHECKPOINTS_3C391_ROOT / "post_precal" / "precal_masks.npz"
+        ).read_bytes()
         for mask_task_id in ("r1_3c391_precal", "r2_3c391_e2e"):
             task_dir = CHECKPOINTS_3C391_ROOT / mask_task_id
             task_gt = _load_finite_json(task_dir / "ground_truth.json")
@@ -752,6 +755,7 @@ class TestSuiteR3C391Checkpoints:
             assert not Path(masks_rel).is_absolute()
             assert "/" not in masks_rel
             _load_finite_npz(task_dir / masks_rel)
+            assert (task_dir / masks_rel).read_bytes() == canonical_masks_bytes
 
     def test_suite_r_raw_checkpoint_matches_pristine(self) -> None:
         raw_ms = CHECKPOINTS_3C391_ROOT / "raw" / "input.ms"
@@ -807,6 +811,8 @@ class TestSuiteR3C391Checkpoints:
             flag_row = tb.getcol("FLAG_ROW")
             ant1 = tb.getcol("ANTENNA1")
             ant2 = tb.getcol("ANTENNA2")
+            scans = tb.getcol("SCAN_NUMBER")
+            times = tb.getcol("TIME")
 
             with _query_table(tb, "FIELD_ID == 0 && !FLAG_ROW") as sub_j1331:
                 j1331_model = sub_j1331.getcol("MODEL_DATA")
@@ -837,14 +843,31 @@ class TestSuiteR3C391Checkpoints:
         shape_2d = tuple(int(x) for x in masks["shape_2d"])
         assert shape_2d == (64, 845_379)
         must_flag_2d = np.unpackbits(masks["must_flag_2d"], axis=1)[:, : shape_2d[1]].astype(bool)
+        neutral_2d = np.unpackbits(masks["neutral_2d"], axis=1)[:, : shape_2d[1]].astype(bool)
         clean_2d = np.unpackbits(masks["clean_2d"], axis=1)[:, : shape_2d[1]].astype(bool)
         assert not np.any(must_flag_2d & clean_2d)
+        assert not np.any(must_flag_2d & neutral_2d)
+        assert not np.any(neutral_2d & clean_2d)
+        assert np.all(must_flag_2d | neutral_2d | clean_2d)
+
+        # Verify 1st scan integration (dt == 0s) is in must_flag while 2nd integration
+        # (0 < dt <= 10s, non-scan1) lives in neutral_2d so both 5s (1-int) and 10s (2-int)
+        # quacking on this 10s-integration MS are accepted fairly.
+        scan_t0 = {int(s): float(times[scans == s].min()) for s in np.unique(scans)}
+        dt_scan = np.array(
+            [float(ti) - scan_t0[int(si)] for ti, si in zip(times, scans, strict=True)]
+        )
+        ea13_rows = (ant1 == 10) | (ant2 == 10)
+        first_int_non_ea13 = (dt_scan <= 0.1) & (~ea13_rows)
+        second_int_non_ea13 = (dt_scan > 0.1) & (dt_scan <= 10.1) & (scans != 1) & (~ea13_rows)
+        assert float(np.mean(must_flag_2d[:, first_int_non_ea13])) > 0.99
+        assert float(np.mean(neutral_2d[:, second_int_non_ea13])) > 0.98
+        assert float(np.mean(clean_2d[:, second_int_non_ea13])) == 0.0
 
         chan_flagged = np.any(flag, axis=0) | flag_row[np.newaxis, :]
         assert float(np.mean(chan_flagged[must_flag_2d])) >= 0.95
         assert float(np.mean(chan_flagged[clean_2d])) < 0.05
 
-        ea13_rows = (ant1 == 10) | (ant2 == 10)
         assert float(np.mean(flag[:, :, ea13_rows])) < 0.50
 
         _assert_unlocked(post_precal_ms)

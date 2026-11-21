@@ -625,12 +625,17 @@ def build_post_precal_checkpoint(
     if "CALIBRATE_PHASE#ON_SOURCE" in f2_intents or "OBSERVE_TARGET#ON_SOURCE" not in f2_intents:
         raise RuntimeError(f"Unexpected intents on mosaic target Field 2: {f2_intents}")
 
-    # 2. Deterministic preflagging (scan 1, quack 10s, shadow, clipzeros on !ea13)
+    # 2. Deterministic preflagging:
+    #    - 1st integration quack (5.0s on 10s integrations), scan 1, shadow, and clipzeros(!ea13)
+    #      are mandatory (must_flag).
+    #    - 2nd integration quack (quackinterval=10.0s, matching the VLA 3C391 tutorial) is applied
+    #      to the golden checkpoint but placed in neutral_2d so both 1-int (5s) and 2-int (10s)
+    #      quacking are graded fairly with zero recall or FP penalty.
     casatasks.flagdata(vis=str(post_precal_ms), mode="manual", scan="1", flagbackup=False)
     casatasks.flagdata(
         vis=str(post_precal_ms),
         mode="quack",
-        quackinterval=10.0,
+        quackinterval=5.0,
         quackmode="beg",
         flagbackup=False,
     )
@@ -640,6 +645,17 @@ def build_post_precal_checkpoint(
         mode="clip",
         clipzeros=True,
         antenna=f"!{DEAD_ANTENNA_NAME}",
+        flagbackup=False,
+    )
+
+    with open_table(post_precal_ms, nomodify=True) as tb:
+        must_deterministic_preflag = tb.getcol("FLAG")
+
+    casatasks.flagdata(
+        vis=str(post_precal_ms),
+        mode="quack",
+        quackinterval=10.0,
+        quackmode="beg",
         flagbackup=False,
     )
 
@@ -797,19 +813,24 @@ def build_post_precal_checkpoint(
 
     # Build precal evaluation masks (64, n_rows)
     raw_chan_flag = np.any(raw_flag, axis=0)
+    must_det_chan_flag = np.any(must_deterministic_preflag, axis=0)
     det_chan_flag = np.any(deterministic_preflag, axis=0)
+    second_quack_chan_flag = det_chan_flag & (~must_det_chan_flag)
     golden_rfi_chan_flag = np.any(golden_precal_flag, axis=0)
-    strong_chan_flag = golden_rfi_chan_flag & strong_amp_outlier
-    border_chan_flag = golden_rfi_chan_flag | mild_amp_outlier
+    rfi_only_chan_flag = golden_rfi_chan_flag & (~det_chan_flag)
+    strong_chan_flag = rfi_only_chan_flag & strong_amp_outlier
+    border_chan_flag = rfi_only_chan_flag | mild_amp_outlier
 
     ea13_mask_2d = np.broadcast_to(ea13_rows[np.newaxis, :], raw_chan_flag.shape)
     edge_chan_mask_2d = np.zeros_like(raw_chan_flag, dtype=bool)
     edge_chan_mask_2d[:2, :] = True
     edge_chan_mask_2d[-2:, :] = True
 
-    must_flag_2d = (~raw_chan_flag) & (det_chan_flag | strong_chan_flag) & (~ea13_mask_2d)
+    must_flag_2d = (~raw_chan_flag) & (must_det_chan_flag | strong_chan_flag) & (~ea13_mask_2d)
     neutral_2d = (
-        raw_chan_flag | ea13_mask_2d | edge_chan_mask_2d | (border_chan_flag & (~must_flag_2d))
+        raw_chan_flag
+        | ea13_mask_2d
+        | ((edge_chan_mask_2d | second_quack_chan_flag | border_chan_flag) & (~must_flag_2d))
     )
     clean_2d = (~raw_chan_flag) & (~must_flag_2d) & (~neutral_2d)
 
