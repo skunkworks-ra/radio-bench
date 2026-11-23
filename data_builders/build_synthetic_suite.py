@@ -1360,6 +1360,7 @@ def build_synthetic_suite(
             cal_checkpoint_ms=s1_cal_ms,
             masks_npz=masks_npz,
         )
+        stage_s1_calibrators_ms(s1_cal_ms, out_dir / "s1_calibrate" / "calibrators.ms")
         shutil.copy2(target_vis_npz, out_dir / "s1_calibrate" / "true_target_vis.npz")
 
         s1_img_ms = out_dir / "s1_image" / "input.ms"
