@@ -48,6 +48,7 @@ from radio_bench.export_skills import (
     PYTHON_FENCE_RE,
     RADIO_ANALYST_SHA,
     RAW_TRANSLATION_NOTE,
+    ensure_skill_frontmatter_name,
 )
 from radio_bench.podman_env import ensure_docker_compose_plugin
 from radio_bench.render_jobs import render_preset_job
@@ -936,3 +937,48 @@ def test_compile_variant_threads_engine_and_platform_into_both_compose_files(
     )
     assert p_env["services"]["main"]["network_mode"] == "pasta"
     assert "platform" not in p_env["services"]["main"]
+
+
+def test_skill_frontmatter_name_helper_and_exported_skill_discovery() -> None:
+    """Verify ensure_skill_frontmatter_name and frontmatter name: presence across raw and casa exports."""
+    already_named = "---\nname: report\ndescription: Build report\n---\n\n# Report\n"
+    assert ensure_skill_frontmatter_name(already_named, "report") == already_named
+
+    missing_name = "---\ndescription: Radio interferometry skill\n---\n\n# Radio\n"
+    injected = ensure_skill_frontmatter_name(missing_name, "radio-interferometry")
+    assert injected == (
+        "---\nname: radio-interferometry\ndescription: Radio interferometry skill\n---\n\n# Radio\n"
+    )
+
+    no_frontmatter = "# Standalone Skill\n\nBody text.\n"
+    prepended = ensure_skill_frontmatter_name(no_frontmatter, "casa-docs")
+    assert prepended == "---\nname: casa-docs\n---\n\n# Standalone Skill\n\nBody text.\n"
+
+    indented_name = (
+        "---\ndescription: >\n  Check field:\n  name: primary calibrator\n---\n\n# Body\n"
+    )
+    injected_nested = ensure_skill_frontmatter_name(indented_name, "inspect")
+    assert injected_nested.startswith("---\nname: inspect\ndescription: >\n")
+
+    # Every exported */SKILL.md in raw, orchestrated_skills, and casa must parse with a valid `name:`.
+    for mode_rel in ("raw/skills", "orchestrated_skills", "casa/skills"):
+        tree = DEFAULT_EXPORT_DIR / mode_rel
+        skill_mds = sorted(tree.glob("*/SKILL.md"))
+        assert skill_mds, f"No SKILL.md files found under {tree}"
+        for skill_md in skill_mds:
+            text = skill_md.read_text(encoding="utf-8")
+            assert text.startswith("---\n"), f"Missing YAML frontmatter in {skill_md}"
+            fm_block = text.split("\n---\n", 1)[0].removeprefix("---\n")
+            parsed = yaml.safe_load(fm_block)
+            assert isinstance(parsed, dict), f"Invalid frontmatter YAML in {skill_md}"
+            assert parsed.get("name") == skill_md.parent.name, (
+                f"Expected name={skill_md.parent.name!r} in {skill_md}, got {parsed.get('name')!r}"
+            )
+
+        # Sibling reference markdown files must NOT have frontmatter injected.
+        sibling_mds = [p for p in sorted(tree.rglob("*.md")) if p.name != "SKILL.md"]
+        assert sibling_mds, f"Expected sibling reference markdown files under {tree}"
+        for sib in sibling_mds:
+            assert not sib.read_text(encoding="utf-8").startswith("---\nname:"), (
+                f"Unexpected frontmatter injected into non-SKILL.md file {sib}"
+            )

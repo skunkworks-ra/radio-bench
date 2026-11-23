@@ -40,6 +40,10 @@ def __getattr__(name: str) -> Any:
 MS_TOKEN_RE = re.compile(r"\bms_[a-z0-9_]+\b")
 PYTHON_FENCE_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
 FORBIDDEN_DASHES = ("\u2014", "\u2013")
+_FRONTMATTER_RE = re.compile(
+    r"\A---[ \t]*(\r?\n)(.*?)^---[ \t]*(?:\r?\n|\Z)", re.DOTALL | re.MULTILINE
+)
+_FRONTMATTER_NAME_RE = re.compile(r"^name[ \t]*:", re.MULTILINE)
 
 # Skills excluded from all single-agent skill directories (`01_skills_raw`, `01_skills_casa`, `11_full`).
 SINGLE_AGENT_EXCLUDED_SKILLS: frozenset[str] = frozenset(
@@ -117,6 +121,19 @@ def _strip_plugin_mcp_prefixes(text: str) -> str:
     return text.replace("mcp__plugin_radio-analyst_", "mcp__")
 
 
+def ensure_skill_frontmatter_name(content: str, skill_name: str) -> str:
+    """Ensure a ``SKILL.md`` file has a YAML frontmatter ``name: <skill_name>`` line."""
+    match = _FRONTMATTER_RE.match(content)
+    if match is None:
+        return f"---\nname: {skill_name}\n---\n\n{content}"
+    nl = match.group(1)
+    fm_body = match.group(2)
+    if _FRONTMATTER_NAME_RE.search(fm_body) is not None:
+        return content
+    insert_pos = match.end(1)
+    return f"{content[:insert_pos]}name: {skill_name}{nl}{content[insert_pos:]}"
+
+
 def _verify_pinned_commit(repo: Path, sha: str) -> str:
     full_sha, _ = resolve_git_ref(repo, sha)
     return full_sha
@@ -174,6 +191,8 @@ def _extract_filtered_skills(
                         txt = txt.replace(
                             "radio-analyst:radio-interferometry", "radio-interferometry"
                         )
+                    if rel_path.name == "SKILL.md" and len(rel_path.parts) >= 2:
+                        txt = ensure_skill_frontmatter_name(txt, rel_path.parent.name)
                     out_path.write_text(txt, encoding="utf-8")
                 else:
                     out_path.write_bytes(raw_bytes)
@@ -1553,6 +1572,15 @@ def validate_exported_tree(export_dir: Path) -> dict[str, object]:
         if "mcp__plugin_radio-analyst_" in txt:
             raise AssertionError(f"Stale plugin MCP prefix in {path}")
 
+    for skills_tree in (raw_skills_dir, orch_skills_dir, casa_skills_dir):
+        for skill_md in sorted(skills_tree.rglob("SKILL.md")):
+            if not skill_md.is_file():
+                continue
+            skill_text = skill_md.read_text(encoding="utf-8")
+            fm_match = _FRONTMATTER_RE.match(skill_text)
+            if fm_match is None or _FRONTMATTER_NAME_RE.search(fm_match.group(2)) is None:
+                raise AssertionError(f"Missing frontmatter name: in {skill_md}")
+
     for doc_name in ("CLAUDE.md", "AGENTS.md"):
         raw_doc = (export_dir / "raw" / doc_name).read_text(encoding="utf-8")
         if RAW_TRANSLATION_NOTE not in raw_doc:
@@ -1718,8 +1746,11 @@ def export_skills(
 
     # 3. Emit dataset-blind CASA-native steelman skill tree under casa/skills/.
     casa_skills_root = target_dir / "casa" / "skills"
-    for rel_path, content in _build_casa_skill_files().items():
+    for rel_path_str, content in _build_casa_skill_files().items():
         clean_content = _sanitize_dashes(content)
+        rel_path = Path(rel_path_str)
+        if rel_path.name == "SKILL.md" and len(rel_path.parts) >= 2:
+            clean_content = ensure_skill_frontmatter_name(clean_content, rel_path.parent.name)
         target = casa_skills_root / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(clean_content, encoding="utf-8")

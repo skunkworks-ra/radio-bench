@@ -32,6 +32,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
         "numpy>=1.26" \
         "astropy>=6.0" \
         "scipy>=1.11" \
+        "bdsf>=1.14" \
         "pandas>=2.1" \
         "matplotlib>=3.8" \
         "pillow>=10.0" \
@@ -61,7 +62,7 @@ RUN printf 'measurespath = "/opt/casa-data"\ndatapath = ["/opt/casa-data"]\ndata
     && cp /etc/casa/config.py /home/analyst/.casa/config.py \
     && chown -R analyst:analyst /home/analyst/.casa /workspace \
     && chmod -R a+rX /etc/casa \
-    && cd /var/tmp && /opt/casa-venv/bin/python -c "import casatools, casatasks; me = casatools.measures(); assert me.observatory('VLA')" && rm -f /var/tmp/casa-*.log
+    && cd /var/tmp && /opt/casa-venv/bin/python -c "import bdsf, casatools, casatasks; me = casatools.measures(); assert me.observatory('VLA')" && rm -f /var/tmp/casa-*.log
 
 # Stage 2: Hard-isolated agent-base image (zero ms_inspect/ms_modify/ms_create/radio_bench code).
 FROM localhost/radio-bench-casa-base:latest AS agent-base

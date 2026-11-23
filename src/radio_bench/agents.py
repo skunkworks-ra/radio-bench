@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import re
 from typing import TYPE_CHECKING
 
 from harbor.agents.installed.base import (
@@ -22,11 +23,54 @@ if TYPE_CHECKING:
 
 
 class RadioBenchOpenCode(OpenCode):
-    """OpenCode agent wrapper with decoder-collapse detection and accurate provider retry mapping.
+    """OpenCode agent wrapper with fast pre-installed check, decoder-collapse detection, and retry mapping.
 
     Preserves ``OpenCode.name() == "opencode"`` so ``result.json["agent_info"]["name"]``
     and downstream analysis/pricing remain identical to stock Harbor OpenCode.
     """
+
+    async def install(self, environment: BaseEnvironment) -> None:
+        """Skip slow runtime nvm/npm installation when matching ``opencode`` and ``stdbuf`` exist."""
+        check_cmd = (
+            "[ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh; "
+            "command -v opencode >/dev/null 2>&1 && "
+            "command -v stdbuf >/dev/null 2>&1 && "
+            "opencode --version"
+        )
+        try:
+            res = await self.exec_as_agent(environment, command=check_cmd)
+        except (NonZeroAgentExitCodeError, RuntimeError) as exc:
+            self.logger.debug(
+                "Pre-installed opencode check failed (%s); falling back to Harbor install.",
+                exc,
+            )
+            await super().install(environment)
+            return
+
+        stdout = getattr(res, "stdout", None) or ""
+        non_empty = [line.strip() for line in stdout.splitlines() if line.strip()]
+        installed_version = non_empty[-1] if non_empty else ""
+        expected_version = str(self._version).strip().lstrip("v") if self._version else ""
+
+        version_matched = bool(installed_version) and (
+            not expected_version
+            or bool(re.search(rf"(?:^|[\s/v]){re.escape(expected_version)}$", installed_version))
+        )
+        if version_matched:
+            self.logger.info(
+                "Using pre-installed opencode %s (expected %s); skipping runtime install.",
+                installed_version,
+                expected_version or "any",
+            )
+            return
+
+        self.logger.info(
+            "Pre-installed opencode version mismatch (found %r, expected %r); "
+            "falling back to Harbor install.",
+            installed_version,
+            expected_version,
+        )
+        await super().install(environment)
 
     async def run(
         self,
