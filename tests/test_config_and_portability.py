@@ -1988,3 +1988,166 @@ def test_radiobench_opencode_install_preinstalled_fast_path(
     )
     asyncio.run(ag_unpinned.install(SimpleNamespace()))
     assert super_calls == ["inst_mismatch", "inst_missing", "inst_suffix", "inst_unpinned"]
+
+
+def test_radio_bench_opencode_rate_limit_in_place_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify HTTP 429 waits out backoff/retry-after and resumes the same OpenCode session in-place."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from harbor.agents.installed.base import ApiRateLimitError, NonZeroAgentExitCodeError
+    from harbor.agents.installed.opencode import OpenCode
+    from harbor.models.agent.context import AgentContext
+
+    import radio_bench.agents as rb_agents
+    from radio_bench.agents import RadioBenchOpenCode
+
+    monkeypatch.setenv("TACC_API_KEY", "dummy-tacc-key")
+
+    err429_event = json.dumps(
+        {
+            "type": "error",
+            "sessionID": "ses_429_test",
+            "error": {
+                "name": "APIError",
+                "data": {
+                    "statusCode": 429,
+                    "message": "Too Many Requests",
+                    "responseHeaders": {"retry-after": "45"},
+                },
+            },
+        }
+    )
+    ok_recovery_events = (
+        json.dumps({"type": "step_start", "sessionID": "ses_429_test"})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "text",
+                "sessionID": "ses_429_test",
+                "part": {"text": "Resumed and completed."},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "step_finish",
+                "sessionID": "ses_429_test",
+                "part": {"reason": "stop", "tokens": {"input": 100, "output": 20, "total": 120}},
+            }
+        )
+    )
+
+    # 1. Recovers cleanly on the first in-place resume, respecting retry-after > base backoff
+    sleeps: list[float] = []
+    resume_cmds: list[str] = []
+    remote_log_content = [err429_event + "\n"]
+
+    async def _fake_sleep(sec: float) -> None:
+        sleeps.append(sec)
+
+    monkeypatch.setattr(rb_agents.asyncio, "sleep", _fake_sleep)
+
+    async def _fail_initial_429(
+        self: Any, instruction: str, environment: Any, context: Any
+    ) -> None:
+        raise NonZeroAgentExitCodeError("OpenCode emitted error event(s): Too Many Requests")
+
+    monkeypatch.setattr(OpenCode, "run", _fail_initial_429)
+
+    ag_rec = RadioBenchOpenCode(
+        logs_dir=tmp_path / "logs_429_recover",
+        model_name="tacc/kimi",
+        base_url="https://example.org/v1",
+        model_api_key_name="TACC_API_KEY",
+        model_api_format="openai_chat_completions",
+        version="1.19.5",
+        rate_limit_max_resumes=3,
+        rate_limit_base_wait_sec=10.0,
+        rate_limit_max_wait_sec=60.0,
+    )
+
+    async def _exec_recover(self: Any, environment: Any, command: str, **_kw: Any) -> Any:
+        resume_cmds.append(command)
+        remote_log_content[0] += ok_recovery_events + "\n"
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ag_rec, "exec_as_agent", _exec_recover.__get__(ag_rec, RadioBenchOpenCode))
+
+    async def _dl_recover(src: str, dst: Path) -> None:
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_text(remote_log_content[0], encoding="utf-8")
+
+    asyncio.run(ag_rec.run("do task", SimpleNamespace(download_file=_dl_recover), AgentContext()))
+    assert sleeps == [45.0]
+    assert len(resume_cmds) == 1
+    assert "--session ses_429_test" in resume_cmds[0]
+    assert "tee -a" in resume_cmds[0]
+
+    # 2. Exhausting all in-place resumes raises ApiRateLimitError with exponential backoff
+    sleeps_ex: list[float] = []
+    monkeypatch.setattr(rb_agents.asyncio, "sleep", lambda s: _record_sleep(sleeps_ex, s))
+
+    async def _record_sleep(bucket: list[float], sec: float) -> None:
+        bucket.append(sec)
+
+    err429_short = (
+        json.dumps(
+            {
+                "type": "error",
+                "sessionID": "ses_429_exhaust",
+                "error": {
+                    "data": {
+                        "statusCode": 429,
+                        "message": "Too Many Requests",
+                        "responseHeaders": {"retry-after": "1"},
+                    }
+                },
+            }
+        )
+        + "\n"
+    )
+    ag_ex = RadioBenchOpenCode(
+        logs_dir=tmp_path / "logs_429_exhaust",
+        model_name="tacc/kimi",
+        base_url="https://example.org/v1",
+        model_api_key_name="TACC_API_KEY",
+        model_api_format="openai_chat_completions",
+        version="1.19.5",
+        rate_limit_max_resumes=3,
+        rate_limit_base_wait_sec=10.0,
+        rate_limit_max_wait_sec=25.0,
+    )
+    ex_cmds: list[str] = []
+
+    async def _exec_still_429(self: Any, environment: Any, command: str, **_kw: Any) -> Any:
+        ex_cmds.append(command)
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ag_ex, "exec_as_agent", _exec_still_429.__get__(ag_ex, RadioBenchOpenCode))
+
+    async def _dl_always_429(src: str, dst: Path) -> None:
+        Path(dst).parent.mkdir(parents=True, exist_ok=True)
+        Path(dst).write_text(err429_short, encoding="utf-8")
+
+    with pytest.raises(ApiRateLimitError, match="HTTP 429"):
+        asyncio.run(
+            ag_ex.run("do task", SimpleNamespace(download_file=_dl_always_429), AgentContext())
+        )
+    assert len(ex_cmds) == 3
+    assert sleeps_ex == [10.0, 20.0, 25.0]
+
+
+def test_workspace_docs_include_explicit_skill_mandates() -> None:
+    """Verify exported workspace guides explicitly require loading skills for every skill-enabled arm."""
+    from radio_bench.export_skills import MS_TOKEN_RE, _build_workspace_docs
+
+    docs = _build_workspace_docs()
+    assert 'skill(name="radio-interferometry")' in docs["raw"]
+    assert 'skill(name="radio-interferometry")' in docs["casa"]
+    assert 'skill(name="radio-interferometry")' in docs["full"]
+    assert 'skill(name="orchestrate")' in docs["orchestrated"]
+    assert not MS_TOKEN_RE.findall(docs["casa"])

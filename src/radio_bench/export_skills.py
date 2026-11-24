@@ -298,6 +298,8 @@ def _dedent_python_fences(markdown: str) -> str:
 def _build_workspace_docs() -> dict[str, str]:
     raw_doc = (
         "# CASA Radio Reduction Workspace\n\n"
+        '- **First action (mandatory):** Call `skill(name="radio-interferometry")` before running '
+        "any inspection, flagging, calibration, or imaging step, and follow its workflow files for each stage.\n"
         "- Working directory: `/workspace`\n"
         "- CASA 6.7.6.14 Python interpreter (`casatools`, `casatasks`, `numpy`, `astropy`, `scipy`): "
         "`/opt/casa-venv/bin/python`\n"
@@ -308,6 +310,8 @@ def _build_workspace_docs() -> dict[str, str]:
     )
     casa_doc = (
         "# CASA Radio Reduction Workspace\n\n"
+        '- **First action (mandatory):** Call `skill(name="radio-interferometry")` before running '
+        "any inspection, flagging, calibration, or imaging step, and follow its CASA workflow files for each stage.\n"
         "- Working directory: `/workspace`\n"
         "- CASA 6.7.6.14 Python interpreter (`casatools`, `casatasks`, `numpy`, `astropy`, `scipy`): "
         "`/opt/casa-venv/bin/python`\n"
@@ -318,6 +322,10 @@ def _build_workspace_docs() -> dict[str, str]:
     )
     full_doc = (
         "# CASA Radio Reduction Workspace\n\n"
+        '- **First action (mandatory):** Call `skill(name="radio-interferometry")` BEFORE calling '
+        "any `ms_*` tool or running CASA commands. Follow the playbook and read the stage workflow file "
+        "(`10-precal-workflow.md`, `07-calibration-execution.md`, `13-postcal-rfi-flagging.md`, "
+        "`11-imaging.md`) before executing each stage.\n"
         "- Working directory: `/workspace`\n"
         "- CASA 6.7.6.14 Python interpreter: `/opt/casa-venv/bin/python`\n"
         "- Bounded-wait script runner for `execute=False` tool scripts: "
@@ -327,15 +335,17 @@ def _build_workspace_docs() -> dict[str, str]:
     )
     orchestrated_doc = (
         "# Orchestrated CASA Radio Reduction Workspace\n\n"
+        '- **First action (mandatory):** Call `skill(name="orchestrate")` as your VERY FIRST tool call '
+        "before inspecting or modifying `/workspace/input.ms`. Do NOT ad-lib reduction stages directly with "
+        "`ms_*` tools from the coordinator -- delegate each reduction stage (`inspect` -> `precal` -> "
+        "`calibrate` -> `postcal` -> `image`) via `task` to its dedicated `*-stage` subagent and verify "
+        "every stage gate before advancing.\n"
         "- Working directory: `/workspace`\n"
         "- Python interpreter (`python:` for stage handoffs): `/opt/casa-venv/bin/python`\n"
         "- Bounded-wait script runner: `/usr/local/bin/run-step.sh /opt/casa-venv/bin/python <script_path> --wait 240` "
         "(also available at `/opt/radio-tools/scripts/plugin/run-step.sh`)\n"
         "- Stage subagents (`inspect-stage`, `precal-stage`, `calibrate-stage`, `postcal-stage`, "
         "`selfcal-stage`, `image-stage`) are pre-staged in `.claude/agents/` and `.opencode/agents/`.\n"
-        "- Use the `orchestrate` skill to delegate each reduction stage (`inspect` -> `precal` -> `calibrate` "
-        "-> optional `postcal` -> `image`) to its dedicated `*-stage` subagent and verify every stage gate "
-        "before advancing.\n"
     )
     return {
         "raw": raw_doc,
@@ -1585,9 +1595,20 @@ def validate_exported_tree(export_dir: Path) -> dict[str, object]:
         raw_doc = (export_dir / "raw" / doc_name).read_text(encoding="utf-8")
         if RAW_TRANSLATION_NOTE not in raw_doc:
             raise AssertionError(f"Missing 1-line translation note in raw/{doc_name}")
+        if 'skill(name="radio-interferometry")' not in raw_doc:
+            raise AssertionError(f"Missing radio-interferometry skill mandate in raw/{doc_name}")
         for dash in FORBIDDEN_DASHES:
             if dash in raw_doc:
                 raise AssertionError(f"Forbidden em/en dash in raw/{doc_name}")
+        full_doc = (export_dir / "full" / doc_name).read_text(encoding="utf-8")
+        if 'skill(name="radio-interferometry")' not in full_doc:
+            raise AssertionError(f"Missing radio-interferometry skill mandate in full/{doc_name}")
+        orch_doc = (export_dir / "orchestrated" / doc_name).read_text(encoding="utf-8")
+        if 'skill(name="orchestrate")' not in orch_doc:
+            raise AssertionError(f"Missing orchestrate skill mandate in orchestrated/{doc_name}")
+        casa_doc = (export_dir / "casa" / doc_name).read_text(encoding="utf-8")
+        if 'skill(name="radio-interferometry")' not in casa_doc:
+            raise AssertionError(f"Missing radio-interferometry skill mandate in casa/{doc_name}")
 
     # 2. CASA tree must have ZERO ms_* tokens, ZERO em/en dashes, ZERO dataset/eval leaks, and valid Python blocks.
     casa_file_count = 0
