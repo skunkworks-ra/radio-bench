@@ -37,6 +37,7 @@ FLUX_CAL = "3C147"
 TARGET = "3C129"
 REFANT = "ea09"
 DEAD_ANTENNAS = ["ea19"]
+SUITE_ID = "vla_3c129_pband"
 MISSING_STATIONS = ["ea04"]
 GUIDE_DUMMY_SCANS = "1~2"
 EDGE_CHANS = 2
@@ -79,13 +80,13 @@ TOL_CALIBRATE = {
     "target_unflagged_rows_min": 0.40,
     "target_unflagged_rows_max": 0.98,
     "bp_channel_phase_rms_max_deg": 5.0,
-    "verifier_tclean_dr_min": 150.0,
+    "verifier_tclean_dr_min": None,  # 0.70 x verifier DR on post_calibrate, set at build
 }
 TOL_IMAGE = {
     "pixels_per_beam_min": 2.5,
     "pixels_per_beam_max": 6.0,
     "off_source_residual_rms_min_jy_per_beam": 0.00004,
-    "dynamic_range_min": 150.0,
+    "dynamic_range_min": None,  # 0.55 x reference-image DR, set at build
     "negative_model_bowl_ratio_max": 0.12,
 }
 GUIDE_TRUTH = {
@@ -884,6 +885,33 @@ def main() -> None:
     write_json(out_root / "image_summary.json", img_summary)
     summary["image"] = img_summary
     print(f"[4/5] reference image {img_summary}", flush=True)
+
+    # 4b. DR floors measured with the grader's own extractors (24A-376 factors 0.55 / 0.70)
+    if args.skip_reference_image:
+        raise SystemExit("DR floors need the reference image; rerun without --skip-reference-image")
+    import tomllib
+
+    from radio_bench.grading.extractors.calibrate import extract_calibrate
+    from radio_bench.grading.extractors.image import extract_image
+    from radio_bench.grading.schema import SuiteManifest
+
+    manifest = SuiteManifest.model_validate(
+        tomllib.loads(
+            (Path(__file__).parent / "suites" / SUITE_ID / "suite.toml").read_text(encoding="utf-8")
+        )
+    )
+    img_obs, _ = extract_image(
+        out_root / "reference_image", manifest.to_extract_config(TASK_IDS["image"])
+    )
+    ref_dr = img_obs["image.dynamic_range"].value
+    cal_obs, _ = extract_calibrate(cal_dir, manifest.to_extract_config(TASK_IDS["calibrate"]))
+    ver_dr = cal_obs["cal.verifier_tclean_dr"].value
+    if not ref_dr or not ver_dr:
+        raise SystemExit(f"DR floor measurement failed: ref_dr={ref_dr} ver_dr={ver_dr}")
+    TOL_IMAGE["dynamic_range_min"] = round(0.55 * float(ref_dr), 1)
+    TOL_CALIBRATE["verifier_tclean_dr_min"] = round(0.70 * float(ver_dr), 1)
+    summary["dr_floors"] = {"reference_dr": ref_dr, "verifier_dr": ver_dr}
+    print(f"[4b/5] DR floors: ref_dr={ref_dr} ver_dr={ver_dr}", flush=True)
 
     # 5. per-task ground truth (targets: GUIDE constants, PRODUCT measurements, CONVENTION tolerances)
     inspect_gt = {
