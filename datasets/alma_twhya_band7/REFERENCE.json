@@ -1,0 +1,244 @@
+{
+  "suite_id": "alma_twhya_band7",
+  "split": "reference",
+  "quote_source_note": "Quotes are copied from the page wikitext (index.php?title=<page>&action=raw, fetched 2026-11-24); arcsec appears as \" and degrees as the degree sign on the page.",
+  "guide_pages": {
+    "imaging": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+    "selfcal": "https://casaguides.nrao.edu/index.php/First_Look_at_Self_Calibration_CASA_6.6.6"
+  },
+  "targets": [
+    {
+      "name": "guide_residual_rms_no_selfcal_jy_per_beam",
+      "value": 0.0066,
+      "used_by": "tolerances.off_source_residual_rms_max_jy_per_beam (x 2.0)",
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Self_Calibration_CASA_6.6.6",
+      "section": "Creating a Model for Self Calibration in tclean (Figure 1 caption)",
+      "quote": "Figure 1: Residuals from the first tclean after final cycle of cleaning. Image Statistics: Beam 0.560\", 0.416\", -55.974°, RMS = 6.6 mJy",
+      "status": "GUIDE"
+    },
+    {
+      "name": "guide_peak_jy_per_beam",
+      "value": null,
+      "used_by": "nothing: no dynamic_range target can be set",
+      "url": null,
+      "section": null,
+      "quote": null,
+      "status": "GUIDE",
+      "open": "neither guide page publishes a peak or dynamic range, and no reference image is shipped"
+    }
+  ],
+  "informational_guide_values": [
+    {
+      "name": "guide_rms_imaging_approx_jy_per_beam",
+      "value": 0.007,
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+      "section": "Non-interactive clean",
+      "quote": "We see something like ~7 mJy/beam.",
+      "status": "GUIDE"
+    },
+    {
+      "name": "guide_beam_no_selfcal_arcsec_and_pa_deg",
+      "value": [0.560, 0.416, -55.974],
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Self_Calibration_CASA_6.6.6",
+      "section": "Creating a Model for Self Calibration in tclean (Figure 1 caption)",
+      "quote": "Image Statistics: Beam 0.560\", 0.416\", -55.974°, RMS = 6.6 mJy",
+      "status": "GUIDE"
+    },
+    {
+      "name": "guide_phase_cal_beam_arcsec",
+      "value": [0.51, 0.42],
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+      "section": "First Look at TCLEAN",
+      "quote": "As you will see, tclean reports a synthesized beam size of 0.51\" x 0.42\", making this a decent choice.",
+      "status": "GUIDE"
+    },
+    {
+      "name": "guide_pixels_across_beam",
+      "value": 5,
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+      "section": "First Look at TCLEAN",
+      "quote": "We set the cell size to 0.1 arcseconds, which places ~5 pixels across the synthesized beam.",
+      "status": "GUIDE"
+    },
+    {
+      "name": "guide_rms_selfcal_round1_jy_per_beam",
+      "value": 0.0024,
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Self_Calibration_CASA_6.6.6",
+      "section": "Round 1 > Create an Improved Model",
+      "quote": "Image Statistics: Beam 0.559\", 0.415\", -55.877°, RMS = 2.4 mJy",
+      "status": "GUIDE"
+    },
+    {
+      "name": "guide_rms_selfcal_round2_jy_per_beam",
+      "value": 0.0023,
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Self_Calibration_CASA_6.6.6",
+      "section": "Round 2 > Improve the Model Further",
+      "quote": "Image Statistics: Beam 0.580\", 0.439\", -57.771°, RMS = 2.3 mJy",
+      "status": "GUIDE"
+    },
+    {
+      "name": "guide_rms_selfcal_round3_jy_per_beam",
+      "value": 0.0021,
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Self_Calibration_CASA_6.6.6",
+      "section": "Round 3 > Improve the Model Again",
+      "quote": "Image Statistics: Beam 0.599\", 0.444\", -54.643°, RMS = 2.1 mJy",
+      "status": "GUIDE"
+    },
+    {
+      "name": "guide_rms_selfcal_final_jy_per_beam",
+      "value": 0.0020,
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Self_Calibration_CASA_6.6.6",
+      "section": "Round 4: Amplitude Self Calibration > Create the Final Image",
+      "quote": "Image Statistics: Beam 0.598\", 0.446\", -54.912°, RMS = 2.0 mJy",
+      "status": "GUIDE"
+    }
+  ],
+  "recipe_parameters": [
+    {
+      "name": "split_field_width",
+      "value": {"field": "5", "width": "8", "datacolumn": "data"},
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+      "section": "Image the science target",
+      "quote": "split(vis='twhya_calibrated.ms', field='5', width='8', outputvis='twhya_smoothed.ms', datacolumn='data')",
+      "status": "GUIDE"
+    },
+    {
+      "name": "cell_arcsec",
+      "value": 0.1,
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+      "section": "First Look at TCLEAN",
+      "quote": "For this MS, this works out to 0.09\", which we round up to 0.1\".",
+      "status": "GUIDE"
+    },
+    {
+      "name": "mask_box_pix",
+      "value": [100, 100, 150, 150],
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+      "section": "Non-interactive clean",
+      "quote": "All of the obvious emission is contained in a box that is bounded by pixel numbers in a range of something like (100,100) to (150,150).",
+      "status": "GUIDE"
+    },
+    {
+      "name": "threshold_jy",
+      "value": 0.015,
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+      "section": "Non-interactive clean",
+      "quote": "Set the threshold to be about twice this, ~15 mJy/beam.",
+      "status": "GUIDE"
+    },
+    {
+      "name": "niter",
+      "value": 10000,
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+      "section": "Non-interactive clean",
+      "quote": "Finally set niter=10000, which is a lot of iterations.",
+      "status": "GUIDE"
+    },
+    {
+      "name": "robust",
+      "value": 0.5,
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+      "section": "Experiment with TCLEAN",
+      "quote": "This weighting was \"robust=0.5\" in the first example (by default).",
+      "status": "GUIDE"
+    }
+  ],
+  "tolerances": [
+    {
+      "name": "off_source_residual_rms_max_jy_per_beam",
+      "value": 0.0132,
+      "formula": "guide_residual_rms_no_selfcal_jy_per_beam 0.0066 x 2.0",
+      "convention": "vla_24a376_lband, /mnt/fast/radio_bench_data/24a376_clean/build_24a376_clean.py image_gt tolerances: \"off_source_residual_rms_max_jy_per_beam\": round(ref_rms * 2.0, 6)",
+      "status": "CONVENTION"
+    },
+    {
+      "name": "off_source_residual_rms_min_jy_per_beam",
+      "value": null,
+      "convention": "none: 3C391 (0.00008) and 24A-376 (0.00004) use absolute VLA floors with no transferable factor",
+      "status": "CONVENTION",
+      "open": "rms floor gates removed from the rubric; a scaled-down fake residual is not caught by the floor"
+    },
+    {
+      "name": "dynamic_range_min",
+      "value": null,
+      "convention": "3C391 and 24A-376 both anchor dynamic_range_min to a measured reference image; no guide number or shipped product exists here",
+      "status": "CONVENTION",
+      "open": "dynamic_range lower_ramp removed from the rubric"
+    },
+    {
+      "name": "pixels_per_beam_min",
+      "value": 3.0,
+      "convention": "vla_3c391_cband, data_builders/build_3c391_checkpoints.py PIXELS_PER_BEAM_MIN",
+      "status": "CONVENTION"
+    },
+    {
+      "name": "pixels_per_beam_max",
+      "value": 7.0,
+      "convention": "vla_3c391_cband, data_builders/build_3c391_checkpoints.py PIXELS_PER_BEAM_MAX",
+      "status": "CONVENTION"
+    },
+    {
+      "name": "negative_model_bowl_ratio_max",
+      "value": 0.12,
+      "convention": "vla_3c391_cband, data_builders/build_3c391_checkpoints.py NEGATIVE_MODEL_BOWL_RATIO_MAX",
+      "status": "CONVENTION"
+    },
+    {
+      "name": "pb_cutoff",
+      "value": 0.2,
+      "convention": "vla_3c391_cband, data_builders/build_3c391_checkpoints.py PB_CUTOFF (also geometry.pb_mask_min)",
+      "status": "CONVENTION"
+    },
+    {
+      "name": "offsource_residual_mad_over_rms_min",
+      "value": 0.5,
+      "convention": "vla_3c391_cband, suites/vla_3c391_cband/rubrics/r1_3c391_image.json threshold_gate limit",
+      "status": "CONVENTION"
+    },
+    {
+      "name": "pass_reward_min",
+      "value": 0.85,
+      "convention": "vla_3c391_cband, suites/vla_3c391_cband/rubrics/r1_3c391_image.json pass_reward_min",
+      "status": "CONVENTION"
+    },
+    {
+      "name": "golden_reference_rms_max_fraction",
+      "value": 0.8,
+      "formula": "builder refuses to write ground truth unless reproduced reference rms <= 0.8 x 0.0132 = 0.01056 Jy/beam",
+      "convention": "vla_3c391_cband, data_builders/build_3c391_checkpoints.py GOLDEN_OFF_SOURCE_RESIDUAL_RMS_MAX_MJY 0.60 / OFF_SOURCE_RESIDUAL_RMS_MAX_MJY 0.75",
+      "status": "CONVENTION"
+    },
+    {
+      "name": "golden_reference_bowl_ratio_max",
+      "value": 0.05,
+      "convention": "vla_3c391_cband, data_builders/build_3c391_checkpoints.py GOLDEN_NEGATIVE_MODEL_BOWL_RATIO_MAX",
+      "status": "CONVENTION"
+    }
+  ],
+  "geometry": [
+    {
+      "name": "dish_diameter_m",
+      "value": 12.0,
+      "product": "twhya_calibrated.ms.tar -> twhya_calibrated.ms, msmetadata.antennadiameter (all 26 ANTENNA rows 12.0 m)",
+      "status": "PRODUCT"
+    },
+    {
+      "name": "phasecenter",
+      "value": "J2000 165.46581667deg -34.70482389deg",
+      "product": "twhya_calibrated.ms.tar -> twhya_calibrated.ms, msmetadata.phasecenter(5)",
+      "status": "PRODUCT"
+    },
+    {
+      "name": "offsource_inner_exclusion_beams",
+      "value": 5.0,
+      "convention": "vla_3c391_cband suite.toml geometry.offsource_inner_exclusion_beams",
+      "status": "CONVENTION"
+    }
+  ],
+  "open_items": [
+    "dynamic_range_min: null (guide has no peak; no shipped reference image).",
+    "off_source_residual_rms_min_jy_per_beam: null (no transferable floor convention).",
+    "The guide rms is a CARTA region statistic on the residual; the verifier uses off-source residual rms outside 5 beams of the peak and outside nonzero model pixels. Agreement not measured until build.",
+    "Self-calibration improvement (6.6 to 2.0 mJy) is not gradeable: no selfcal stage or before/after observable exists."
+  ]
+}

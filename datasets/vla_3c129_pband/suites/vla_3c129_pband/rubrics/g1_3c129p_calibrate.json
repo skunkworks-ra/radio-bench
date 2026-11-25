@@ -1,0 +1,213 @@
+{
+  "schema_version": "0.2",
+  "task_id": "g1_3c129p_calibrate",
+  "stages": [
+    "calibrate"
+  ],
+  "pass_reward_min": 0.85,
+  "expect_halt": false,
+  "required_reported_metrics": [],
+  "hard_gates": [
+    {
+      "id": "unlocked_tables",
+      "observable": "proc.table_locked",
+      "primitive": "bool_pass",
+      "params": {
+        "expected": false
+      },
+      "zero_reward_on_fail": true,
+      "zero_subscores_on_fail": true,
+      "failure_tag": "lock_or_timeout"
+    },
+    {
+      "id": "raw_data_unmodified",
+      "observable": "proc.raw_data_unmodified",
+      "primitive": "bool_pass",
+      "params": {
+        "expected": true
+      },
+      "zero_reward_on_fail": true,
+      "optional_when_truth_missing": true,
+      "failure_tag": "raw_data_or_calflag_mutation"
+    }
+  ],
+  "core_subscore_floors": {},
+  "subscores": [
+    {
+      "id": "retention_score",
+      "weight": 0.27,
+      "failure_tag": "flagging_recall_or_overflag",
+      "label": "Target Retention & Calibration Sanity",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "observable": "cal.target_row_retention",
+            "primitive": "window_ramp",
+            "label": "Target Unflagged Retention",
+            "params": {
+              "min_key": "tolerances.target_unflagged_rows_min",
+              "max_key": "tolerances.target_unflagged_rows_max",
+              "pad_low": 0.3,
+              "pad_high": 0.08,
+              "strict_positive": true
+            }
+          },
+          {
+            "observable": "cal.corrected_distinct_from_data",
+            "primitive": "bool_pass",
+            "label": "CORRECTED_DATA Populated & Distinct",
+            "params": {
+              "expected": true
+            }
+          },
+          {
+            "observable": "cal.target_corrected_std_jy",
+            "primitive": "threshold_gate",
+            "params": {
+              "op": ">",
+              "limit": 1e-05
+            }
+          },
+          {
+            "observable": "cal.rank1_logamp_rms_median",
+            "primitive": "threshold_gate",
+            "label": "Rank-1 Gain Closure Log-Amp RMS",
+            "params": {
+              "op": "<=",
+              "limit": 0.15
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "bandpass_flatness_score",
+      "weight": 0.33,
+      "failure_tag": "skipped_delay_or_bandpass",
+      "label": "Bandpass & Delay Channel Phase RMS",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "combine": "min_of",
+            "children": [
+              {
+                "observable": "cal.bandpass_coh_chan_phase_rms_deg",
+                "primitive": "upper_ramp",
+                "label": "Bandpass Coherent Channel Phase RMS (deg)",
+                "unit": "deg",
+                "params": {
+                  "strict_pass": true,
+                  "pass_max_key": "tolerances.bp_channel_phase_rms_max_deg",
+                  "decay_span": 12.0
+                }
+              },
+              {
+                "observable": "cal.bandpass_med_bl_chan_phase_rms_deg",
+                "primitive": "upper_ramp",
+                "label": "Bandpass Med-Baseline Channel Phase RMS (deg)",
+                "unit": "deg",
+                "params": {
+                  "strict_pass": true,
+                  "pass_max_key": "tolerances.bp_channel_phase_rms_max_deg",
+                  "decay_span": 12.0
+                }
+              },
+              {
+                "observable": "cal.bandpass_row_chan_phase_rms_deg",
+                "primitive": "upper_ramp",
+                "label": "Bandpass Per-Row Channel Phase RMS (deg)",
+                "unit": "deg",
+                "params": {
+                  "strict_pass": true,
+                  "pass_max_key": "tolerances.bp_channel_phase_rms_max_deg",
+                  "decay_span": 12.0
+                }
+              }
+            ]
+          },
+          {
+            "observable": "cal.bandpass_cal_calibrated",
+            "primitive": "bool_pass",
+            "params": {
+              "expected": true
+            }
+          },
+          {
+            "observable": "cal.bandpass_cal_unflagged_fraction",
+            "primitive": "threshold_gate",
+            "params": {
+              "op": ">=",
+              "limit": 0.5
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "target_fidelity_score",
+      "weight": 0.4,
+      "failure_tag": "skipped_delay_or_bandpass",
+      "symptom_only": true,
+      "label": "Target Fixed-Recipe Verifier tclean DR",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "observable": "cal.verifier_tclean_dr",
+            "primitive": "lower_ramp",
+            "label": "Verifier tclean Dynamic Range",
+            "params": {
+              "pass_min_key": "tolerances.verifier_tclean_dr_min",
+              "zero_at_scale_of_pass_min": 0.4,
+              "min_denom": 1.0
+            }
+          },
+          {
+            "observable": "cal.verifier_tclean_pb_valid",
+            "primitive": "bool_pass",
+            "label": "Verifier tclean PB & PBcor Valid",
+            "params": {
+              "expected": true
+            }
+          },
+          {
+            "observable": "cal.verifier_tclean_rms_over_thermal_floor",
+            "primitive": "threshold_gate",
+            "label": "Verifier RMS / thermal floor",
+            "params": {
+              "op": ">=",
+              "limit": 1.0,
+              "pass_if_not_applicable": true
+            }
+          },
+          {
+            "observable": "cal.verifier_tclean_offsource_mad_over_rms",
+            "primitive": "threshold_gate",
+            "params": {
+              "op": ">=",
+              "limit": 0.5
+            }
+          },
+          {
+            "observable": "cal.target_corrected_std_jy",
+            "primitive": "threshold_gate",
+            "params": {
+              "op": ">",
+              "limit": 1e-05
+            }
+          },
+          {
+            "observable": "cal.rank1_logamp_rms_median",
+            "primitive": "threshold_gate",
+            "params": {
+              "op": "<=",
+              "limit": 0.15
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,405 @@
+{
+  "schema_version": "0.2",
+  "task_id": "g2_3c75pol_e2e",
+  "stages": [
+    "inspect",
+    "image"
+  ],
+  "pass_reward_min": 0.85,
+  "expect_halt": false,
+  "required_reported_metrics": [],
+  "hard_gates": [
+    {
+      "id": "unlocked_tables",
+      "observable": "proc.table_locked",
+      "primitive": "bool_pass",
+      "params": {
+        "expected": false
+      },
+      "zero_reward_on_fail": true,
+      "zero_subscores_on_fail": true,
+      "failure_tag": "lock_or_timeout"
+    },
+    {
+      "id": "raw_data_unmodified",
+      "observable": "proc.raw_data_unmodified",
+      "primitive": "bool_pass",
+      "params": {
+        "expected": true
+      },
+      "zero_reward_on_fail": true,
+      "optional_when_truth_missing": true,
+      "failure_tag": "raw_data_or_calflag_mutation"
+    }
+  ],
+  "core_subscore_floors": {},
+  "stage_blocks": [
+    {
+      "id": "inspect_score",
+      "stage": "inspect",
+      "weight": 0.2,
+      "subscore_prefix": "insp_",
+      "truth_prefix": "inspect_ground_truth",
+      "failure_tag": "script_or_casa_crash",
+      "core_subscore_floors": {
+        "flux_bandpass_score": 0.5,
+        "phase_part": 0.5,
+        "target_part": 0.5,
+        "dead_antenna_score": 0.5,
+        "elevation_score": 0.5
+      },
+      "subscores": [
+        {
+          "id": "valid_json_score",
+          "weight": 0.2,
+          "failure_tag": "script_or_casa_crash",
+          "label": "Summary JSON Valid & Populated",
+          "expr": {
+            "observable": "inspect.valid_sections_count",
+            "primitive": "piecewise_floor_ramp",
+            "label": "Populated Triage Sections",
+            "params": {
+              "base_floor": 0.2,
+              "denom": 4.0
+            }
+          }
+        },
+        {
+          "id": "flux_bandpass_score",
+          "weight": 0.2,
+          "failure_tag": "flux_model_or_fluxscale_error",
+          "label": "Flux & Bandpass Calibrator ID",
+          "expr": {
+            "combine": "weighted_sum",
+            "weights": [
+              0.5,
+              0.5
+            ],
+            "children": [
+              {
+                "observable": "inspect.flux_cal_list",
+                "primitive": "exact_set",
+                "label": "Flux Calibrator",
+                "params": {
+                  "truth_key": [
+                    "flux_calibrator"
+                  ],
+                  "norm": "field"
+                }
+              },
+              {
+                "observable": "inspect.bandpass_cal_list",
+                "primitive": "exact_set",
+                "label": "Bandpass Calibrator",
+                "params": {
+                  "truth_key": [
+                    "bandpass_calibrator",
+                    "flux_calibrator"
+                  ],
+                  "norm": "field"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "phase_vs_target_score",
+          "weight": 0.25,
+          "failure_tag": "flagging_recall_or_overflag",
+          "label": "Complex Gain Calibrator vs Science Target",
+          "expr": {
+            "combine": "weighted_sum",
+            "weights": [
+              0.5,
+              0.5
+            ],
+            "children": [
+              {
+                "id": "phase_part",
+                "observable": "inspect.phase_cal_list",
+                "primitive": "exact_set",
+                "label": "Complex Gain Calibrator",
+                "params": {
+                  "truth_key": [
+                    "phase_calibrator"
+                  ],
+                  "norm": "field",
+                  "partial_match_sets": [
+                    {
+                      "truth_keys": [
+                        "phase_calibrator",
+                        "secondary_pol_leakage_calibrator"
+                      ],
+                      "score": 0.9
+                    }
+                  ],
+                  "forbid_overlap_truth_keys": [
+                    "target_fields"
+                  ],
+                  "overlap_penalty_factor": 0.0
+                }
+              },
+              {
+                "id": "target_part",
+                "observable": "inspect.target_fields_list",
+                "primitive": "set_jaccard",
+                "label": "Science Target",
+                "params": {
+                  "truth_key": [
+                    "target_fields"
+                  ],
+                  "norm": "field",
+                  "forbid_overlap_truth_keys": [
+                    "flux_calibrator",
+                    "bandpass_calibrator",
+                    "phase_calibrator",
+                    "pol_angle_calibrator",
+                    "secondary_pol_leakage_calibrator"
+                  ],
+                  "overlap_penalty_factor": 0.25
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "dead_antenna_score",
+          "weight": 0.15,
+          "failure_tag": "flagging_recall_or_overflag",
+          "label": "Dead / Fully-Flagged Antenna Identification",
+          "expr": {
+            "observable": "inspect.dead_antennas_list",
+            "primitive": "set_jaccard",
+            "label": "Dead Antennas",
+            "params": {
+              "truth_key": [
+                "dead_antennas"
+              ],
+              "norm": "ant"
+            }
+          }
+        },
+        {
+          "id": "elevation_score",
+          "weight": 0.2,
+          "failure_tag": "skipped_delay_or_bandpass",
+          "label": "Bandpass Min Elevation Accuracy",
+          "expr": {
+            "observable": "inspect.bandpass_min_el_deg",
+            "primitive": "abs_err_ramp",
+            "label": "Bandpass Min Elevation (deg)",
+            "unit": "deg",
+            "params": {
+              "truth_key": [
+                "bandpass_min_elevation_deg"
+              ],
+              "pass_abs_tol_key": [
+                "tolerances.elevation_abs_deg"
+              ],
+              "decay_span": 1.25
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "delivered_image_score",
+      "stage": "image",
+      "weight": 0.8,
+      "subscore_prefix": "img_",
+      "truth_prefix": "image_ground_truth",
+      "failure_tag": "beam_sampling_or_clean_bowl",
+      "subscores": [
+        {
+          "id": "products_score",
+          "weight": 0.15,
+          "failure_tag": "beam_sampling_or_clean_bowl",
+          "label": "CASA Image Products & Primary Beam Consistency",
+          "expr": {
+            "combine": "multiplicative_cap",
+            "children": [
+              {
+                "observable": "image.valid_product_count",
+                "primitive": "discrete_map",
+                "label": "Valid Image Product Count",
+                "params": {
+                  "mapping": {
+                    "5": 1.0,
+                    "4": 0.6,
+                    "3": 0.4,
+                    "2": 0.2,
+                    "1": 0.0,
+                    "0": 0.0
+                  },
+                  "default": 0.0
+                }
+              },
+              {
+                "observable": "image.shapes_and_wcs_valid",
+                "primitive": "bool_pass",
+                "label": "Image WCS & Spatial Shapes Valid",
+                "params": {
+                  "expected": true
+                }
+              },
+              {
+                "observable": "image.pb_taper_consistent",
+                "primitive": "bool_pass",
+                "label": "Primary Beam Taper & PBcor Consistent",
+                "params": {
+                  "expected": true
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "beam_sampling_score",
+          "weight": 0.2,
+          "failure_tag": "beam_sampling_or_clean_bowl",
+          "label": "Restoring Beam Pixel Sampling",
+          "expr": {
+            "observable": "image.pixels_per_beam",
+            "primitive": "window_ramp",
+            "label": "Pixels Per Beam",
+            "params": {
+              "min_key": "tolerances.pixels_per_beam_min",
+              "max_key": "tolerances.pixels_per_beam_max",
+              "low_zero_at": 1.5,
+              "pad_high": 5.0
+            }
+          }
+        },
+        {
+          "id": "residual_rms_score",
+          "weight": 0.25,
+          "failure_tag": "beam_sampling_or_clean_bowl",
+          "label": "Off-Source Residual RMS vs Guide",
+          "expr": {
+            "combine": "multiplicative_cap",
+            "children": [
+              {
+                "observable": "image.offsource_residual_rms_jy",
+                "primitive": "upper_ramp",
+                "label": "Off-Source Residual RMS (Jy/beam)",
+                "unit": "Jy/beam",
+                "params": {
+                  "strict_pass": true,
+                  "pass_max_key": "guide_reference.offsource_rms_jy_per_beam",
+                  "pass_max_scale": 2.0,
+                  "decay_span_mult_of_pass_max": 1.7
+                }
+              },
+              {
+                "observable": "image.offsource_rms_over_thermal_floor",
+                "primitive": "threshold_gate",
+                "params": {
+                  "op": ">=",
+                  "limit": 1.0,
+                  "pass_if_not_applicable": true
+                },
+                "label": "Residual RMS / thermal floor"
+              },
+              {
+                "observable": "image.offsource_residual_mad_over_rms",
+                "primitive": "threshold_gate",
+                "params": {
+                  "op": ">=",
+                  "limit": 0.5
+                },
+                "label": "Off-Source Residual MAD/RMS"
+              },
+              {
+                "observable": "image.target_row_retention",
+                "primitive": "window_ramp",
+                "label": "Target Retention vs Delivered Input",
+                "params": {
+                  "min_key": "tolerances.image_target_retention_min",
+                  "max_key": "tolerances.image_target_retention_max",
+                  "pad_low": 0.3,
+                  "pad_high": 0.08,
+                  "strict_positive": true
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "peak_and_bowl_score",
+          "weight": 0.4,
+          "failure_tag": "beam_sampling_or_clean_bowl",
+          "label": "Peak Brightness vs Guide & Clean Bowl Guard",
+          "expr": {
+            "combine": "multiplicative_cap",
+            "children": [
+              {
+                "combine": "weighted_sum",
+                "weights": [
+                  0.7,
+                  0.3
+                ],
+                "children": [
+                  {
+                    "observable": "image.peak_jy_per_beam",
+                    "primitive": "rel_err_ramp",
+                    "label": "Peak Brightness vs Guide (Jy/beam)",
+                    "unit": "Jy/beam",
+                    "params": {
+                      "truth_key": "guide_reference.peak_jy_per_beam",
+                      "pass_rel_tol_key": "tolerances.peak_rel_tol",
+                      "decay_span": 0.3
+                    }
+                  },
+                  {
+                    "observable": "image.negative_bowl_ratio",
+                    "primitive": "threshold_gate",
+                    "label": "Negative Model Bowl Ratio",
+                    "params": {
+                      "op": "<",
+                      "limit_key": "tolerances.negative_model_bowl_ratio_max"
+                    }
+                  }
+                ]
+              },
+              {
+                "observable": "image.negative_bowl_ratio",
+                "primitive": "upper_ramp",
+                "params": {
+                  "strict_pass": true,
+                  "pass_max_key": "tolerances.negative_model_bowl_ratio_max",
+                  "decay_span_mult_of_pass_max": 1.0,
+                  "scale_above_pass": 0.25
+                }
+              },
+              {
+                "observable": "image.pb_taper_consistent",
+                "primitive": "bool_pass",
+                "params": {
+                  "expected": true
+                }
+              },
+              {
+                "observable": "image.offsource_rms_over_thermal_floor",
+                "primitive": "threshold_gate",
+                "params": {
+                  "op": ">=",
+                  "limit": 1.0,
+                  "pass_if_not_applicable": true
+                },
+                "label": "Residual RMS / thermal floor"
+              },
+              {
+                "observable": "image.offsource_residual_mad_over_rms",
+                "primitive": "threshold_gate",
+                "params": {
+                  "op": ">=",
+                  "limit": 0.5
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

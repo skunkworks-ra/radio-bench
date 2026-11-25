@@ -1,0 +1,98 @@
+[suite]
+suite_id = "vla_3c75_pol"
+legacy_suite_alias = "3c75pol"
+split = "reference"
+telescope = "VLA"
+band = "S-band"
+pol_basis = "circular"
+description = "VLA D-configuration S-band (8 x 128 MHz) full-polarization single pointing of the radio galaxy 3C75, starting from the VLA-pipeline-calibrated MS (CASA Guide reference)"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "vla", "interferometry", "s-band", "polarization", "casa-guide"]
+
+[[suite.archives]]
+name = "TDRW0001_calibrated_CASA6.5.4.ms.tgz"
+rel_path = "casaguides/vla_3c75_pol/downloads/TDRW0001_calibrated_CASA6.5.4.ms.tgz"
+sha256 = "57bfd5d976a0c8feeaf7cc55ca05d5cb2aa450fe5bc87a87635472ad3d6cb740"
+
+[[suite.archives]]
+name = "pipeline-20240116T215537.tgz"
+rel_path = "casaguides/vla_3c75_pol/downloads/pipeline-20240116T215537.tgz"
+sha256 = "7f31873e10be15727e4d985c291856fc49e7aea935311e2bf7cc57874954dfd5"
+
+[roles]
+flux_cal = ["0137+331=3C48"]
+bandpass_cal = ["0137+331=3C48"]
+phase_cal = ["J0259+0747"]
+pol_angle_cal = ["0137+331=3C48"]
+pol_leakage_cal = ["J0259+0747", "J2355+4950"]
+targets = ["3C75"]
+dead_antennas = []
+missing_stations = []
+target_retention_excludes_dead_antenna = false
+
+[geometry]
+dish_diameter_m = 25.0
+pb_mask_min = 0.20
+offsource_inner_exclusion_beams = 5.0
+phasecenter = "J2000 44.427625deg 6.018deg"
+off_source_min_radius_arcsec = 540.0
+
+[resources]
+cpus = 8
+verifier_cpus = 8
+memory_mb = 16384
+n_concurrent_trials = 1
+
+[checkpoints]
+builder = "build_vla_3c75_pol:main"
+
+[checkpoints.entries.raw]
+input_ms = "casaguides/vla_3c75_pol/raw/input.ms"
+
+[checkpoints.entries.post_polcal]
+input_ms = "casaguides/vla_3c75_pol/post_polcal/input.ms"
+
+[tasks.g1_3c75pol_inspect]
+stages = ["inspect"]
+stage = "inspect"
+checkpoint_in = "raw"
+data_dir = "casaguides/vla_3c75_pol/g1_3c75pol_inspect"
+input_ms = "casaguides/vla_3c75_pol/raw/input.ms"
+ground_truth = "casaguides/vla_3c75_pol/g1_3c75pol_inspect/ground_truth.json"
+extra_test_files = []
+difficulty = "easy"
+agent_timeout_sec = 900.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/g1_3c75pol_inspect/instruction.md"
+oracle_script = "task_specs/g1_3c75pol_inspect/solve.py"
+rubric = "rubrics/g1_3c75pol_inspect.json"
+
+[tasks.g1_3c75pol_image]
+stages = ["image"]
+stage = "image"
+checkpoint_in = "post_polcal"
+data_dir = "casaguides/vla_3c75_pol/g1_3c75pol_image"
+input_ms = "casaguides/vla_3c75_pol/post_polcal/input.ms"
+ground_truth = "casaguides/vla_3c75_pol/g1_3c75pol_image/ground_truth.json"
+extra_test_files = []
+difficulty = "medium"
+agent_timeout_sec = 5400.0
+verifier_timeout_sec = 900.0
+instruction = "task_specs/g1_3c75pol_image/instruction.md"
+oracle_script = "task_specs/g1_3c75pol_image/solve.py"
+rubric = "rubrics/g1_3c75pol_image.json"
+
+[tasks.g2_3c75pol_e2e]
+stages = ["inspect", "image"]
+stage = "e2e"
+checkpoint_in = "raw"
+data_dir = "casaguides/vla_3c75_pol/g2_3c75pol_e2e"
+input_ms = "casaguides/vla_3c75_pol/raw/input.ms"
+ground_truth = "casaguides/vla_3c75_pol/g2_3c75pol_e2e/ground_truth.json"
+extra_test_files = []
+difficulty = "hard"
+agent_timeout_sec = 7200.0
+verifier_timeout_sec = 1200.0
+instruction = "task_specs/g2_3c75pol_e2e/instruction.md"
+oracle_script = "task_specs/g2_3c75pol_e2e/solve.py"
+rubric = "rubrics/g2_3c75pol_e2e.json"

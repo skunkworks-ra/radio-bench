@@ -1,0 +1,34 @@
+{
+  "suite_id": "alma_antennae_band7",
+  "guide_pages": {
+    "imaging": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Imaging_6.6.6",
+    "calibration": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Calibration_6.6.6",
+    "index": "https://casaguides.nrao.edu/index.php/AntennaeBand7"
+  },
+  "archives": [
+    {
+      "name": "Antennae_Band7_CalibratedData.tgz",
+      "url": "https://bulk.cv.nrao.edu/almadata/public/casaguides/Antennae_Band7_6.6.6/Antennae_Band7_CalibratedData.tgz",
+      "sha256": "1976fea9239dea06c144c963c3750b03e7c53e82787f0a3c46b72fe17b5df339",
+      "bytes": 912711095
+    },
+    {
+      "name": "Antennae_Band7_ReferenceImages.tgz",
+      "url": "https://bulk.cv.nrao.edu/almadata/public/casaguides/Antennae_Band7_6.6.6/Antennae_Band7_ReferenceImages.tgz",
+      "sha256": "cd52ffdc8f7b18f28ede2be70f6334f2f3f435fe31d7cff66f6e3a446eed2190",
+      "bytes": 83981505
+    }
+  ],
+  "unavailable": [
+    {
+      "name": "Antennae_Band7_UnCalibratedMSAndTablesForReduction.tgz",
+      "checked_urls": [
+        "https://bulk.cv.nrao.edu/almadata/public/casaguides/Antennae_Band7_6.6.6/Antennae_Band7_UnCalibratedMSAndTablesForReduction.tgz",
+        "https://bulk.cv.nrao.edu/almadata/public/casaguides/Antennae_Band7_6.6.6/Antennae_Band7_UnCalibratedMSandTablesForReduction.tgz",
+        "https://bulk.cv.nrao.edu/almadata/public/casaguides/Antennae_Band7_6.6.6/Antennae_Band7_UncalibratedData.tgz",
+        "https://bulk.cv.nrao.edu/almadata/public/casaguides/Antennae_Band7_6.6.1/Antennae_Band7_UnCalibratedMSAndTablesForReduction.tgz"
+      ],
+      "result": "HTTP 404 on HEAD (2026-11-25 UTC); directory listings of Antennae_Band7_6.6.6/ and Antennae_Band7_6.6.1/ show only CalibratedData and ReferenceImages"
+    }
+  ]
+}

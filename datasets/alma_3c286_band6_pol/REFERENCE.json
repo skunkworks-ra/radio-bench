@@ -1,0 +1,624 @@
+{
+  "suite_id": "alma_3c286_band6_pol",
+  "split": "reference",
+  "guide_pages": {
+    "overview": "https://casaguides.nrao.edu/index.php?title=3C286_Polarization",
+    "calibration": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+    "imaging": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Imaging_for_CASA_6.6.6"
+  },
+  "status_legend": {
+    "GUIDE": "quoted from the guide page",
+    "PRODUCT": "measured from a guide-shipped file",
+    "CONVENTION": "tolerance factor copied from an existing suite"
+  },
+  "entries": [
+    {
+      "name": "roles",
+      "value": {
+        "pol_cal": "J1337-1257",
+        "bandpass_cal": "J1256-0547",
+        "flux_cal": "Ceres",
+        "phase_cal": "J1310+3220",
+        "target": "3c286"
+      },
+      "unit": null,
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "listobs",
+        "quote": "Field 4 (3c286)              science target"
+      },
+      "used_in": [
+        "suite.toml [roles]",
+        "g1_3c286pol_inspect ground_truth"
+      ],
+      "note": "Same block lists Field 0 (J1337-1257) polarization calibrator, Field 1 (J1256-0547) [3c279] bandpass calibrator, Field 2 (Ceres) flux calibrator, Field 3 (J1310+3220) complex gain (phase) calibrator."
+    },
+    {
+      "name": "dead_antennas",
+      "value": [],
+      "unit": null,
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "Generate Tsys and WVR calibration tables",
+        "quote": "Antenna DV21 clearly shows higher value of Tsys (see Figure 3); we will flag that antenna later in the combined dataset."
+      },
+      "used_in": [
+        "g1_3c286pol_inspect ground_truth.dead_antennas"
+      ],
+      "note": "No antenna is described as dead anywhere on the page; DV21 (high Tsys), DA49, DV14 are flagged as bad, not dead. Value [] is a reading of the page, confirm."
+    },
+    {
+      "name": "refant",
+      "value": "DV23",
+      "unit": null,
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "Choose a Reference Antenna",
+        "quote": "We will use antenna DV23 as reference antenna"
+      },
+      "used_in": [
+        "oracle solve.py",
+        "builder"
+      ]
+    },
+    {
+      "name": "guide_manual_flags",
+      "value": "spw '*:0~3, *:60~63'; DV21; DA49; DA45 field 0,3 spw 1; DA45 scan 48 field 0 spw 2; DV14; DV04 scan 93 field 0; timerange 2014/07/02/00:25:00~00:25:10",
+      "unit": null,
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "Additional Data Inspection",
+        "quote": "You will find the following flags are needed:"
+      },
+      "used_in": [
+        "post_precal checkpoint",
+        "g2 oracle"
+      ]
+    },
+    {
+      "name": "phase_cal_expected_flux_jy",
+      "value": 0.897572,
+      "unit": "Jy",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "Gain Calibration",
+        "quote": "Fitted spectrum for J1310+3220 with fitorder=1: Flux density = 0.897572 +/- 0.00151321 (freq=232.86 GHz)"
+      },
+      "used_in": [
+        "g1_3c286pol_calibrate.phase_cal_expected_flux_jy",
+        "g2_3c286pol_e2e.calibrate_ground_truth.phase_cal_expected_flux_jy"
+      ]
+    },
+    {
+      "name": "bp_cal_fitted_flux_jy",
+      "value": 8.31993,
+      "unit": "Jy",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "Gain Calibration",
+        "quote": "Fitted spectrum for J1256-0547 with fitorder=1: Flux density = 8.31993 +/- 0.00938247 (freq=232.86 GHz)"
+      },
+      "used_in": [
+        "builder summary only (not graded)"
+      ]
+    },
+    {
+      "name": "ceres_setjy_fluxd_jy",
+      "value": [
+        1.53510869,
+        1.56220722,
+        1.72976518,
+        1.75838304
+      ],
+      "unit": "Jy",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "Flux Scaling",
+        "quote": "array([1.53510869, 0. , 0. , 0. ])"
+      },
+      "used_in": [
+        "builder summary only (not graded)"
+      ],
+      "note": "Quote is the spw 0 line; spw 1..3 lines follow in the same setjy output block."
+    },
+    {
+      "name": "verifier_reference_initial_image",
+      "value": {
+        "rms_jy": 0.001051827310962827,
+        "peak_jy": 0.2975700795650482,
+        "dynamic_range": 282.90773253706163
+      },
+      "unit": "Jy/beam",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Imaging_for_CASA_6.6.6",
+        "section": "Full polarization imaging of the target",
+        "quote": ">> Dynamic range in continuum image: 282.90773253706163"
+      },
+      "used_in": [
+        "g1_3c286pol_calibrate.reference_image_summary (peak used by weight-0 verifier peak subscore)",
+        "anchor of tolerances.verifier_tclean_dr_min"
+      ],
+      "note": "Adjacent lines: '>> rms in continuum image: 0.001051827310962827', '>> Peak in continuum image: 0.2975700795650482'. Image of the guide-calibrated target before self-cal, niter=500."
+    },
+    {
+      "name": "final_image",
+      "value": {
+        "rms_jy": 0.0001295028028448405,
+        "peak_jy": 0.33380603790283203,
+        "dynamic_range": 2577.597013886801
+      },
+      "unit": "Jy/beam",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Imaging_for_CASA_6.6.6",
+        "section": "Round 3",
+        "quote": ">> Dynamic range in continuum image: 2577.597013886801"
+      },
+      "used_in": [
+        "g1_3c286pol_image.reference_image_summary",
+        "anchor of image tolerances",
+        "g2_3c286pol_e2e.image_ground_truth"
+      ],
+      "note": "Adjacent lines: '>> rms in continuum image: 0.0001295028028448405', '>> Peak in continuum image: 0.33380603790283203'. Also 'The rms is 0.13 mJy.'"
+    },
+    {
+      "name": "final_image_box_rms_jy",
+      "value": 0.0001295028028448405,
+      "unit": "Jy/beam",
+      "status": "PRODUCT",
+      "source": {
+        "product": "<data_dir>/casaguides/alma_3c286_band6_pol/extracted/3C286_Band6_ReferenceImages/3c286.StokesI.image",
+        "method": "imstat box='45,45,95,95' rms (guide recipe)"
+      },
+      "used_in": [
+        "cross-check of GUIDE final_image.rms_jy (matches to all digits)"
+      ]
+    },
+    {
+      "name": "final_image_peak_jy",
+      "value": 0.33380603790283203,
+      "unit": "Jy/beam",
+      "status": "PRODUCT",
+      "source": {
+        "product": "<data_dir>/casaguides/alma_3c286_band6_pol/extracted/3C286_Band6_ReferenceImages/3c286.StokesI.image",
+        "method": "imstat max"
+      },
+      "used_in": [
+        "cross-check (matches GUIDE)"
+      ]
+    },
+    {
+      "name": "restoring_beam_arcsec",
+      "value": {
+        "major": 0.7589917778968811,
+        "minor": 0.3959781229496002,
+        "pa_deg": 8.343505859375
+      },
+      "unit": "arcsec",
+      "status": "PRODUCT",
+      "source": {
+        "product": "<data_dir>/casaguides/alma_3c286_band6_pol/extracted/3C286_Band6_ReferenceImages/3c286.StokesI.image",
+        "method": "ia.restoringbeam()"
+      },
+      "used_in": [
+        "g1_3c286pol_image.reference_image_summary"
+      ],
+      "note": "Guide 'Full polarization imaging of the target' quotes 0.76326\" X 0.402745\", 8.34021 deg from CARTA; the shipped image header differs at the 1% level."
+    },
+    {
+      "name": "target_pol_frac_pct",
+      "value": 16.4,
+      "unit": "%",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Imaging_for_CASA_6.6.6",
+        "section": "Image visualization and analysis",
+        "quote": "| P (%) | 16.4 | 0.049 |"
+      },
+      "used_in": [
+        "polarization_reference (future polcal)"
+      ]
+    },
+    {
+      "name": "target_evpa_deg",
+      "value": 39.05,
+      "unit": "deg",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Imaging_for_CASA_6.6.6",
+        "section": "Image visualization and analysis",
+        "quote": "| χ (deg) | 39.05 | 0.025 |"
+      },
+      "used_in": [
+        "polarization_reference (future polcal)"
+      ]
+    },
+    {
+      "name": "target_evpa_sys_err_deg",
+      "value": 2.0,
+      "unit": "deg",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Imaging_for_CASA_6.6.6",
+        "section": "Image visualization and analysis",
+        "quote": "We conservatively estimate the position angle uncertainty to be ± 2º."
+      },
+      "used_in": [
+        "future polcal tolerance"
+      ]
+    },
+    {
+      "name": "target_IQUV_mjy",
+      "value": {
+        "I": 351,
+        "Q": 11.9,
+        "U": 56.2,
+        "V": -0.49,
+        "pol_int": 57.5
+      },
+      "unit": "mJy",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Imaging_for_CASA_6.6.6",
+        "section": "Image visualization and analysis",
+        "quote": "| I (mJy) | 351 | 0.71 |"
+      },
+      "used_in": [
+        "polarization_reference (future polcal)"
+      ],
+      "note": "Other rows: '| Q (mJy) | 11.9 | 0.045 |', '| U (mJy) | 56.2 | 0.13 |', '| V (mJy) | -0.49 | -0.043 |' (minus is backslash-escaped on page), '| Pol int (mJy) | 57.5 | 0.124 |'."
+    },
+    {
+      "name": "literature_1mm",
+      "value": {
+        "agudo2012_P_pct": "14.4 ± 1.8",
+        "agudo2012_chi_deg": "33.1 ± 5.7",
+        "carma_chi_deg": "39.2 ± 1.0"
+      },
+      "unit": null,
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Imaging_for_CASA_6.6.6",
+        "section": "Image visualization and analysis",
+        "quote": "39.2 ± 1.0"
+      },
+      "used_in": [
+        "context only"
+      ]
+    },
+    {
+      "name": "polcal_J1337_qu_spwave_before",
+      "value": [
+        0.014114697176655198,
+        0.04039249521486836
+      ],
+      "unit": "fractional Q,U",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "Gains for the polarization calibrator",
+        "quote": "'SpwAve': [1.0, 0.014114697176655198, 0.04039249521486836, 0.0],"
+      },
+      "used_in": [
+        "polarization_reference (future polcal)"
+      ]
+    },
+    {
+      "name": "polcal_J1337_qu_spwave_after",
+      "value": [
+        0.0005853405152922923,
+        -0.00031083130393098516
+      ],
+      "unit": "fractional Q,U",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "Revise gain with good source pol estimate",
+        "quote": "'SpwAve': [1.0, 0.0005853405152922923, -0.00031083130393098516, 0.0]}}"
+      },
+      "used_in": [
+        "polarization_reference (future polcal)"
+      ]
+    },
+    {
+      "name": "target_pol_frac",
+      "value": 0.1638025247840357,
+      "unit": null,
+      "status": "PRODUCT",
+      "source": {
+        "product": "<data_dir>/casaguides/alma_3c286_band6_pol/extracted/3C286_Band6_ReferenceImages/3c286.Stokes{I,Q,U}.image",
+        "method": "imfit box='110,110,145,145', sqrt(Q^2+U^2)/I (guide recipe)"
+      },
+      "used_in": [
+        "polarization_reference.product"
+      ]
+    },
+    {
+      "name": "target_evpa_deg_product",
+      "value": 39.047449050013945,
+      "unit": "deg",
+      "status": "PRODUCT",
+      "source": {
+        "product": "<data_dir>/casaguides/alma_3c286_band6_pol/extracted/3C286_Band6_ReferenceImages/3c286.Stokes{Q,U}.image",
+        "method": "0.5*atan2(U,Q) from imfit fluxes (guide recipe)"
+      },
+      "used_in": [
+        "polarization_reference.product"
+      ]
+    },
+    {
+      "name": "poli_peak_jy",
+      "value": 0.05496934801340103,
+      "unit": "Jy/beam",
+      "status": "PRODUCT",
+      "source": {
+        "product": "<data_dir>/casaguides/alma_3c286_band6_pol/extracted/3C286_Band6_ReferenceImages/3c286.POLI.image",
+        "method": "imstat max"
+      },
+      "used_in": [
+        "polarization_reference.product"
+      ]
+    },
+    {
+      "name": "bandpass_min_elevation_deg",
+      "value": null,
+      "unit": "deg",
+      "status": "PRODUCT",
+      "source": {
+        "product": "raw/input.ms built from guide-shipped ASDMs",
+        "method": "min over J1256-0547 timestamps of AZEL elevation, observatory ALMA"
+      },
+      "used_in": [
+        "g1_3c286pol_inspect.bandpass_min_elevation_deg"
+      ],
+      "note": "OPEN: not in guide; computed by builder at build time."
+    },
+    {
+      "name": "elevation_abs_deg",
+      "value": 0.25,
+      "unit": "deg",
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_3c391_cband (/mnt/fast/radio_bench_data/checkpoints/3c391/<task>/ground_truth.json)",
+        "key": "r1_3c391_inspect tolerances.elevation_abs_deg"
+      },
+      "used_in": [
+        "g1_3c286pol_inspect"
+      ]
+    },
+    {
+      "name": "bp_channel_phase_rms_max_deg",
+      "value": 8.0,
+      "unit": "deg",
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_3c391_cband (/mnt/fast/radio_bench_data/checkpoints/3c391/<task>/ground_truth.json)",
+        "key": "r1_3c391_calibrate tolerances.j1331_channel_phase_rms_max_deg"
+      },
+      "used_in": [
+        "calibrate, e2e"
+      ]
+    },
+    {
+      "name": "phase_cal_flux_rel_tol",
+      "value": 0.08,
+      "unit": null,
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_3c391_cband (/mnt/fast/radio_bench_data/checkpoints/3c391/<task>/ground_truth.json)",
+        "key": "r1_3c391_calibrate tolerances.j1822_flux_rel_tol (same value in vla_24a376 phase_cal_flux_rel_tol)"
+      },
+      "used_in": [
+        "calibrate, e2e"
+      ]
+    },
+    {
+      "name": "verifier_tclean_dr_min",
+      "value": 198.0,
+      "unit": null,
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean/build_24a376_clean.py)",
+        "key": "tolerances.verifier_tclean_dr_min = max(150, 0.70 * DR); DR = GUIDE 282.90773253706163"
+      },
+      "used_in": [
+        "calibrate, e2e"
+      ]
+    },
+    {
+      "name": "target_unflagged_rows_max",
+      "value": 0.98,
+      "unit": null,
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean/build_24a376_clean.py)",
+        "key": "tolerances.target_unflagged_rows_max"
+      },
+      "used_in": [
+        "calibrate, e2e"
+      ]
+    },
+    {
+      "name": "target_unflagged_rows_min",
+      "value": null,
+      "unit": null,
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean/build_24a376_clean.py)",
+        "key": "max(0.45, oracle target_row_retention - 0.20)"
+      },
+      "used_in": [
+        "calibrate, e2e"
+      ],
+      "note": "OPEN: guide gives no retention number; anchor is the oracle reproduction measured by the builder (0.45 if radio_bench is unavailable)."
+    },
+    {
+      "name": "pixels_per_beam_min",
+      "value": 3.0,
+      "unit": null,
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_3c391_cband (/mnt/fast/radio_bench_data/checkpoints/3c391/<task>/ground_truth.json)",
+        "key": "r1_3c391_image tolerances.pixels_per_beam_min"
+      },
+      "used_in": [
+        "image, e2e"
+      ]
+    },
+    {
+      "name": "pixels_per_beam_max",
+      "value": 7.0,
+      "unit": null,
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_3c391_cband (/mnt/fast/radio_bench_data/checkpoints/3c391/<task>/ground_truth.json)",
+        "key": "r1_3c391_image tolerances.pixels_per_beam_max"
+      },
+      "used_in": [
+        "image, e2e"
+      ]
+    },
+    {
+      "name": "off_source_residual_rms_max_jy_per_beam",
+      "value": 0.00025901,
+      "unit": "Jy/beam",
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean/build_24a376_clean.py)",
+        "key": "ref_rms * 2.0; ref_rms = GUIDE 0.0001295028028448405"
+      },
+      "used_in": [
+        "image, e2e"
+      ]
+    },
+    {
+      "name": "off_source_residual_rms_min_jy_per_beam",
+      "value": 4e-05,
+      "unit": "Jy/beam",
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean/build_24a376_clean.py)",
+        "key": "tolerances.off_source_residual_rms_min_jy_per_beam"
+      },
+      "used_in": [
+        "image, e2e"
+      ]
+    },
+    {
+      "name": "dynamic_range_min",
+      "value": 1417.7,
+      "unit": null,
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean/build_24a376_clean.py)",
+        "key": "max(150, 0.55 * ref_dr); ref_dr = GUIDE 2577.597013886801"
+      },
+      "used_in": [
+        "image, e2e"
+      ]
+    },
+    {
+      "name": "negative_model_bowl_ratio_max",
+      "value": 0.12,
+      "unit": null,
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_3c391_cband (/mnt/fast/radio_bench_data/checkpoints/3c391/<task>/ground_truth.json)",
+        "key": "r1_3c391_image tolerances.negative_model_bowl_ratio_max (same in vla_24a376)"
+      },
+      "used_in": [
+        "image, e2e"
+      ]
+    },
+    {
+      "name": "rubric_structure",
+      "value": null,
+      "unit": null,
+      "status": "CONVENTION",
+      "source": {
+        "suite": "vla_3c391_cband rubrics/r1_3c391_inspect.json; vla_24a376_lband rubrics/r1_24a376_{calibrate,image}.json, r2_24a376_e2e.json",
+        "key": "copied verbatim, task_id and three labels changed"
+      },
+      "used_in": [
+        "all rubrics"
+      ]
+    }
+  ],
+  "geometry": [
+    {
+      "name": "verifier_tclean_recipe",
+      "value": {
+        "cell": "0.1arcsec",
+        "imsize": [
+          250,
+          250
+        ],
+        "weighting": "briggs",
+        "robust": 0.5,
+        "niter": 500
+      },
+      "unit": null,
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Imaging_for_CASA_6.6.6",
+        "section": "Full polarization imaging of the target",
+        "quote": "cell = ['0.1arcsec'],"
+      },
+      "used_in": [
+        "suite.toml geometry.verifier_tclean_recipe"
+      ],
+      "note": "Guide used deconvolver='clarkstokes', stokes='IQUV', interactive=True mask; recipe uses clark (Stokes I), usemask='pb', threshold 0, default cycleniter (non-interactive)."
+    },
+    {
+      "name": "source_aperture",
+      "value": {
+        "ra": "13:31:08.288100",
+        "dec": "+30.30.32.96000",
+        "radius_arcsec": 1.5
+      },
+      "unit": null,
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "listobs",
+        "quote": "4    none 3c286               13:31:08.288100 +30.30.32.96000 J2000   4        4701150"
+      },
+      "used_in": [
+        "suite.toml geometry.source_apertures"
+      ],
+      "note": "radius 1.5 arcsec = 15 pixels from the guide imfit box='110,110,145,145' lower corner to the peak pixel 125 (imaging page imstat maxpos [125, 126]). Choice, not a target."
+    },
+    {
+      "name": "dish_diameter_m",
+      "value": 12.0,
+      "unit": "m",
+      "status": "GUIDE",
+      "source": {
+        "url": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+        "section": "listobs",
+        "quote": "0    DA41  A079      12.0 m"
+      },
+      "used_in": [
+        "suite.toml geometry.dish_diameter_m"
+      ]
+    }
+  ],
+  "polcal_observables_needed": [
+    "pol.target_pol_fraction (P = sqrt(Q^2+U^2)/I from imfit on Stokes I/Q/U; truth 16.4 %)",
+    "pol.target_evpa_deg (0.5*atan2(U,Q); truth 39.05 deg, guide systematic +/- 2 deg)",
+    "pol.target_stokes_v_over_i (leakage residual; guide V = -0.49 mJy vs I = 351 mJy)",
+    "pol.polcal_residual_qu (polfromgain on the polcal-corrected gains of J1337-1257; guide SpwAve Q,U ~ 6e-4, -3e-4)",
+    "pol.dterm_amp_median (Df table; guide: 'a few percent for most of the antennas')",
+    "pol.xy_phase_table_valid (Xfparang+QU table present and finite)",
+    "pol.kcross_table_valid (KCROSS table present and finite)",
+    "a polcal stage in schema/extractors and a polcal rubric; none exist yet"
+  ]
+}

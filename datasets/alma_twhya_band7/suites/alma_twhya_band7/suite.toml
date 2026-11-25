@@ -1,0 +1,56 @@
+[suite]
+suite_id = "alma_twhya_band7"
+legacy_suite_alias = "twhya"
+split = "reference"
+telescope = "ALMA"
+band = "Band 7"
+pol_basis = "linear"
+description = "ALMA 12-m Band 7 (372.5 GHz, 1 SPW x 384 ch) single-pointing calibrated continuum of a protoplanetary disk"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "alma", "interferometry", "band7", "single-pointing", "reference"]
+
+# Field roles from the MS scan intents (msmetadata.intentsforfield on extracted/twhya_calibrated.ms).
+# Field 4 "TW Hya" has zero rows; field 5 "TW Hya" carries all target data. J0539+145 has no rows.
+[roles]
+flux_cal = ["Ceres"]
+bandpass_cal = ["J0522-364", "3c279"]
+phase_cal = ["J1037-295"]
+pol_angle_cal = []
+pol_leakage_cal = []
+targets = ["TW Hya"]
+dead_antennas = []
+missing_stations = []
+target_retention_excludes_dead_antenna = false
+
+[geometry]
+dish_diameter_m = 12.0
+pb_mask_min = 0.20
+offsource_inner_exclusion_beams = 5.0
+phasecenter = "J2000 165.46581667deg -34.70482389deg"
+
+[resources]
+cpus = 8
+verifier_cpus = 8
+memory_mb = 12288
+n_concurrent_trials = 1
+
+[checkpoints]
+builder = "build_alma_twhya_band7:main"
+
+[checkpoints.entries.post_calibrate]
+input_ms = "casaguides/alma_twhya_band7/checkpoints/post_calibrate/input.ms"
+
+[tasks.g1_twhya_image]
+stages = ["image"]
+stage = "image"
+checkpoint_in = "post_calibrate"
+data_dir = "casaguides/alma_twhya_band7/g1_twhya_image"
+input_ms = "casaguides/alma_twhya_band7/checkpoints/post_calibrate/input.ms"
+ground_truth = "casaguides/alma_twhya_band7/g1_twhya_image/ground_truth.json"
+extra_test_files = []
+difficulty = "medium"
+agent_timeout_sec = 1800.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/g1_twhya_image/instruction.md"
+oracle_script = "task_specs/g1_twhya_image/solve.py"
+rubric = "rubrics/g1_twhya_image.json"

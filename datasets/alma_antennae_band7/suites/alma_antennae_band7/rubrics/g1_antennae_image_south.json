@@ -1,0 +1,286 @@
+{
+  "schema_version": "0.2",
+  "task_id": "g1_antennae_image_south",
+  "stages": [
+    "image"
+  ],
+  "pass_reward_min": 0.85,
+  "expect_halt": false,
+  "required_reported_metrics": [],
+  "hard_gates": [
+    {
+      "id": "unlocked_tables",
+      "observable": "proc.table_locked",
+      "primitive": "bool_pass",
+      "params": {
+        "expected": false
+      },
+      "zero_reward_on_fail": true,
+      "zero_subscores_on_fail": true,
+      "failure_tag": "lock_or_timeout"
+    },
+    {
+      "id": "raw_data_unmodified",
+      "observable": "proc.raw_data_unmodified",
+      "primitive": "bool_pass",
+      "params": {
+        "expected": true
+      },
+      "zero_reward_on_fail": true,
+      "optional_when_truth_missing": true,
+      "failure_tag": "raw_data_or_calflag_mutation"
+    }
+  ],
+  "core_subscore_floors": {},
+  "subscores": [
+    {
+      "id": "products_score",
+      "weight": 0.15,
+      "failure_tag": "beam_sampling_or_clean_bowl",
+      "label": "CASA Image Products & Primary Beam Consistency",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "observable": "image.valid_product_count",
+            "primitive": "discrete_map",
+            "label": "Valid Image Product Count",
+            "params": {
+              "mapping": {
+                "5": 1.0,
+                "4": 0.6,
+                "3": 0.4,
+                "2": 0.2,
+                "1": 0.0,
+                "0": 0.0
+              },
+              "default": 0.0
+            }
+          },
+          {
+            "observable": "image.shapes_and_wcs_valid",
+            "primitive": "bool_pass",
+            "label": "Image WCS & Spatial Shapes Valid",
+            "params": {
+              "expected": true
+            }
+          },
+          {
+            "observable": "image.pb_taper_consistent",
+            "primitive": "bool_pass",
+            "label": "Primary Beam Taper & PBcor Consistent",
+            "params": {
+              "expected": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "beam_sampling_score",
+      "weight": 0.2,
+      "failure_tag": "beam_sampling_or_clean_bowl",
+      "label": "Restoring Beam Pixel Sampling",
+      "expr": {
+        "observable": "image.pixels_per_beam",
+        "primitive": "window_ramp",
+        "label": "Pixels Per Beam",
+        "params": {
+          "min_key": "tolerances.pixels_per_beam_min",
+          "max_key": "tolerances.pixels_per_beam_max",
+          "low_zero_at": 1.5,
+          "pad_high": 5.0
+        }
+      }
+    },
+    {
+      "id": "residual_rms_score",
+      "weight": 0.25,
+      "failure_tag": "beam_sampling_or_clean_bowl",
+      "label": "Off-Source Residual RMS",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "observable": "image.offsource_residual_rms_jy",
+            "primitive": "upper_ramp",
+            "label": "Off-Source Residual RMS (Jy/beam)",
+            "unit": "Jy/beam",
+            "params": {
+              "strict_pass": true,
+              "pass_max_key": "tolerances.off_source_residual_rms_max_jy_per_beam",
+              "decay_span_mult_of_pass_max": 1.7
+            }
+          },
+          {
+            "observable": "image.offsource_rms_over_thermal_floor",
+            "primitive": "threshold_gate",
+            "params": {
+              "op": ">=",
+              "limit": 1.0,
+              "pass_if_not_applicable": true
+            },
+            "label": "Residual RMS / thermal floor"
+          },
+          {
+            "observable": "image.offsource_residual_mad_over_rms",
+            "primitive": "threshold_gate",
+            "label": "Off-Source Residual MAD/RMS",
+            "params": {
+              "op": ">=",
+              "limit": 0.5
+            }
+          },
+          {
+            "observable": "image.target_row_retention",
+            "primitive": "window_ramp",
+            "label": "Target Retention vs Delivered Input",
+            "params": {
+              "min_key": "tolerances.image_target_retention_min",
+              "max_key": "tolerances.image_target_retention_max",
+              "pad_low": 0.3,
+              "pad_high": 0.08,
+              "strict_positive": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "deconv_and_bowl_score",
+      "weight": 0.4,
+      "failure_tag": "beam_sampling_or_clean_bowl",
+      "label": "Mosaic Dynamic Range, Clean Bowl & Line-Free Peak Guard",
+      "expr": {
+        "combine": "multiplicative_cap",
+        "children": [
+          {
+            "combine": "weighted_sum",
+            "weights": [
+              0.7,
+              0.3
+            ],
+            "children": [
+              {
+                "observable": "image.dynamic_range",
+                "primitive": "lower_ramp",
+                "label": "Mosaic Dynamic Range",
+                "params": {
+                  "pass_min_key": "tolerances.dynamic_range_min",
+                  "zero_at_scale_of_pass_min": 0.4,
+                  "min_denom": 1.0
+                }
+              },
+              {
+                "observable": "image.negative_bowl_ratio",
+                "primitive": "threshold_gate",
+                "label": "Negative Model Bowl Ratio",
+                "params": {
+                  "op": "<",
+                  "limit_key": "tolerances.negative_model_bowl_ratio_max"
+                }
+              }
+            ]
+          },
+          {
+            "observable": "image.negative_bowl_ratio",
+            "primitive": "upper_ramp",
+            "params": {
+              "strict_pass": true,
+              "pass_max_key": "tolerances.negative_model_bowl_ratio_max",
+              "decay_span_mult_of_pass_max": 1.0,
+              "scale_above_pass": 0.25
+            }
+          },
+          {
+            "observable": "image.pb_taper_consistent",
+            "primitive": "bool_pass",
+            "params": {
+              "expected": true
+            }
+          },
+          {
+            "observable": "image.offsource_rms_over_thermal_floor",
+            "primitive": "threshold_gate",
+            "params": {
+              "op": ">=",
+              "limit": 1.0,
+              "pass_if_not_applicable": true
+            },
+            "label": "Residual RMS / thermal floor"
+          },
+          {
+            "observable": "image.offsource_residual_mad_over_rms",
+            "primitive": "threshold_gate",
+            "params": {
+              "op": ">=",
+              "limit": 0.5
+            }
+          },
+          {
+            "observable": "image.peak_jy_per_beam",
+            "primitive": "upper_ramp",
+            "label": "Continuum Peak Upper Guard (Jy/beam)",
+            "unit": "Jy/beam",
+            "params": {
+              "strict_pass": true,
+              "pass_max_key": "tolerances.continuum_peak_max_jy_per_beam",
+              "decay_span_mult_of_pass_max": 1.0
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "display_metrics": [
+    {
+      "id": "peak",
+      "observable": "image.peak_jy_per_beam",
+      "label": "Peak (mJy/beam)",
+      "unit": "mJy/beam",
+      "scale": 1000.0,
+      "digits": 3,
+      "truth_key": "guide_published.peak_jy_per_beam"
+    },
+    {
+      "id": "rms",
+      "observable": "image.offsource_residual_rms_jy",
+      "label": "Off-source rms (mJy/beam)",
+      "unit": "mJy/beam",
+      "scale": 1000.0,
+      "digits": 3,
+      "truth_key": "guide_published.rms_jy_per_beam"
+    },
+    {
+      "id": "bmaj",
+      "observable": "image.b_major_arcsec",
+      "label": "Beam major (arcsec)",
+      "unit": "arcsec",
+      "digits": 3,
+      "truth_key": "guide_published.b_major_arcsec"
+    },
+    {
+      "id": "bmin",
+      "observable": "image.b_minor_arcsec",
+      "label": "Beam minor (arcsec)",
+      "unit": "arcsec",
+      "digits": 3,
+      "truth_key": "guide_published.b_minor_arcsec"
+    },
+    {
+      "id": "bpa",
+      "observable": "image.b_pa_deg",
+      "label": "Beam PA (deg)",
+      "unit": "deg",
+      "digits": 1,
+      "truth_key": "guide_published.b_pa_deg"
+    },
+    {
+      "id": "dr",
+      "observable": "image.dynamic_range",
+      "label": "Dynamic range",
+      "digits": 2,
+      "truth_key": "reference_product.dynamic_range"
+    }
+  ]
+}

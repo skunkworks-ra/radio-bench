@@ -1,0 +1,549 @@
+{
+  "suite_id": "vla_3c129_pband",
+  "split": "reference",
+  "guide": {
+    "title": "VLA Radio galaxy 3C 129: P-band continuum tutorial-CASA6.7.2",
+    "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+    "raw_wikitext": "https://casaguides.nrao.edu/index.php?title=VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2&action=raw",
+    "casa_version_in_guide": "6.7.2-42",
+    "casa_version_used": "6.7.6.14"
+  },
+  "slice": {
+    "status": "CHOICE",
+    "spw": "2~9 (source ids; 8 x 16 MHz, 256-384 MHz)",
+    "hanning": true,
+    "chanbin": 2,
+    "timebin": "4s",
+    "scans": "all (1~5)",
+    "correlations": "XX,XY,YX,YY",
+    "why": "The guide images spw='3~8' (\"the cleanest spectral windows that are totally RFI free\") and names spws 1,2 and 9,10 as continuous-RFI windows (\"these spectral windows (spws 1,2 and 9,10, but possibly more) can be immediately flagged.\"). spws 2~9 keep the six imaging spws plus one RFI spw on each side, with the same 320 MHz centre as spw 3~8. Hanning first (guide 7c), then 2-channel and 2-integration averaging bring the input to about 2.5 GB (estimate from 8 spw x 378 baselines x ~356 integrations x 64 ch x 4 corr; not measured until build).",
+    "effect_on_guide_numbers": "Guide numbers refer to the full band. The 37% flagged fraction is not expected to hold on the slice (not measured). The guide gives no image rms, peak, or beam measurement, so no slice-scaled image target exists (no DERIVED rms)."
+  },
+  "entries": [
+    {
+      "name": "roles.flux_cal / roles.bandpass_cal",
+      "value": "3C147",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Define useful variables",
+      "quote": "bpcal = '3C147'  # the primary calibrator",
+      "used_in": [
+        "suite.toml [roles]",
+        "inspect ground_truth flux_calibrator, bandpass_calibrator"
+      ]
+    },
+    {
+      "name": "roles.targets",
+      "value": "3C129",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Define useful variables",
+      "quote": "target = '3C129'  # the target source",
+      "used_in": [
+        "suite.toml [roles]",
+        "inspect ground_truth target_fields"
+      ]
+    },
+    {
+      "name": "inspect ground_truth phase_calibrator",
+      "value": "3C147",
+      "status": "PRODUCT",
+      "product": "extracted/imag-test-copy.57080.956837025464/Scan.xml (guide-shipped ASDM)",
+      "quote": "scans 1, 2, 3: scanIntent CALIBRATE_PHASE, sourceName 3C147; scans 4, 5: OBSERVE_TARGET, 3C129",
+      "supporting_guide_quote": {
+        "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+        "section": "Transfer of calibrations to the target field",
+        "quote": "applycal(vis=msdata, parang=True, applymode='calflagstrict', flagbackup=True, gaintable=['3C129_pband.antpos','3C129_pband.rq',"
+      },
+      "used_in": [
+        "inspect rubric phase_part"
+      ],
+      "note": "No separate phase calibrator was observed; 3C147 gains are applied to the target. roles.phase_cal is left empty so the calibrate fluxscale observables are not_applicable."
+    },
+    {
+      "name": "roles.dead_antennas",
+      "value": [
+        "ea19"
+      ],
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Initial processing steps > Dead antennas",
+      "quote": "This indicates that this antenna was dead and should be flagged.",
+      "used_in": [
+        "suite.toml [roles]",
+        "inspect ground_truth dead_antennas",
+        "builder must-flag"
+      ],
+      "note": "code: flagdata(vis=rawmsdata,mode='manual',antenna='ea19')"
+    },
+    {
+      "name": "roles.missing_stations",
+      "value": [
+        "ea04"
+      ],
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Preliminary data inspection",
+      "quote": "Of the 28 VLA antennas labelled ea01 - ea28, antenna ea04 is not participating in this observation.",
+      "used_in": [
+        "suite.toml [roles]",
+        "inspect ground_truth missing_vla_pads"
+      ]
+    },
+    {
+      "name": "inspect dead_antenna ignore_set",
+      "value": [
+        "ea28",
+        "ea14"
+      ],
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Delay and bandpass calibration",
+      "quote": "Also note that there are no bandpass solutions for antennas ea19 and ea28, and only a few solutions for ea14.",
+      "used_in": [
+        "inspect rubric dead_antenna_score ignore_set"
+      ]
+    },
+    {
+      "name": "must-flag scans",
+      "value": "1~2",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Initial processing steps > Dead antennas",
+      "quote": "we also make sure that the first two scans are flagged, which were not labelled as setup scans",
+      "used_in": [
+        "builder must-flag",
+        "oracle precal"
+      ],
+      "note": "second quote, Automatic flagging: \"scans 1 and 2 (the dummy scans on 3C147) are 100 percent flagged\""
+    },
+    {
+      "name": "refant",
+      "value": "ea09",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Delay and bandpass calibration",
+      "quote": "Since we picked ea09 as our reference antenna, the delays for this antenna ID are arbitrarily set to zero.",
+      "used_in": [
+        "builder",
+        "oracles"
+      ]
+    },
+    {
+      "name": "flux standard",
+      "value": "Perley-Butler 2017, model 3C147_P.im",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Absolute Flux Density Calibration",
+      "quote": "setjy(vis=msdata, field=bpcal, model='3C147_P.im', standard='Perley-Butler 2017', usescratch=True, scalebychan=True, spw='')",
+      "used_in": [
+        "builder precal",
+        "oracle precal"
+      ],
+      "note": "Same line in the guide-extracted script vla_3c129_pband_672.extracted.py (follows setjy(vis=msdata, listmodels=True)); the page may render it inside a commented block, so the verifier should check the code block text."
+    },
+    {
+      "name": "antenna position offsets",
+      "value": "17 antennas, values in builder ANTPOS_OFFSETS_M",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Initial processing steps > Antenna Position Corrections",
+      "quote": "The logger output shows that there are 17 antennas with positional offsets:",
+      "used_in": [
+        "builder antpos table",
+        "oracle antpos table"
+      ],
+      "note": "Per-antenna values copied from the logger block on the same page (ea02 0.00000 0.00000 0.00160 ... ea27 -0.00120 0.00070 0.00000)."
+    },
+    {
+      "name": "tfcrop pass 1",
+      "value": "timecutoff=4., freqcutoff=3., maxnpieces=5, ntime='3600s', correlation='ABS_XY,ABS_YX'",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Automatic flagging",
+      "quote": "flagdata(vis=msdata, field='*', mode='tfcrop', datacolumn='data', timecutoff=4., freqcutoff=3., maxnpieces=5,",
+      "used_in": [
+        "builder",
+        "oracle precal"
+      ]
+    },
+    {
+      "name": "tfcrop pass 2",
+      "value": "timecutoff=3., freqcutoff=3., maxnpieces=2, correlation='ABS_XX,ABS_YY'",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Automatic flagging",
+      "quote": "flagdata(vis=msdata, field='*', mode='tfcrop', datacolumn='data', timecutoff=3., freqcutoff=3., maxnpieces=2,",
+      "used_in": [
+        "builder",
+        "oracle precal"
+      ]
+    },
+    {
+      "name": "bandpass-cal rflag",
+      "value": "timedevscale=4., freqdevscale=3.",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Automatic flagging",
+      "quote": "flagdata(vis=msdata, field=bpcal, mode='rflag', datacolumn='corrected', timedevscale=4., freqdevscale=3.,",
+      "used_in": [
+        "builder golden precal flags",
+        "oracle precal"
+      ]
+    },
+    {
+      "name": "statwt timebin",
+      "value": 30,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Statwt",
+      "quote": "statwt(vis='3C129_pband_target.ms', datacolumn='data', timebin=30)",
+      "used_in": [
+        "builder post_calibrate",
+        "oracle calibrate"
+      ],
+      "note": "timebin=30 is an integration count; the slice integration is 4 s (native 2 s), so the window is 120 s on the slice vs 60 s in the guide."
+    },
+    {
+      "name": "verifier recipe cell_arcsec",
+      "value": 5.0,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Imaging",
+      "quote": "tclean(vis='3C129_pband_target.ms', imagename='3C129_initial_clean', cell=['5.0arcsec','5.0arcsec'], imsize=[4860,4860], deconvolver='mtmfs',",
+      "used_in": [
+        "suite.toml verifier_tclean_recipe",
+        "oracle image"
+      ]
+    },
+    {
+      "name": "verifier recipe robust",
+      "value": 0.0,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Imaging",
+      "quote": "pblimit=0.01, savemodel='modelcolumn', weighting='briggs', robust=0.0)",
+      "used_in": [
+        "suite.toml verifier_tclean_recipe",
+        "oracle image"
+      ]
+    },
+    {
+      "name": "guide.guide_expected_hpbw_arcsec",
+      "value": 18.5,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Imaging",
+      "quote": "we can see that the expected HPBW for B Configuration, P Band is 18.5 arcsec.",
+      "used_in": [
+        "image rubric beam_vs_guide_hpbw_score (weight 0, informational)"
+      ],
+      "note": "Generic B-config P-band value, not a measured beam of this dataset."
+    },
+    {
+      "name": "guide.guide_flagged_fraction_after_autoflag",
+      "value": 0.37,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Automatic flagging",
+      "quote": "We find that most spectral windows are RFI free and that about 37% of the data was flagged.",
+      "used_in": [
+        "ground_truth guide block (recorded, not scored)"
+      ],
+      "note": "Full band (16 x 16 MHz spws). The slice keeps 6 of the guide's RFI-free imaging spws plus 2 RFI spws, so its flagged fraction is expected to differ (not measured)."
+    },
+    {
+      "name": "guide.guide_delay_abs_max_ns",
+      "value": 30.0,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Delay and bandpass calibration",
+      "quote": "All other delays should be within 30 nanosec or so (which they should be for this data set; Fig. 6).",
+      "used_in": [
+        "ground_truth guide block (recorded, not scored; no delay observable exists)"
+      ]
+    },
+    {
+      "name": "guide.guide_cell_arcsec",
+      "value": 5.0,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Imaging",
+      "quote": "cell=['5.0arcsec','5.0arcsec']",
+      "used_in": [
+        "ground_truth guide block (recorded)"
+      ]
+    },
+    {
+      "name": "tolerances.target_unflagged_rows_min",
+      "value": 0.4,
+      "status": "DERIVED",
+      "formula": "1 - 0.60 (upper end of the guide's expected flagging range)",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Automatic flagging",
+      "quote": "We typically expect between 40-60% of flagging due to interference in a significant fraction of the band.",
+      "used_in": [
+        "calibrate rubric retention_score window_ramp min (subscore, not a hard gate)"
+      ]
+    },
+    {
+      "name": "precal ground_truth flux_cal_model_parallel_mean_jy and per_chan_jy",
+      "value": null,
+      "status": "DERIVED",
+      "formula": "mean unflagged parallel-hand |MODEL_DATA| on 3C147 after the guide's setjy (Perley-Butler 2017, 3C147_P.im) on the slice; written by build_vla_3c129_pband.py",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "section": "Absolute Flux Density Calibration",
+      "quote": "setjy(vis=msdata, field=bpcal, model='3C147_P.im', standard='Perley-Butler 2017', usescratch=True, scalebychan=True, spw='')",
+      "used_in": [
+        "precal rubric model_data_score (subscore, not a hard gate)"
+      ],
+      "open": "value written at build time"
+    },
+    {
+      "name": "precal_masks.npz must/neutral/clean",
+      "value": null,
+      "status": "DERIVED",
+      "formula": "must = (online + ea19 + scans 1~2 + clip zeros + shadow) | (bandpass-cal rflag outliers >= 8 MAD); neutral = tfcrop + rflag + >= 3.5 MAD + 2 edge channels per side; clean = rest (24A-376 builder rule on the guide's flag recipe)",
+      "used_in": [
+        "precal rubric flag_recall_score, clean_fpr_score"
+      ],
+      "open": "written at build time"
+    },
+    {
+      "name": "inspect ground_truth bandpass_min_elevation_deg",
+      "value": null,
+      "status": "PRODUCT",
+      "product": "raw/input.ms sliced from the guide-shipped ASDM; casatools measures AZEL of 3C147 at every timestamp",
+      "used_in": [
+        "inspect rubric elevation_score"
+      ],
+      "open": "value written at build time"
+    },
+    {
+      "name": "raw_data_blake2b (per task)",
+      "value": null,
+      "status": "PRODUCT",
+      "product": "delivered input.ms DATA + row keys",
+      "used_in": [
+        "hard gate raw_data_unmodified (integrity, not a science target)"
+      ],
+      "open": "written at build time"
+    },
+    {
+      "name": "tolerances.elevation_abs_deg",
+      "value": 1.0,
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "build_24a376_clean.py inspect_gt.tolerances.elevation_abs_deg",
+      "used_in": [
+        "inspect rubric"
+      ]
+    },
+    {
+      "name": "tolerances.model_amp_rel_tol",
+      "value": 0.02,
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "precal_gt.tolerances.model_amp_rel_tol",
+      "used_in": [
+        "precal rubric"
+      ]
+    },
+    {
+      "name": "tolerances.flag_recall_min",
+      "value": 0.85,
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "precal_gt.tolerances.flag_recall_min",
+      "used_in": [
+        "precal rubric"
+      ]
+    },
+    {
+      "name": "tolerances.clean_false_positive_max",
+      "value": 0.05,
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "precal_gt.tolerances.clean_false_positive_max",
+      "used_in": [
+        "precal rubric"
+      ]
+    },
+    {
+      "name": "tolerances.target_unflagged_rows_max",
+      "value": 0.98,
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "calibrate_gt.tolerances.target_unflagged_rows_max",
+      "used_in": [
+        "calibrate rubric"
+      ]
+    },
+    {
+      "name": "tolerances.bp_channel_phase_rms_max_deg",
+      "value": 5.0,
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "calibrate_gt.tolerances.bp_channel_phase_rms_max_deg",
+      "used_in": [
+        "calibrate rubric"
+      ]
+    },
+    {
+      "name": "tolerances.verifier_tclean_dr_min",
+      "value": 150.0,
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "calibrate_gt.tolerances.verifier_tclean_dr_min = max(150.0, 0.70 * ver_dr)",
+      "used_in": [
+        "calibrate rubric target_fidelity_score"
+      ],
+      "note": "Floor term only; the measured term is dropped because the guide gives no image numbers."
+    },
+    {
+      "name": "tolerances.pixels_per_beam_min / max",
+      "value": [
+        2.5,
+        6.0
+      ],
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "image_gt.tolerances.pixels_per_beam_min / pixels_per_beam_max",
+      "used_in": [
+        "image rubric"
+      ]
+    },
+    {
+      "name": "tolerances.off_source_residual_rms_min_jy_per_beam",
+      "value": 4e-05,
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "image_gt.tolerances.off_source_residual_rms_min_jy_per_beam",
+      "used_in": [
+        "image rubric sanity gate"
+      ]
+    },
+    {
+      "name": "tolerances.dynamic_range_min",
+      "value": 150.0,
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "image_gt.tolerances.dynamic_range_min = max(150.0, 0.55 * ref_dr)",
+      "used_in": [
+        "image rubric"
+      ],
+      "note": "Floor term only, as above."
+    },
+    {
+      "name": "tolerances.negative_model_bowl_ratio_max",
+      "value": 0.12,
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "image_gt.tolerances.negative_model_bowl_ratio_max",
+      "used_in": [
+        "image rubric"
+      ]
+    },
+    {
+      "name": "rubric constants",
+      "value": "all ramp/gate constants (decay spans, pads, 0.50 MAD/RMS, 0.15 rank-1 log-amp, 0.00001 Jy std, 0.40/0.05 target recall, 0.50 blanket guards, discrete product map)",
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "rubrics/r1_24a376_*.json and r2_24a376_e2e.json, copied verbatim",
+      "used_in": [
+        "all rubrics"
+      ]
+    },
+    {
+      "name": "beam_vs_guide_hpbw_score rel tolerance",
+      "value": {
+        "pass_rel_tol": 0.15,
+        "decay_span": 0.3
+      },
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "rubrics/r1_24a376_calibrate.json verifier_tclean_peak_score params",
+      "used_in": [
+        "image rubric (weight 0)"
+      ]
+    },
+    {
+      "name": "geometry",
+      "value": {
+        "dish_diameter_m": 25.0,
+        "pb_mask_min": 0.2,
+        "offsource_inner_exclusion_beams": 5.0
+      },
+      "status": "CONVENTION",
+      "suite": "vla_3c391_cband and vla_24a376_lband",
+      "key": "suite.toml [geometry]",
+      "used_in": [
+        "suite.toml"
+      ]
+    },
+    {
+      "name": "verifier recipe deconvolution budget",
+      "value": {
+        "pblimit": 0.2,
+        "pbmask": 0.2,
+        "usemask": "pb",
+        "niter": 4000,
+        "cycleniter": 1000,
+        "nmajor": 4,
+        "timeout_sec": 2100.0
+      },
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "suite.toml [geometry.verifier_tclean_recipe]",
+      "used_in": [
+        "suite.toml"
+      ]
+    },
+    {
+      "name": "resources and timeouts",
+      "value": {
+        "cpus": 8,
+        "verifier_cpus": 8,
+        "memory_mb": 16384,
+        "n_concurrent_trials": 1
+      },
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "suite.toml [resources] and [tasks.*] agent/verifier timeouts",
+      "used_in": [
+        "suite.toml"
+      ]
+    },
+    {
+      "name": "precal mask classification",
+      "value": {
+        "strong_mad": 8.0,
+        "mild_mad": 3.5,
+        "edge_channels_per_side": 2
+      },
+      "status": "CONVENTION",
+      "suite": "vla_24a376_lband (/mnt/fast/radio_bench_data/24a376_clean)",
+      "key": "build_24a376_clean.py strong_amp/mild_amp and edge_ch_2d ([0,1,30,31] of 32 channels)",
+      "used_in": [
+        "builder"
+      ]
+    }
+  ],
+  "non_standard": [
+    "Hanning smoothing is applied by the builder (guide 7c), because any DATA rewrite by the agent would break the raw_data_unmodified hard gate.",
+    "Ionospheric TEC correction (tec_maps / gencal tecim) is skipped in builder and oracles: it downloads IGS maps and the builder and containers are offline.",
+    "gencal antpos uses the guide's 17 logged offsets as explicit parameters instead of the online archive lookup.",
+    "Verifier recipe uses gridder='standard' with imsize 1024 (1.4 deg) and threshold '0mJy' because VerifierTcleanRecipe has no wprojplanes field; status CHOICE.",
+    "Oracle image uses the guide tclean with imsize 2048 instead of 4860 and auto-multithresh instead of interactive masking; status CHOICE; runtime not measured.",
+    "post_calibrate/input.ms drops MODEL_DATA to keep the image-stage input smaller.",
+    "run.py registers this suite in radio_bench.render_jobs suite dicts at runtime because the render_jobs CLI only knows synth and 3c391."
+  ],
+  "open": [
+    "Guide has no number for image rms, peak, dynamic range, restored beam, or flux of 3C129: residual-rms upper ramp removed, DR uses the 150 convention floor only.",
+    "Guide has no number for 3C147 setjy flux density: precal model target is DERIVED at build.",
+    "Guide has no number for bandpass phase flatness or gain scatter (\"a few percent\" only): convention tolerances used.",
+    "No observable for delay values, so the guide's 30 ns statement is recorded but not scored.",
+    "No fluxscale check is possible: there is no secondary calibrator; fluxscale_score dropped from calibrate and e2e rubrics.",
+    "No selfcal stage is gradeable, so the guide's self-calibration section is not covered."
+  ]
+}

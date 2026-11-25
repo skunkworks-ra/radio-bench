@@ -1,0 +1,217 @@
+{
+  "suite_id": "vla_snr_g55",
+  "split": "reference",
+  "guides": {
+    "flagging": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Flagging-CASA6.7.2&oldid=42307",
+    "imaging": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Imaging-CASA6.7.2&oldid=42457"
+  },
+  "quote_note": "Quotes are copied from the page wikitext (index.php?title=<page>&action=raw); wiki markup such as <math> and &ndash; is kept verbatim.",
+  "entries": {
+    "inspect.flux_calibrator": {
+      "value": "0542+498=3C147",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Flagging-CASA6.7.2&oldid=42307",
+      "section": "Preliminary Data Evaluation",
+      "quote": "* 0542+498=3C147, field ID 2: The flux density scale/bandpass calibrator."
+    },
+    "inspect.bandpass_calibrator": {
+      "value": "0542+498=3C147",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Flagging-CASA6.7.2&oldid=42307",
+      "section": "Preliminary Data Evaluation",
+      "quote": "* 0542+498=3C147, field ID 2: The flux density scale/bandpass calibrator.",
+      "note": "The guide's flagging-only bandpass (section RFlag) is solved on J1925+2106; the field role stays 3C147 per this quote and the MS intents."
+    },
+    "inspect.phase_calibrator": {
+      "value": "J1925+2106",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Flagging-CASA6.7.2&oldid=42307",
+      "section": "Preliminary Data Evaluation",
+      "quote": "* J1925+2106,     field ID 0: The complex gain (amplitude and phase) calibrator;"
+    },
+    "inspect.target_fields": {
+      "value": ["G55.7+3.4"],
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Flagging-CASA6.7.2&oldid=42307",
+      "section": "Preliminary Data Evaluation",
+      "quote": "* G55.7+3.4,      field ID 1: The supernova remnant;"
+    },
+    "inspect.dead_antennas": {
+      "value": [],
+      "status": "PRODUCT",
+      "product": "SNR_G55_10s.ms (SNR_G55_10s.tar.gz), DATA column",
+      "method": "median |DATA| per antenna on 0542+498=3C147 scan 310 cross-correlations; no antenna below 0.05 x array median (lowest ea13 = 0.1852 vs median of 23 antennas near 0.25); 0.05 factor from vla_24a376_lband task_specs/r1_24a376_inspect/solve.py",
+      "measured_file": "<data_dir>/casaguides/vla_snr_g55/extracted/product_measurements.json"
+    },
+    "inspect.bandpass_min_elevation_deg": {
+      "value": 20.4833,
+      "status": "PRODUCT",
+      "product": "SNR_G55_10s.ms (SNR_G55_10s.tar.gz), FIELD + MAIN TIME",
+      "method": "casatools measures AZEL of field 0542+498=3C147 at all 63 unique timestamps, minimum = 20.483336 deg; recomputed and checked by build_vla_snr_g55.py",
+      "measured_file": "<data_dir>/casaguides/vla_snr_g55/extracted/product_measurements.json",
+      "corroborating_quote": {
+        "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Flagging-CASA6.7.2&oldid=42307",
+        "section": "Shadowed Antennas",
+        "quote": "The flux density scale/ bandpass calibrator 3C147 was observed towards the end of the session, which could result in some shadowing of antennas due to its low elevation of about 20&ndash;22 degrees."
+      }
+    },
+    "inspect.elevation_abs_deg": {
+      "value": 1.0,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband: build_24a376_clean.py inspect_gt tolerances.elevation_abs_deg"
+    },
+    "precal.flag_recall_min": {
+      "value": 0.85,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband: build_24a376_clean.py precal_gt tolerances.flag_recall_min"
+    },
+    "precal.clean_false_positive_max": {
+      "value": 0.05,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband: build_24a376_clean.py precal_gt tolerances.clean_false_positive_max (same value in vla_3c391_cband CLEAN_FALSE_POSITIVE_MAX)"
+    },
+    "precal.masks": {
+      "value": null,
+      "status": "PRODUCT",
+      "product": "SNR_G55_10s.calib.ms (SNR_G55_10s.calib.tar.gz), FLAG + FLAG_ROW on G55.7+3.4 rows",
+      "method": "must = online FLAG_CMD + shadow(tolerance=0) + clipzeros + quack(5 s, beg), the guide's commands in sections Online Flags / Shadowed Antennas / Zero-Amplitude Data / Quacking; target rows: neutral = flagged in the guide-shipped calibrated MS or absent from it, clean = unflagged there; calibrator rows: neutral = flagged by the guide's tfcrop/rflag/extend/manual flagdata commands run by build_vla_snr_g55.py, clean = not flagged. No per-field or per-spw percentage is stated in the guide.",
+      "corroborating_quote": {
+        "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Flagging-CASA6.7.2&oldid=42307",
+        "section": "Flagging Summary & Report",
+        "quote": "As a result of the flagging we have removed over 40% of the data for G55.7+3.4 and, as expected, spectral windows 0 and 2 have the most flagged data."
+      }
+    },
+    "precal.flux_cal_model_amp_jy": {
+      "value": null,
+      "status": "GUIDE",
+      "note": "OPEN: neither guide states a 3C147 model flux density; model_data_score removed from g1_g55_precal."
+    },
+    "calibrate.guide_target_row_retention": {
+      "value": 0.5014,
+      "status": "PRODUCT",
+      "product": "SNR_G55_10s.calib.ms vs SNR_G55_10s.ms",
+      "method": "unflagged RR/LL cells on G55.7+3.4 cross rows in the calibrated MS (146124159) / (2277000 raw target rows x 64 channels x 2) = 0.501359; same definition as cal.target_row_retention",
+      "measured_file": "<data_dir>/casaguides/vla_snr_g55/extracted/product_measurements.json",
+      "corroborating_quote": {
+        "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Flagging-CASA6.7.2&oldid=42307",
+        "section": "Flagging Summary & Report",
+        "quote": "As a result of the flagging we have removed over 40% of the data for G55.7+3.4 and, as expected, spectral windows 0 and 2 have the most flagged data."
+      }
+    },
+    "calibrate.target_unflagged_rows_min": {
+      "value": 0.45,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband: build_24a376_clean.py calibrate_gt tolerances.target_unflagged_rows_min = max(0.45, tgt_ret - 0.20) with tgt_ret = 0.5014 (PRODUCT) -> 0.45",
+      "note": "Leaves only 0.051 headroom below the guide's own retention."
+    },
+    "calibrate.target_unflagged_rows_max": {
+      "value": 0.98,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband: build_24a376_clean.py calibrate_gt tolerances.target_unflagged_rows_max"
+    },
+    "calibrate.bp_channel_phase_rms_max_deg": {
+      "value": 5.0,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband: build_24a376_clean.py calibrate_gt tolerances.bp_channel_phase_rms_max_deg"
+    },
+    "calibrate.phase_cal_flux_jy": {
+      "value": null,
+      "status": "GUIDE",
+      "note": "OPEN: neither guide states a J1925+2106 flux density; fluxscale_score removed from g1_g55_calibrate and g2_g55_e2e."
+    },
+    "calibrate.verifier_tclean_recipe": {
+      "value": null,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Imaging-CASA6.7.2&oldid=42457",
+      "section": "Regular CLEAN & RMS Noise",
+      "quote": "tclean(vis='SNR_G55_10s.calib.ms', imagename='SNR_G55_10s.Reg.Clean.nmajor4', \n      imsize=1280, cell='8arcsec', pblimit=-0.01, nmajor=4, niter=10000,savemodel='modelcolumn')",
+      "note": "Recipe copies imsize, cell, niter, nmajor and the tclean defaults (natural weighting, hogbom, standard gridder). pblimit 0.2, pbcor and the fixed timeout follow the verifier recipe convention of vla_24a376_lband / vla_3c391_cband because the verifier gates on pb >= pblimit."
+    },
+    "image.guide_rms_jy_per_beam": {
+      "value": 5.0e-05,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Imaging-CASA6.7.2&oldid=42457",
+      "section": "Regular CLEAN & RMS Noise",
+      "quote": "The lowest rms value we found was in the order of about <math>5\\cdot10^{-5}</math> Jy/beam, which we will use to calculate our threshold."
+    },
+    "image.rms_max_factor": {
+      "value": 2.0,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband: build_24a376_clean.py image_gt tolerances.off_source_residual_rms_max_jy_per_beam = ref_rms * 2.0; here ref_rms = image.guide_rms_jy_per_beam -> 1.0e-4 Jy/beam (also used for calibrate tolerances.verifier_tclean_rms_max_jy_per_beam)"
+    },
+    "image.rms_min_jy_per_beam": {
+      "value": 4.0e-05,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband: build_24a376_clean.py image_gt tolerances.off_source_residual_rms_min_jy_per_beam and rubric literal limit 0.00004",
+      "note": "RISK: only 0.8 x the guide rms; a legitimately better residual would fail this floor gate. Check against the oracle run."
+    },
+    "image.guide_beam_major_arcsec": {
+      "value": 29.30,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Imaging-CASA6.7.2&oldid=42457",
+      "section": "Image Conversion",
+      "quote": "For a beam of 29.30\"x29.03\" and a reference frequency of 1.579 GHz (as taken from the previous [https://casadocs.readthedocs.io/en/v6.7.2/api/tt/casatasks.information.imhead.html#casatasks.information.imhead imhead] run) we calculate the brightness temperature using",
+      "note": "Display only (no beam tolerance convention exists in the existing suites)."
+    },
+    "image.guide_beam_minor_arcsec": {
+      "value": 29.03,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Imaging-CASA6.7.2&oldid=42457",
+      "section": "Image Conversion",
+      "quote": "For a beam of 29.30\"x29.03\" and a reference frequency of 1.579 GHz (as taken from the previous [https://casadocs.readthedocs.io/en/v6.7.2/api/tt/casatasks.information.imhead.html#casatasks.information.imhead imhead] run) we calculate the brightness temperature using",
+      "note": "Display only."
+    },
+    "image.pixels_per_beam_min": {
+      "value": 3.0,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Imaging-CASA6.7.2&oldid=42457",
+      "section": "Cell (Pixel) Size and Image Size",
+      "quote": "For the most effective cleaning, we recommend using a pixel size such that there are 3 - 5 pixels across the synthesized beam."
+    },
+    "image.pixels_per_beam_max": {
+      "value": 5.0,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Imaging-CASA6.7.2&oldid=42457",
+      "section": "Cell (Pixel) Size and Image Size",
+      "quote": "For the most effective cleaning, we recommend using a pixel size such that there are 3 - 5 pixels across the synthesized beam."
+    },
+    "image.negative_model_bowl_ratio_max": {
+      "value": 0.12,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband: build_24a376_clean.py image_gt tolerances.negative_model_bowl_ratio_max (same value in vla_3c391_cband NEGATIVE_MODEL_BOWL_RATIO_MAX)"
+    },
+    "image.peak_jy_per_beam": {
+      "value": null,
+      "status": "GUIDE",
+      "note": "OPEN: the guide states no peak brightness; dynamic_range leaf removed from g1_g55_image deconv_and_bowl_score."
+    },
+    "image.dynamic_range_min": {
+      "value": null,
+      "status": "GUIDE",
+      "note": "OPEN: no guide peak, so no guide dynamic range."
+    },
+    "geometry.phasecenter": {
+      "value": "J2000 290.41666667deg 21.75deg",
+      "status": "PRODUCT",
+      "product": "SNR_G55_10s.ms FIELD table, G55.7+3.4 (listobs 19:21:40.000000 +21.45.00.00000)"
+    },
+    "geometry.off_source_min_radius_arcsec": {
+      "value": 480.0,
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Imaging-CASA6.7.2&oldid=42457",
+      "section": "Multi-Scale CLEAN",
+      "quote": "Note that 16 arcminutes (960 arcseconds) roughly corresponds to the size of G55.7+3.4.",
+      "note": "Radius = half the quoted 960 arcsec size (geometry, not a scored target)."
+    },
+    "geometry.pb_mask_min": {
+      "value": 0.2,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband and vla_3c391_cband suite.toml [geometry] pb_mask_min"
+    },
+    "geometry.offsource_inner_exclusion_beams": {
+      "value": 5.0,
+      "status": "CONVENTION",
+      "convention": "vla_24a376_lband and vla_3c391_cband suite.toml [geometry] offsource_inner_exclusion_beams"
+    }
+  }
+}

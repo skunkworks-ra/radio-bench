@@ -1,0 +1,43 @@
+{
+  "suite_id": "vla_3c75_pol",
+  "split": "reference",
+  "archives": [
+    {
+      "name": "TDRW0001_calibrated_CASA6.5.4.ms.tgz",
+      "url": "https://casa.nrao.edu/Data/VLA/Polarization/TDRW0001_calibrated_CASA6.5.4.ms.tgz",
+      "sha256": "57bfd5d976a0c8feeaf7cc55ca05d5cb2aa450fe5bc87a87635472ad3d6cb740",
+      "bytes": 10939683744,
+      "extracts_to": "TDRW0001_calibrated.ms",
+      "role": "VLA-pipeline-calibrated parallel-hand MS (spws 2~9 split to 0~7, parang=False), starting point of the guide"
+    },
+    {
+      "name": "pipeline-20240116T215537.tgz",
+      "url": "https://casa.nrao.edu/Data/VLA/Polarization/pipeline-20240116T215537.tgz",
+      "sha256": "7f31873e10be15727e4d985c291856fc49e7aea935311e2bf7cc57874954dfd5",
+      "bytes": 25750338,
+      "extracts_to": "pipeline-20240116T215537",
+      "role": "VLA calibration pipeline weblog and saved state for the same execution block"
+    }
+  ],
+  "checksum_provenance": "/home/pjaganna/Data/casaguides/manifest.json entries for suite vla_3c75_pol; re-verified by run.py fetch",
+  "guide_pages": [
+    {
+      "title": "CASA Guides:Polarization Calibration based on CASA pipeline standard reduction: The radio galaxy 3C75-CASA6.7.2",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "raw_url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2&action=raw",
+      "note": "Current page; the short URL https://casaguides.nrao.edu/index.php/Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75 redirects here. Page text says it targets monolithic CASA 6.6.6 with the VLA pipeline."
+    },
+    {
+      "title": "CASA Guides:Polarization Calibration based on CASA pipeline standard reduction: The radio galaxy 3C75-CASA6.5.4",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.5.4",
+      "raw_url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.5.4&action=raw",
+      "note": "Older edition matching the CASA 6.5.4 calibrated-MS tarball name."
+    },
+    {
+      "title": "VLA-S-CASA_Pipeline-CASA6.7.2",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA-S-CASA_Pipeline-CASA6.7.2",
+      "note": "Companion pipeline weblog guide for the same dataset (cited by the polarization guide, section 'Pipeline Calibration of Parallel Hands (RR/LL)')."
+    }
+  ],
+  "local_extracted_guide_script": "/home/pjaganna/Data/casaguides/vla_3c75_pol/scripts/casa_guides_polarization_calibration_based_on_casa_pipeline_.extracted.py"
+}

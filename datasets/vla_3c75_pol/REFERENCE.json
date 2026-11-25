@@ -1,0 +1,805 @@
+{
+  "suite_id": "vla_3c75_pol",
+  "split": "reference",
+  "status_legend": {
+    "GUIDE": "number quoted from the guide page (url + section + quote)",
+    "PRODUCT": "measured from a guide-shipped file (product_file + measurement)",
+    "CONVENTION": "tolerance factor copied from an existing suite (convention_source)"
+  },
+  "guide": {
+    "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+    "raw_url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2&action=raw",
+    "short_url": "https://casaguides.nrao.edu/index.php/Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75",
+    "retrieved": "2026-11-24",
+    "snapshot": "<data_dir>/casaguides/vla_3c75_pol/extracted/guide_snapshot/guide_CASA6.7.2_raw_20261124.wiki",
+    "snapshot_sha256": "a09a7f3eab6e0dc258a5418484038d886ac1fed94a2b0eb01893a17c4e8f057f",
+    "note": "Rendered page sits behind a bot check; quotes were taken from the MediaWiki raw text (action=raw)."
+  },
+  "entries": {
+    "field_flux_cal": {
+      "value": "0137+331=3C48",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "The Observation / Examining and Editing the Data",
+      "quote": "field_bpcal = \"0137+331=3C48\"  |  You can quickly see that the first source observed, 3C48 (the primary flux density, bandpass, and polarization angle calibrator source), is the brightest source in this observation.",
+      "used_in": [
+        "inspect.flux_calibrator",
+        "suite.toml roles.flux_cal"
+      ]
+    },
+    "field_bandpass_cal": {
+      "value": "0137+331=3C48",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "The Observation / Examining and Editing the Data",
+      "quote": "field_bpcal = \"0137+331=3C48\"  |  You can quickly see that the first source observed, 3C48 (the primary flux density, bandpass, and polarization angle calibrator source), is the brightest source in this observation.",
+      "used_in": [
+        "inspect.bandpass_calibrator",
+        "suite.toml roles.bandpass_cal"
+      ]
+    },
+    "field_pol_angle_cal": {
+      "value": "0137+331=3C48",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Examining and Editing the Data",
+      "quote": "You can quickly see that the first source observed, 3C48 (the primary flux density, bandpass, and polarization angle calibrator source), is the brightest source in this observation.",
+      "used_in": [
+        "inspect.pol_angle_calibrator",
+        "suite.toml roles.pol_angle_cal"
+      ]
+    },
+    "field_phase_cal": {
+      "value": "J0259+0747",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "The Observation / Examining and Editing the Data",
+      "quote": "field_gaincal = \"J0259+0747\"  |  The complex gain calibrator J0259+0747 (shown in orange) is around 1 Jy.",
+      "used_in": [
+        "inspect.phase_calibrator",
+        "suite.toml roles.phase_cal"
+      ]
+    },
+    "field_pol_leakage_cal": {
+      "value": "J0259+0747",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Solving for the Leakage Terms",
+      "quote": "However, we will be using the solutions from J0259+0747 to continue calibration and will use J2355+4950 to verify the polarization calibration.",
+      "used_in": [
+        "inspect.pol_leakage_calibrator",
+        "suite.toml roles.pol_leakage_cal"
+      ]
+    },
+    "field_secondary_pol_leakage_cal": {
+      "value": "J2355+4950",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Examining and Editing the Data",
+      "quote": "The next brightest is the second source observed, J2355+4950, a compact symmetric object (CSO; radio galaxy) and the secondary instrumental polarization calibrator.",
+      "used_in": [
+        "inspect.secondary_pol_leakage_calibrator (partial-credit set)",
+        "suite.toml roles.pol_leakage_cal"
+      ]
+    },
+    "field_target": {
+      "value": "3C75",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "The Observation / Examining and Editing the Data",
+      "quote": "field_target = \"3C75\"  |  The target scans on 3C75 are colored in green.",
+      "used_in": [
+        "inspect.target_fields",
+        "suite.toml roles.targets"
+      ]
+    },
+    "refant": {
+      "value": "ea10",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Solving for the Cross-Hand delays",
+      "quote": "we solve for the cross-hand (RL,LR) delays because of the residual delay difference between the R and L on the reference antenna used for the original delay calibration (''ea10'' in this tutorial).",
+      "used_in": [
+        "builder polcal",
+        "solve.py"
+      ]
+    },
+    "target_phasecenter": {
+      "value": "J2000 44.427625deg 6.018deg",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "The Observation",
+      "quote": "  3    NONE 3C75                02:57:42.630000 +06.01.04.80000 J2000   3        4512456",
+      "used_in": [
+        "suite.toml geometry.phasecenter"
+      ],
+      "note": "Unit conversion only: 02:57:42.63 h = 44.427625 deg, +06:01:04.8 = 6.018 deg."
+    },
+    "offsource_min_radius_arcsec": {
+      "value": 540.0,
+      "unit": "arcsec",
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Multi-scale Clean",
+      "quote": "The 3C75 binary black hole system is known to have a maximum extent of at least 8-9 arcminutes, corresponding to about 147 pixels for the chosen cell size.",
+      "used_in": [
+        "suite.toml geometry.off_source_min_radius_arcsec"
+      ],
+      "note": "9 arcmin (upper value quoted) used as the exclusion radius around the phase center; the extractor also drops pixels with non-zero clean model."
+    },
+    "guide_cell_arcsec": {
+      "value": 3.4,
+      "unit": "arcsec",
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Multi-scale Clean",
+      "quote": "For example, a cell size of 3.4 arcseconds will give just about 5 pixels per beam.",
+      "used_in": [
+        "solve.py tclean cell"
+      ]
+    },
+    "guide_imsize": {
+      "value": 480,
+      "unit": "pixels",
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Multi-scale Clean",
+      "quote": "* ''imsize=480,cell='3.4arcsec' '': See the discussion above regarding setting the image size and cell size.",
+      "used_in": [
+        "solve.py tclean imsize"
+      ]
+    },
+    "guide_pixels_per_beam_text": {
+      "value": [
+        3,
+        5
+      ],
+      "unit": "pixels/beam",
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Multi-scale Clean",
+      "quote": "The most effective cleaning occurs with 3&ndash;5 pixels across the synthesized beam.",
+      "used_in": [],
+      "note": "Context only, not the grading window: the pipeline beam for J0259+0747 (24.4 x 19.1 arcsec, entry pipeline_j0259_image_beam_arcsec) on the guide's 3.4 arcsec cell is above 5 px on the minor axis, so a 3-5 window would penalise the guide's own recipe. tol_pixels_per_beam_* used."
+    },
+    "guide_final_peak_jy_per_beam": {
+      "value": 0.1484267,
+      "unit": "Jy/beam",
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2&action=raw",
+      "section": "Image Analysis (wikitext lines 1773-1866 are inside an HTML comment '<!-- == Image Analysis == ... -->', so they do not render on the page; verify against raw_url)",
+      "quote": "Std dev        Minimum        Maximum   region count  |  3.298586e-02  -1.063592e-03   1.484267e-01              1",
+      "used_in": [
+        "image/e2e rubric peak_and_bowl_score: image.peak_jy_per_beam rel_err_ramp truth"
+      ],
+      "note": "On-source polygon statistics of 3C75_final.image.tt0 (after one self-calibration round)."
+    },
+    "guide_final_offsource_rms_jy_per_beam": {
+      "value": 6.186932e-05,
+      "unit": "Jy/beam",
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2&action=raw",
+      "section": "Image Analysis (wikitext lines 1773-1866 are inside an HTML comment '<!-- == Image Analysis == ... -->', so they do not render on the page; verify against raw_url)",
+      "quote": "1216  -3.509342e-02  -2.885972e-05   6.186932e-05  |  Thus the Stokes I rms is 0.06 mJy/beam.",
+      "used_in": [
+        "image/e2e rubric residual_rms_score: pass_max = 2.0 x this value"
+      ],
+      "note": "Off-source polygon statistics of 3C75_final.image.tt0 (Rms column)."
+    },
+    "guide_initial_peak_jy_per_beam": {
+      "value": 0.1497177630662918,
+      "unit": "Jy/beam",
+      "status": "GUIDE",
+      "group": "core",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2&action=raw",
+      "section": "Image Analysis (wikitext lines 1773-1866 are inside an HTML comment '<!-- == Image Analysis == ... -->', so they do not render on the page; verify against raw_url)",
+      "quote": "Out[5]: 0.14971776306629181  |  and so the peak flux density is 0.150 Jy/beam.",
+      "used_in": [
+        "ground_truth guide_reference.peak_initial_jy_per_beam (display only)"
+      ],
+      "note": "imstat max of 3C75_initial.image.tt0 (before self-calibration)."
+    },
+    "tol_elevation_abs_deg": {
+      "value": 1.0,
+      "unit": "deg",
+      "status": "CONVENTION",
+      "group": "tolerance",
+      "convention_source": "24A-376 build_24a376_clean.py inspect_gt['tolerances']['elevation_abs_deg']",
+      "used_in": [
+        "inspect ground_truth tolerances.elevation_abs_deg"
+      ]
+    },
+    "tol_rms_scale": {
+      "value": 2.0,
+      "unit": null,
+      "status": "CONVENTION",
+      "group": "tolerance",
+      "convention_source": "24A-376 build_24a376_clean.py image_gt off_source_residual_rms_max_jy_per_beam = ref_rms * 2.0",
+      "used_in": [
+        "image rubric upper_ramp pass_max_scale"
+      ]
+    },
+    "tol_rms_decay_span_mult": {
+      "value": 1.7,
+      "unit": null,
+      "status": "CONVENTION",
+      "group": "tolerance",
+      "convention_source": "3C391/24A-376 image rubrics residual_rms_score decay_span_mult_of_pass_max",
+      "used_in": [
+        "image rubric"
+      ]
+    },
+    "tol_rms_floor_jy_per_beam": {
+      "value": 4e-05,
+      "unit": "Jy/beam",
+      "status": "CONVENTION",
+      "group": "tolerance",
+      "convention_source": "24A-376 r1_24a376_image.json threshold_gate limit / ground truth off_source_residual_rms_min_jy_per_beam",
+      "used_in": [
+        "image ground_truth tolerances.off_source_residual_rms_min_jy_per_beam"
+      ]
+    },
+    "tol_negative_bowl_ratio_max": {
+      "value": 0.12,
+      "unit": null,
+      "status": "CONVENTION",
+      "group": "tolerance",
+      "convention_source": "3C391 r1_3c391_image ground_truth and 24A-376 image_gt tolerances.negative_model_bowl_ratio_max",
+      "used_in": [
+        "image ground_truth tolerances.negative_model_bowl_ratio_max"
+      ]
+    },
+    "tol_peak_rel_tol": {
+      "value": 0.15,
+      "unit": null,
+      "status": "CONVENTION",
+      "group": "tolerance",
+      "convention_source": "24A-376 r1_24a376_calibrate.json verifier_tclean_peak_score pass_rel_tol (decay_span 0.30)",
+      "used_in": [
+        "image ground_truth tolerances.peak_rel_tol"
+      ]
+    },
+    "tol_pixels_per_beam_min": {
+      "value": 3.0,
+      "unit": null,
+      "status": "CONVENTION",
+      "group": "tolerance",
+      "convention_source": "3C391 r1_3c391_image ground_truth tolerances.pixels_per_beam_min",
+      "used_in": [
+        "image ground_truth tolerances.pixels_per_beam_min"
+      ]
+    },
+    "tol_pixels_per_beam_max": {
+      "value": 7.0,
+      "unit": null,
+      "status": "CONVENTION",
+      "group": "tolerance",
+      "convention_source": "3C391 r1_3c391_image ground_truth tolerances.pixels_per_beam_max",
+      "used_in": [
+        "image ground_truth tolerances.pixels_per_beam_max"
+      ]
+    },
+    "tol_mad_over_rms_min": {
+      "value": 0.5,
+      "unit": null,
+      "status": "CONVENTION",
+      "group": "tolerance",
+      "convention_source": "3C391/24A-376 image rubrics offsource_residual_mad_over_rms threshold",
+      "used_in": [
+        "image rubric"
+      ]
+    },
+    "tol_partial_phase_set_score": {
+      "value": 0.9,
+      "unit": null,
+      "status": "CONVENTION",
+      "group": "tolerance",
+      "convention_source": "24A-376 r1_24a376_inspect.json partial_match_sets score",
+      "used_in": [
+        "inspect rubric phase_part"
+      ]
+    },
+    "bandpass_min_elevation_deg_full_ms": {
+      "value": 63.0017,
+      "unit": "deg",
+      "status": "PRODUCT",
+      "group": "core",
+      "product_file": "TDRW0001_calibrated_CASA6.5.4.ms.tgz -> TDRW0001_calibrated.ms",
+      "measurement": "min over unique timestamps of 3C48 AZEL elevation (casatools measures, VLA observatory); inspection file extracted/inspection_TDRW0001_calibrated.json",
+      "used_in": [],
+      "note": "Cross-check only. The graded value is recomputed by the builder on raw/input.ms (the MS the agent sees, time-averaged) and written to inspect ground_truth.bandpass_min_elevation_deg."
+    },
+    "dead_antennas_full_ms": {
+      "value": [],
+      "unit": null,
+      "status": "PRODUCT",
+      "group": "core",
+      "product_file": "TDRW0001_calibrated_CASA6.5.4.ms.tgz -> TDRW0001_calibrated.ms",
+      "measurement": "antennas with >= 99.9% flagged parallel-hand cross-correlations or median amp < 0.05 x array median (rule from the 24A-376 inspect oracle); inspection file extracted/inspection_TDRW0001_calibrated.json",
+      "used_in": [],
+      "note": "Cross-check only; builder recomputes on raw/input.ms for ground truth."
+    },
+    "pipeline_fluxboot_j2355_I_jy": {
+      "value": 1.76891,
+      "unit": "Jy",
+      "status": "PRODUCT",
+      "group": "pipeline_reference",
+      "product_file": "pipeline-20240116T215537.tgz -> pipeline-20240116T215537/html/stage12/casapy.log line 1390",
+      "measurement": "hifv_fluxboot fluxscale log",
+      "used_in": [],
+      "note": "Same number as guide entry fluxboot_j2355_I_jy."
+    },
+    "pipeline_fluxboot_j0259_I_jy": {
+      "value": 0.970688,
+      "unit": "Jy",
+      "status": "PRODUCT",
+      "group": "pipeline_reference",
+      "product_file": "pipeline-20240116T215537.tgz -> pipeline-20240116T215537/html/stage12/casapy.log line 1417",
+      "measurement": "hifv_fluxboot fluxscale log",
+      "used_in": [],
+      "note": "Same number as guide entry fluxboot_j0259_I_jy."
+    },
+    "pipeline_j0259_image_beam_arcsec": {
+      "value": [
+        24.4,
+        19.1
+      ],
+      "unit": "arcsec",
+      "status": "PRODUCT",
+      "group": "pipeline_reference",
+      "product_file": "pipeline-20240116T215537.tgz -> pipeline-20240116T215537/html/stage19/t2-4m_details.html (hif_makeimages)",
+      "measurement": "weblog 'beam 24.4 x 19.1 arcsec'",
+      "used_in": []
+    },
+    "pipeline_j0259_image_rms_jy_per_beam": {
+      "value": 5.1e-05,
+      "unit": "Jy/beam",
+      "status": "PRODUCT",
+      "group": "pipeline_reference",
+      "product_file": "pipeline-20240116T215537.tgz -> pipeline-20240116T215537/html/stage19/t2-4m_details.html (hif_makeimages)",
+      "measurement": "weblog 'non-pbcor image RMS 51 uJy/beam'",
+      "used_in": []
+    },
+    "pipeline_j0259_image_max_jy_per_beam": {
+      "value": 0.969,
+      "unit": "Jy/beam",
+      "status": "PRODUCT",
+      "group": "pipeline_reference",
+      "product_file": "pipeline-20240116T215537.tgz -> pipeline-20240116T215537/html/stage19/t2-4m_details.html (hif_makeimages)",
+      "measurement": "weblog 'pbcor image max / min 969 / -0.326 mJy/beam'",
+      "used_in": []
+    },
+    "pipeline_3c48_image_max_jy_per_beam": {
+      "value": 8.72,
+      "unit": "Jy/beam",
+      "status": "PRODUCT",
+      "group": "pipeline_reference",
+      "product_file": "pipeline-20240116T215537.tgz -> pipeline-20240116T215537/html/stage19/t2-4m_details.html (hif_makeimages)",
+      "measurement": "weblog 'pbcor image max / min 8.72 / -0.0336 Jy/beam'",
+      "used_in": []
+    },
+    "pipeline_j2355_image_max_jy_per_beam": {
+      "value": 1.69,
+      "unit": "Jy/beam",
+      "status": "PRODUCT",
+      "group": "pipeline_reference",
+      "product_file": "pipeline-20240116T215537.tgz -> pipeline-20240116T215537/html/stage19/t2-4m_details.html (hif_makeimages)",
+      "measurement": "weblog 'pbcor image max / min 1.69 / -0.0173 Jy/beam'",
+      "used_in": []
+    },
+    "pipeline_refant": {
+      "value": "ea10,ea25",
+      "unit": null,
+      "status": "PRODUCT",
+      "group": "pipeline_reference",
+      "product_file": "pipeline-20240116T215537.tgz -> pipeline-20240116T215537/html/stage13/casapy.log",
+      "measurement": "refant='ea10,ea25' in hifv_finalcals task calls",
+      "used_in": []
+    },
+    "setjy_3c48_I_jy": {
+      "value": 8.55557,
+      "unit": "Jy",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "I =        8.55557",
+      "used_in": [
+        "builder setjy"
+      ]
+    },
+    "setjy_3c48_spix": {
+      "value": [
+        -0.8864,
+        -0.1432
+      ],
+      "unit": null,
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "alpha =    [-0.8864, -0.1432]",
+      "used_in": [
+        "builder setjy"
+      ]
+    },
+    "setjy_3c48_reffreq": {
+      "value": "3.0GHz",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "reffreq = '3.0GHz'",
+      "used_in": [
+        "builder setjy"
+      ]
+    },
+    "setjy_3c48_polindex": {
+      "value": [
+        0.02152856,
+        0.03937167,
+        0.003804,
+        -0.01969663
+      ],
+      "unit": null,
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "polfrac =  [0.02152856, 0.03937167, 0.003804, -0.01969663]",
+      "used_in": [
+        "builder setjy"
+      ]
+    },
+    "setjy_3c48_polangle": {
+      "value": [
+        -1.68850138,
+        1.637449,
+        -2.36190333,
+        1.59809091,
+        -0.38386091
+      ],
+      "unit": "rad",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "polangle = [-1.68850138, 1.637449, -2.36190333, 1.59809091, -0.38386091]",
+      "used_in": [
+        "builder setjy"
+      ]
+    },
+    "setjy_3c48_spw4_iquv_jy": {
+      "value": [
+        8.55557,
+        -0.17910894,
+        0.0429606,
+        0.0
+      ],
+      "unit": "Jy",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "'4': {'fluxd': array([ 8.55557   , -0.17910894,  0.0429606 ,  0.        ])},",
+      "used_in": []
+    },
+    "fluxboot_j2355_I_jy": {
+      "value": 1.76891,
+      "unit": "Jy",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "Fitted spectrum for J2355+4950 with fitorder=2: Flux density = 1.76891 +/- 0.000621022 (freq=2.98457 GHz)",
+      "used_in": [
+        "builder setjy"
+      ]
+    },
+    "fluxboot_j2355_spix": {
+      "value": [
+        -0.599302,
+        -0.203418
+      ],
+      "unit": null,
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "spidx: a_1 (spectral index) =-0.599302 +/- 0.00265647 a_2=-0.203418 +/- 0.0645363",
+      "used_in": [
+        "builder setjy"
+      ]
+    },
+    "fluxboot_j0259_I_jy": {
+      "value": 0.970688,
+      "unit": "Jy",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "Fitted spectrum for J0259+0747 with fitorder=2: Flux density = 0.970688 +/- 0.000678661 (freq=2.98457 GHz)",
+      "used_in": [
+        "builder setjy"
+      ]
+    },
+    "fluxboot_j0259_spix": {
+      "value": [
+        0.170883,
+        -0.167233
+      ],
+      "unit": null,
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "spidx: a_1 (spectral index) =0.170883 +/- 0.00483635 a_2=-0.167233 +/- 0.127598",
+      "used_in": [
+        "builder setjy"
+      ]
+    },
+    "fluxboot_reffreq": {
+      "value": "2984571609.0079317Hz",
+      "unit": null,
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Setting the Polarization Calibrator Models",
+      "quote": "reffreq=\"2984571609.0079317Hz\",",
+      "used_in": [
+        "builder setjy"
+      ]
+    },
+    "kcross_mbd_ns": {
+      "value": 3.69748,
+      "unit": "ns",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Solving for the Cross-Hand delays",
+      "quote": "Multi-band cross-hand delay=3.69748 nsec",
+      "used_in": []
+    },
+    "kcross_sbd_ns_per_spw": {
+      "value": [
+        5.70202,
+        1.50965,
+        -1.36402,
+        0.480352,
+        4.31259,
+        1.25486,
+        3.74983,
+        3.07288
+      ],
+      "unit": "ns",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Solving for the Cross-Hand delays",
+      "quote": "Spw=0 Global cross-hand delay=5.70202 nsec ... Spw=7 Global cross-hand delay=3.07288 nsec",
+      "used_in": []
+    },
+    "j0259_dfqu_frac_pol_per_spw": {
+      "value": {
+        "0": [
+          0.0246591,
+          0.0344379,
+          0.0423561,
+          27.1978
+        ],
+        "1": [
+          0.0133722,
+          0.0388026,
+          0.0410421,
+          35.4924
+        ],
+        "2": [
+          0.015565,
+          0.0394917,
+          0.0424484,
+          34.2445
+        ],
+        "3": [
+          0.0109536,
+          0.0418046,
+          0.0432158,
+          37.6588
+        ],
+        "4": [
+          0.00848897,
+          0.04043,
+          0.0413116,
+          39.071
+        ],
+        "5": [
+          0.00683491,
+          0.0409151,
+          0.041482,
+          40.2581
+        ],
+        "6": [
+          -0.000537829,
+          0.0433217,
+          0.043325,
+          45.3556
+        ],
+        "7": [
+          -0.00578849,
+          0.0478307,
+          0.0481797,
+          48.4502
+        ]
+      },
+      "unit": "[Q/I, U/I, P/I, X deg]",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Solving for the Leakage Terms",
+      "quote": "Fractional polarization solution for J0259+0747 (spw = 0): : Q = 0.0246591, U = 0.0344379  (P = 0.0423561, X = 27.1978 deg) ... (spw = 7): : Q = -0.00578849, U = 0.0478307  (P = 0.0481797, X = 48.4502 deg)",
+      "used_in": []
+    },
+    "j0259_frac_pol_text": {
+      "value": 0.047,
+      "unit": "fraction",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Solving for the Leakage Terms",
+      "quote": "We also observed the polarized calibrator J0259+0747 (which has about 4.7% fractional polarization) that is also our complex gain calibrator.",
+      "used_in": []
+    },
+    "dterm_amp_range": {
+      "value": [
+        0.05,
+        0.17
+      ],
+      "unit": "fraction",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Solving for the Leakage Terms",
+      "quote": "You should see leakages of between 5&ndash;17% in most cases.",
+      "used_in": []
+    },
+    "dterm_clip_max": {
+      "value": 0.25,
+      "unit": null,
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Solving for the Leakage Terms",
+      "quote": "In some cases there are outlier solutions above 0.25 that are most likely due to residual RFI.",
+      "used_in": [
+        "builder flagdata clip on D tables"
+      ]
+    },
+    "residual_instrumental_pol_max": {
+      "value": 0.005,
+      "unit": "fraction",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Applying the Calibration",
+      "quote": "You can also estimate from the RL,LR amplitudes in J2355+4950 (figure 10E) what the level of residual instrumental polarization, which we expect to be around <0.5%.",
+      "used_in": []
+    },
+    "3c48_frac_pol": {
+      "value": 0.02,
+      "unit": "fraction",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Polarization Calibration",
+      "quote": "This source is known to have a fairly stable linear fractional polarization (measured to be 2% in S-band around the time of the observations), a polarization position angle of -100 degrees at 3 GHz, and a rotation measure of -68 rad/m^2.",
+      "used_in": []
+    },
+    "3c48_evpa_deg_3ghz": {
+      "value": -100.0,
+      "unit": "deg",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Polarization Calibration",
+      "quote": "This source is known to have a fairly stable linear fractional polarization (measured to be 2% in S-band around the time of the observations), a polarization position angle of -100 degrees at 3 GHz, and a rotation measure of -68 rad/m^2.",
+      "used_in": []
+    },
+    "3c48_rm_rad_m2": {
+      "value": -68.0,
+      "unit": "rad/m^2",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Polarization Calibration",
+      "quote": "This source is known to have a fairly stable linear fractional polarization (measured to be 2% in S-band around the time of the observations), a polarization position angle of -100 degrees at 3 GHz, and a rotation measure of -68 rad/m^2.",
+      "used_in": []
+    },
+    "pol_intensity_mask_threshold_jy_per_beam": {
+      "value": 0.0005,
+      "unit": "Jy/beam",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Spectral & Polarization Maps",
+      "quote": "create a mask using a polarization intensity threshold of 5e-4 Jy/beam.",
+      "used_in": []
+    },
+    "rm_points_lin_fit_rad_m2": {
+      "value": [
+        -54.22,
+        15.26,
+        -65.09,
+        -0.81
+      ],
+      "unit": "rad/m^2",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Rotation Measures",
+      "quote": "wikitable 'Point | RM Lin. Fit. | RM RMFIT': 1 | -54.22 | -47.12; 2 | 15.26 | 13.26; 3 | -65.09 | -59.05; 4 | -0.81 | -0.03",
+      "used_in": [],
+      "note": "Pixels (418,444), (376,419), (383,401), (395,398) of the guide's 800 px 3C75_chan8 cube."
+    },
+    "rm_points_rmfit_rad_m2": {
+      "value": [
+        -47.12,
+        13.26,
+        -59.05,
+        -0.03
+      ],
+      "unit": "rad/m^2",
+      "status": "GUIDE",
+      "group": "polarization",
+      "url": "https://casaguides.nrao.edu/index.php?title=CASA_Guides:Polarization_Calibration_based_on_CASA_pipeline_standard_reduction:_The_radio_galaxy_3C75-CASA6.7.2",
+      "section": "Rotation Measures",
+      "quote": "wikitable 'Point | RM Lin. Fit. | RM RMFIT': 1 | -54.22 | -47.12; 2 | 15.26 | 13.26; 3 | -65.09 | -59.05; 4 | -0.81 | -0.03",
+      "used_in": []
+    }
+  },
+  "build_choices": {
+    "chanbin": 4,
+    "timebin": "10s",
+    "why": "Full calibrated MS is ~12 GB on disk; task inputs target 1-4 GB. All 8 spws and all 4 correlations are kept (future polcal) and the guide polcal runs at full resolution before averaging.",
+    "polcal_applied_in_image_checkpoint": true,
+    "selfcal_in_checkpoint": false
+  },
+  "open_items": [
+    "No guide number for dynamic range, integrated flux (guide's 124 Jy is a non-pbcor pixel sum the guide calls 'not the correct total flux density'), spectral index, or beam size: not graded.",
+    "Guide image statistics (peak, rms) sit in an HTML-commented section of the wikitext; they do not render on the page.",
+    "Guide final rms (6.186932e-05) is after self-calibration and target residual flagging; an agent that stops at one clean may miss 2.0 x this value.",
+    "e2e stage-block weights (inspect 0.20 / image 0.80) have no existing convention (existing e2e blocks are calibrate 0.60 / image 0.40)."
+  ],
+  "future_polcal_observables_needed": [
+    "polcal.kcross_delay_ns (from Kcross table FPARAM) vs kcross_mbd_ns",
+    "polcal.dterm_amp_median / p95 per table (Df on J2355+4950, Df+QU on J0259+0747) vs dterm_amp_range",
+    "polcal.leakage_cal_frac_pol_per_spw (Q/I, U/I, P/I from corrected RL/LR of J0259+0747) vs j0259_dfqu_frac_pol_per_spw",
+    "polcal.angle_cal_evpa_deg_per_spw (3C48 corrected cross-hands) vs model from setjy_3c48_polangle",
+    "polcal.unpol_cal_residual_frac_pol (J2355+4950 corrected P/I) vs residual_instrumental_pol_max",
+    "image.target_pol_fraction / image.target_evpa_deg / image.rm_rad_m2 at the guide's 4 pixels vs rm_points_*",
+    "polcal.parang_applied (bool) and a polcal stage in the grader (does not exist yet)"
+  ]
+}

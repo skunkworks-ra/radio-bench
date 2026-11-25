@@ -1,0 +1,33 @@
+{
+  "suite_id": "vla_snr_g55",
+  "archives": [
+    {
+      "name": "SNR_G55_10s.tar.gz",
+      "url": "http://casa.nrao.edu/Data/EVLA/SNRG55/SNR_G55_10s.tar.gz",
+      "sha256": "936f641ec2aae8d932326a11e64a37cc38d28f798b9adacaa6898697e9af4ac6",
+      "bytes": 5293196015,
+      "contains": "SNR_G55_10s.ms",
+      "role": "uncalibrated"
+    },
+    {
+      "name": "SNR_G55_10s.calib.tar.gz",
+      "url": "http://casa.nrao.edu/Data/EVLA/SNRG55/SNR_G55_10s.calib.tar.gz",
+      "sha256": "b79a63d1142674c89c4c3ae702a28625867728a420a3c156e0ec44078200bf6a",
+      "bytes": 1250616054,
+      "contains": "SNR_G55_10s.calib.ms",
+      "role": "calibrated"
+    }
+  ],
+  "guides": [
+    {
+      "title": "VLA CASA Flagging-CASA6.7.2",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Flagging-CASA6.7.2",
+      "oldid_url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Flagging-CASA6.7.2&oldid=42307"
+    },
+    {
+      "title": "VLA CASA Imaging-CASA6.7.2",
+      "url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Imaging-CASA6.7.2",
+      "oldid_url": "https://casaguides.nrao.edu/index.php?title=VLA_CASA_Imaging-CASA6.7.2&oldid=42457"
+    }
+  ]
+}

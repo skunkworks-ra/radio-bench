@@ -1,0 +1,40 @@
+{
+  "suite_id": "alma_twhya_band7",
+  "split": "reference",
+  "checksum_source": "/home/pjaganna/Data/casaguides/manifest.json (entries for suite alma_twhya_band7)",
+  "archives": [
+    {
+      "name": "twhya_calibrated.ms.tar",
+      "url": "https://bulk.cv.nrao.edu/almadata/public/casaguides/FirstLook_TWHya_Band7_6.6.6/twhya_calibrated.ms.tar",
+      "sha256": "f0cfeee5b9dec09ac9ed4d3e4e048d5eb28023c11cbc8295c09ddefe6b8a97b2",
+      "bytes": 435742720,
+      "used_by": ["build"]
+    },
+    {
+      "name": "twhya_calibrated_unflagged.ms.tar",
+      "url": "https://bulk.cv.nrao.edu/almadata/public/casaguides/FirstLook_TWHya_Band7_6.6.6/twhya_calibrated_unflagged.ms.tar",
+      "sha256": "3d2c460c126957d02025ec842c4279718a7a58b2147980d84ce0523e4cf1309d",
+      "bytes": 623800320,
+      "used_by": []
+    },
+    {
+      "name": "twhya_uncalibrated.ms.tar",
+      "url": "https://bulk.cv.nrao.edu/almadata/public/casaguides/FirstLook_TWHya_Band7_6.6.6/twhya_uncalibrated.ms.tar",
+      "sha256": "4eb09a74e9be71fea9761a54884869dce361fee83c0b9d636ffa4b2bdc882835",
+      "bytes": 765388800,
+      "used_by": []
+    }
+  ],
+  "guide_pages": [
+    {
+      "title": "First Look at Imaging CASA 6.6.6",
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Imaging_CASA_6.6.6",
+      "extracted_script": "/home/pjaganna/Data/casaguides/alma_twhya_band7/scripts/first_look_at_imaging_casa_6_6_6.extracted.py"
+    },
+    {
+      "title": "First Look at Self Calibration CASA 6.6.6",
+      "url": "https://casaguides.nrao.edu/index.php/First_Look_at_Self_Calibration_CASA_6.6.6",
+      "extracted_script": "/home/pjaganna/Data/casaguides/alma_twhya_band7/scripts/alma_first_look_selfcal_666.extracted.py"
+    }
+  ]
+}

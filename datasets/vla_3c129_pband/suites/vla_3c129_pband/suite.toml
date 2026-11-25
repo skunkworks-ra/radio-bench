@@ -1,0 +1,153 @@
+# Field roles, slice and tolerances: see ../../REFERENCE.json for provenance of every number.
+[suite]
+suite_id = "vla_3c129_pband"
+legacy_suite_alias = "3c129p"
+split = "reference"
+telescope = "VLA"
+band = "P-band"
+pol_basis = "linear"
+description = "VLA B-configuration P-band (spws 2~9, 256-384 MHz) continuum of radio galaxy 3C129 with 3C147"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "vla", "interferometry", "p-band", "low-frequency", "rfi"]
+
+[[suite.archives]]
+name = "P_band_3C129.tgz"
+rel_path = "casaguides/vla_3c129_pband/downloads/P_band_3C129.tgz"
+sha256 = "552b8e2fbf91c043de447d0cc8b5ce3d1ab8e6965b14c97e82c9c9ac87236a82"
+
+[roles]
+flux_cal = ["3C147"]
+bandpass_cal = ["3C147"]
+phase_cal = []
+pol_angle_cal = []
+pol_leakage_cal = []
+targets = ["3C129"]
+dead_antennas = ["ea19"]
+missing_stations = ["ea04"]
+target_retention_excludes_dead_antenna = false
+
+[geometry]
+dish_diameter_m = 25.0
+pb_mask_min = 0.20
+offsource_inner_exclusion_beams = 5.0
+
+[geometry.verifier_tclean_recipe]
+field = "3C129"
+spw = ""
+specmode = "mfs"
+gridder = "standard"
+deconvolver = "mtmfs"
+nterms = 2
+imsize = [1024, 1024]
+cell_arcsec = 5.0
+weighting = "briggs"
+robust = 0.0
+pblimit = 0.2
+usemask = "pb"
+pbmask = 0.2
+niter = 4000
+cycleniter = 1000
+nmajor = 4
+threshold = "0mJy"
+pbcor = true
+timeout_sec = 2100.0
+
+[resources]
+cpus = 8
+verifier_cpus = 8
+memory_mb = 16384
+n_concurrent_trials = 1
+
+[checkpoints]
+builder = "build_vla_3c129_pband:main"
+
+[checkpoints.entries.raw]
+input_ms = "casaguides/vla_3c129_pband/raw/input.ms"
+
+[checkpoints.entries.post_precal]
+input_ms = "casaguides/vla_3c129_pband/post_precal/input.ms"
+input_calibrators_ms = "casaguides/vla_3c129_pband/post_precal/calibrators.ms"
+
+[checkpoints.entries.post_calibrate]
+input_ms = "casaguides/vla_3c129_pband/post_calibrate/input.ms"
+
+[tasks.g1_3c129p_inspect]
+stages = ["inspect"]
+stage = "inspect"
+checkpoint_in = "raw"
+data_dir = "casaguides/vla_3c129_pband/g1_3c129p_inspect"
+input_ms = "casaguides/vla_3c129_pband/raw/input.ms"
+ground_truth = "casaguides/vla_3c129_pband/g1_3c129p_inspect/ground_truth.json"
+extra_test_files = []
+difficulty = "easy"
+agent_timeout_sec = 900.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/g1_3c129p_inspect/instruction.md"
+oracle_script = "task_specs/g1_3c129p_inspect/solve.py"
+rubric = "rubrics/g1_3c129p_inspect.json"
+
+[tasks.g1_3c129p_precal]
+stages = ["precal"]
+stage = "precal"
+checkpoint_in = "raw"
+data_dir = "casaguides/vla_3c129_pband/g1_3c129p_precal"
+input_ms = "casaguides/vla_3c129_pband/raw/input.ms"
+ground_truth = "casaguides/vla_3c129_pband/g1_3c129p_precal/ground_truth.json"
+extra_test_files = ["precal_masks.npz"]
+ref_flags_file = "precal_masks.npz"
+allow_virtual_model = false
+difficulty = "medium"
+agent_timeout_sec = 1800.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/g1_3c129p_precal/instruction.md"
+oracle_script = "task_specs/g1_3c129p_precal/solve.py"
+rubric = "rubrics/g1_3c129p_precal.json"
+
+[tasks.g1_3c129p_calibrate]
+stages = ["calibrate"]
+stage = "calibrate"
+checkpoint_in = "post_precal"
+data_dir = "casaguides/vla_3c129_pband/g1_3c129p_calibrate"
+input_ms = "casaguides/vla_3c129_pband/post_precal/input.ms"
+input_calibrators_ms = "casaguides/vla_3c129_pband/post_precal/calibrators.ms"
+ground_truth = "casaguides/vla_3c129_pband/g1_3c129p_calibrate/ground_truth.json"
+extra_test_files = []
+use_verifier_tclean_recipe = true
+difficulty = "medium"
+agent_timeout_sec = 2400.0
+verifier_timeout_sec = 2400.0
+instruction = "task_specs/g1_3c129p_calibrate/instruction.md"
+oracle_script = "task_specs/g1_3c129p_calibrate/solve.py"
+rubric = "rubrics/g1_3c129p_calibrate.json"
+
+[tasks.g1_3c129p_image]
+stages = ["image"]
+stage = "image"
+checkpoint_in = "post_calibrate"
+data_dir = "casaguides/vla_3c129_pband/g1_3c129p_image"
+input_ms = "casaguides/vla_3c129_pband/post_calibrate/input.ms"
+ground_truth = "casaguides/vla_3c129_pband/g1_3c129p_image/ground_truth.json"
+extra_test_files = []
+difficulty = "hard"
+agent_timeout_sec = 5400.0
+verifier_timeout_sec = 900.0
+instruction = "task_specs/g1_3c129p_image/instruction.md"
+oracle_script = "task_specs/g1_3c129p_image/solve.py"
+rubric = "rubrics/g1_3c129p_image.json"
+
+[tasks.g2_3c129p_e2e]
+stages = ["inspect", "precal", "calibrate", "image"]
+stage = "e2e"
+checkpoint_in = "raw"
+data_dir = "casaguides/vla_3c129_pband/g2_3c129p_e2e"
+input_ms = "casaguides/vla_3c129_pband/raw/input.ms"
+ground_truth = "casaguides/vla_3c129_pband/g2_3c129p_e2e/ground_truth.json"
+extra_test_files = ["precal_masks.npz"]
+ref_flags_file = "precal_masks.npz"
+use_verifier_tclean_recipe = true
+difficulty = "hard"
+agent_timeout_sec = 7200.0
+verifier_timeout_sec = 2400.0
+instruction = "task_specs/g2_3c129p_e2e/instruction.md"
+oracle_script = "task_specs/g2_3c129p_e2e/solve.py"
+rubric = "rubrics/g2_3c129p_e2e.json"

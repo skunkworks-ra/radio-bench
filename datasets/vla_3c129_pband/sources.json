@@ -1,0 +1,27 @@
+{
+  "suite_id": "vla_3c129_pband",
+  "archives": [
+    {
+      "name": "P_band_3C129.tgz",
+      "url": "https://casa.nrao.edu/Data/EVLA/Pband/P_band_3C129.tgz",
+      "sha256": "552b8e2fbf91c043de447d0cc8b5ce3d1ab8e6965b14c97e82c9c9ac87236a82",
+      "bytes": 24254033749,
+      "extract": true,
+      "extracted_top": "imag-test-copy.57080.956837025464",
+      "extracted_bytes": 26460757155,
+      "content": "VLA ASDM (SDM-BDF), B configuration, P band, 2015-02-27, fields 3C147 and 3C129"
+    }
+  ],
+  "guide_pages": [
+    {
+      "title": "VLA Radio galaxy 3C 129: P-band continuum tutorial-CASA6.7.2",
+      "url": "https://casaguides.nrao.edu/index.php/VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2",
+      "raw_wikitext_url": "https://casaguides.nrao.edu/index.php?title=VLA_Radio_galaxy_3C_129:_P-band_continuum_tutorial-CASA6.7.2&action=raw"
+    },
+    {
+      "title": "Karl G. Jansky VLA Tutorials (index, section 2.4)",
+      "url": "https://casaguides.nrao.edu/index.php/Karl_G._Jansky_VLA_Tutorials"
+    }
+  ],
+  "guide_script": "vla_3c129_pband_672.extracted.py (in <casaguides_dir>/vla_3c129_pband/scripts/)"
+}

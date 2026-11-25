@@ -1,0 +1,76 @@
+[suite]
+suite_id = "alma_antennae_band7"
+split = "reference"
+telescope = "ALMA"
+band = "Band 7"
+pol_basis = "linear"
+description = "ALMA Cycle 0 Band 7 12m mosaics of the Antennae galaxies (North 23 pointings, South 29 pointings), calibrated MSs, Stokes I continuum imaging"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "alma", "interferometry", "band-7", "mosaic", "casaguide", "reference"]
+
+[[suite.archives]]
+name = "Antennae_Band7_CalibratedData.tgz"
+rel_path = "casaguides/alma_antennae_band7/downloads/Antennae_Band7_CalibratedData.tgz"
+sha256 = "1976fea9239dea06c144c963c3750b03e7c53e82787f0a3c46b72fe17b5df339"
+
+[[suite.archives]]
+name = "Antennae_Band7_ReferenceImages.tgz"
+rel_path = "casaguides/alma_antennae_band7/downloads/Antennae_Band7_ReferenceImages.tgz"
+sha256 = "cd52ffdc8f7b18f28ede2be70f6334f2f3f435fe31d7cff66f6e3a446eed2190"
+
+[roles]
+# Field names read from FIELD/NAME of Antennae_North.cal.ms and Antennae_South.cal.ms.
+targets = ["NGC4038 - Antennae North", "Antennae"]
+target_retention_excludes_dead_antenna = false
+
+[geometry]
+# ANTENNA/DISH_DIAMETER = 12.0 m in both MSs. No suite-level phasecenter: the two
+# tasks are different mosaics, so off-source pixels use the peak-exclusion path.
+dish_diameter_m = 12.0
+pb_mask_min = 0.20
+offsource_inner_exclusion_beams = 5.0
+
+[resources]
+cpus = 8
+verifier_cpus = 8
+memory_mb = 12288
+n_concurrent_trials = 1
+
+[checkpoints]
+builder = "build_alma_antennae_band7:main"
+
+[checkpoints.entries.post_calibrate_north]
+input_ms = "casaguides/alma_antennae_band7/post_calibrate_north/input.ms"
+
+[checkpoints.entries.post_calibrate_south]
+input_ms = "casaguides/alma_antennae_band7/post_calibrate_south/input.ms"
+
+[tasks.g1_antennae_image_north]
+stages = ["image"]
+stage = "image"
+checkpoint_in = "post_calibrate_north"
+data_dir = "casaguides/alma_antennae_band7/g1_antennae_image_north"
+input_ms = "casaguides/alma_antennae_band7/post_calibrate_north/input.ms"
+ground_truth = "casaguides/alma_antennae_band7/g1_antennae_image_north/ground_truth.json"
+extra_test_files = []
+difficulty = "medium"
+agent_timeout_sec = 1800.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/g1_antennae_image_north/instruction.md"
+oracle_script = "task_specs/g1_antennae_image_north/solve.py"
+rubric = "rubrics/g1_antennae_image_north.json"
+
+[tasks.g1_antennae_image_south]
+stages = ["image"]
+stage = "image"
+checkpoint_in = "post_calibrate_south"
+data_dir = "casaguides/alma_antennae_band7/g1_antennae_image_south"
+input_ms = "casaguides/alma_antennae_band7/post_calibrate_south/input.ms"
+ground_truth = "casaguides/alma_antennae_band7/g1_antennae_image_south/ground_truth.json"
+extra_test_files = []
+difficulty = "medium"
+agent_timeout_sec = 1800.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/g1_antennae_image_south/instruction.md"
+oracle_script = "task_specs/g1_antennae_image_south/solve.py"
+rubric = "rubrics/g1_antennae_image_south.json"

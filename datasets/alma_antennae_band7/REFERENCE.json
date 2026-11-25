@@ -1,0 +1,210 @@
+{
+  "suite_id": "alma_antennae_band7",
+  "split": "reference",
+  "guide_imaging_url": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Imaging_6.6.6",
+  "guide_calibration_url": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Calibration_6.6.6",
+  "reference_products": {
+    "north": "Antennae_Band7_ReferenceImages.tgz:Antennae_North.Cont.Clean.image.fits",
+    "south": "Antennae_Band7_ReferenceImages.tgz:Antennae_South.Cont.Clean.image.fits",
+    "archive_sha256": "cd52ffdc8f7b18f28ede2be70f6334f2f3f435fe31d7cff66f6e3a446eed2190",
+    "measurement": "casatools image.statistics over all unmasked pixels (build_alma_antennae_band7.py measure_reference_image); values below measured 2026-11-25 on the mirror copy"
+  },
+  "entries": [
+    {
+      "name": "north.guide_published.peak_jy_per_beam",
+      "value": 0.0038,
+      "unit": "Jy/beam",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Imaging_6.6.6",
+      "section": "Continuum Image Statistics",
+      "quote": "the peak (max) is 3.80 mJy/beam and the rms (sigma) is 0.49 mJy/beam"
+    },
+    {
+      "name": "north.guide_published.rms_jy_per_beam",
+      "value": 0.00049,
+      "unit": "Jy/beam",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Imaging_6.6.6",
+      "section": "Continuum Image Statistics",
+      "quote": "the peak (max) is 3.80 mJy/beam and the rms (sigma) is 0.49 mJy/beam"
+    },
+    {
+      "name": "north.guide_published.b_major_arcsec / b_minor_arcsec / b_pa_deg",
+      "value": [
+        1.23,
+        0.72,
+        85.4
+      ],
+      "unit": "arcsec, arcsec, deg",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Imaging_6.6.6",
+      "section": "Northern Continuum Mosaic",
+      "quote": "The restoring beam size is about 1.23\" x 0.72\", with a position angle (P.A.) of 85.4 degrees.",
+      "note": "stated for the dirty image; same uv data and weighting as the clean image"
+    },
+    {
+      "name": "south.guide_published.peak_jy_per_beam",
+      "value": 0.00478,
+      "unit": "Jy/beam",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Imaging_6.6.6",
+      "section": "Continuum Image Statistics",
+      "quote": "a peak (max) of 4.78 mJy/beam and an rms (sigma) of 0.47 mJy/beam"
+    },
+    {
+      "name": "south.guide_published.rms_jy_per_beam",
+      "value": 0.00047,
+      "unit": "Jy/beam",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Imaging_6.6.6",
+      "section": "Continuum Image Statistics",
+      "quote": "a peak (max) of 4.78 mJy/beam and an rms (sigma) of 0.47 mJy/beam"
+    },
+    {
+      "name": "south.guide_published.b_major_arcsec / b_minor_arcsec / b_pa_deg",
+      "value": [
+        1.14,
+        0.66,
+        61.5
+      ],
+      "unit": "arcsec, arcsec, deg",
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Imaging_6.6.6",
+      "section": "Southern Continuum Mosaic",
+      "quote": "The beam size is reported in the logger as 1.14\"x0.66\" with P.A.=61.5 deg"
+    },
+    {
+      "name": "north.reference_product (peak, rms, dynamic_range, beam)",
+      "value": {
+        "peak_jy_per_beam": 0.00379536,
+        "rms_jy_per_beam": 0.00049377,
+        "dynamic_range": 7.686,
+        "b_major_arcsec": 1.2349,
+        "b_minor_arcsec": 0.7248,
+        "b_pa_deg": 85.514,
+        "cell_arcsec": 0.13,
+        "shape": [
+          500,
+          500,
+          1,
+          1
+        ],
+        "flux_full_image_jy": -0.002297
+      },
+      "status": "PRODUCT",
+      "product": "Antennae_North.Cont.Clean.image.fits",
+      "note": "peak/rms agree with the GUIDE quote within 0.2 percent / 0.8 percent; flux_full_image_jy is the noise-dominated sum over the whole image, recorded only, not graded"
+    },
+    {
+      "name": "south.reference_product (peak, rms, dynamic_range, beam)",
+      "value": {
+        "peak_jy_per_beam": 0.00478146,
+        "rms_jy_per_beam": 0.00047369,
+        "dynamic_range": 10.094,
+        "b_major_arcsec": 1.1355,
+        "b_minor_arcsec": 0.665,
+        "b_pa_deg": 61.45,
+        "cell_arcsec": 0.13,
+        "shape": [
+          750,
+          750,
+          1,
+          1
+        ],
+        "flux_full_image_jy": 0.006141
+      },
+      "status": "PRODUCT",
+      "product": "Antennae_South.Cont.Clean.image.fits",
+      "note": "flux_full_image_jy recorded only, not graded"
+    },
+    {
+      "name": "tolerances.pixels_per_beam_min / pixels_per_beam_max",
+      "value": [
+        3.0,
+        7.0
+      ],
+      "status": "CONVENTION",
+      "source": "3C391 suite: checkpoints/3c391/r1_3c391_image/ground_truth.json tolerances.pixels_per_beam_min = 3.0, tolerances.pixels_per_beam_max = 7.0"
+    },
+    {
+      "name": "tolerances.off_source_residual_rms_max_jy_per_beam",
+      "value": {
+        "north": 0.00098,
+        "south": 0.00094
+      },
+      "status": "CONVENTION",
+      "source": "24A-376 suite: build_24a376_clean.py image_gt tolerances.off_source_residual_rms_max_jy_per_beam = ref_rms * 2.0; ref_rms = GUIDE rms"
+    },
+    {
+      "name": "tolerances.off_source_residual_rms_min_jy_per_beam",
+      "value": 8e-05,
+      "status": "CONVENTION",
+      "source": "3C391 suite: rubrics/r1_3c391_image.json residual_rms_score threshold_gate limit = 8e-05"
+    },
+    {
+      "name": "tolerances.dynamic_range_min",
+      "value": {
+        "north": 4.227,
+        "south": 5.552
+      },
+      "status": "CONVENTION",
+      "source": "24A-376 suite: build_24a376_clean.py tolerances.dynamic_range_min = max(150.0, 0.55 * ref_dr); factor 0.55 kept, 150 floor dropped; ref_dr = PRODUCT dynamic_range",
+      "nonstandard": "the 150 floor is above the reference DR (7.7 and 10.1), so it is not applicable"
+    },
+    {
+      "name": "tolerances.negative_model_bowl_ratio_max",
+      "value": 0.12,
+      "status": "CONVENTION",
+      "source": "3C391 suite: r1_3c391_image ground_truth tolerances.negative_model_bowl_ratio_max = 0.12 (same in 24A-376)"
+    },
+    {
+      "name": "tolerances.continuum_peak_max_jy_per_beam",
+      "value": {
+        "north": 0.0076,
+        "south": 0.00956
+      },
+      "status": "CONVENTION",
+      "source": "factor 2.0 reused from 24A-376 build_24a376_clean.py off_source_residual_rms_max = ref_rms * 2.0, applied to the GUIDE peak",
+      "nonstandard": "new rubric child (upper_ramp on existing observable image.peak_jy_per_beam) guarding against spectral-line channels in the continuum image; no existing suite has a peak tolerance"
+    },
+    {
+      "name": "oracle imaging parameters (phasecenter, spw, imsize, cell, niter, threshold, restfreq)",
+      "value": {
+        "north": {
+          "phasecenter": 12,
+          "spw": "0:1~50;120~164",
+          "imsize": 500
+        },
+        "south": {
+          "phasecenter": 15,
+          "spw": "0:1~30;120~164",
+          "imsize": 750
+        },
+        "cell": "0.13arcsec",
+        "niter": 1000,
+        "threshold": "0.4mJy",
+        "restfreq": "345.79599GHz",
+        "weighting": "natural"
+      },
+      "status": "GUIDE",
+      "url": "https://casaguides.nrao.edu/index.php/AntennaeBand7_Imaging_6.6.6",
+      "section": "Northern Continuum Mosaic / Southern Continuum Mosaic",
+      "quote": [
+        "phasecenter=12",
+        "spw='0:1~50;120~164'",
+        "imsize=500, cell='0.13arcsec'",
+        "niter=1000, threshold='0.4mJy')",
+        "phasecenter=15",
+        "spw='0:1~30;120~164'",
+        "imsize=750, cell='0.13arcsec'",
+        "restfreq='345.79599GHz'"
+      ],
+      "note": "weighting='natural' read from the reference FITS HISTORY (tclean default in 6.6.6); interactive mask replaced by usemask='auto-multithresh' at tclean defaults; quotes are exact fragments of the guide tclean code blocks (also in scripts/alma_antennae_img_666.extracted.py)"
+    }
+  ],
+  "open": [
+    "integrated continuum flux: guide states none; image.source_integrated_flux_jy needs a suite-level source aperture, which cannot serve both mosaics in one suite",
+    "dynamic range: guide states none; DR taken from PRODUCT imstat max/rms",
+    "uncalibrated data (Antennae_Band7_UnCalibratedMSAndTablesForReduction.tgz): HTTP 404 on bulk.cv.nrao.edu Antennae_Band7_6.6.6 and 6.6.1; no precal/calibrate/e2e tasks"
+  ]
+}

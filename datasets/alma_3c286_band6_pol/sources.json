@@ -1,0 +1,41 @@
+{
+  "suite_id": "alma_3c286_band6_pol",
+  "guide_pages": {
+    "overview": "https://casaguides.nrao.edu/index.php?title=3C286_Polarization",
+    "calibration": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Calibration_for_CASA_6.6.6",
+    "imaging": "https://casaguides.nrao.edu/index.php?title=3C286_Band6Pol_Imaging_for_CASA_6.6.6"
+  },
+  "guide_scripts_local": [
+    "/home/pjaganna/Data/casaguides/alma_3c286_band6_pol/scripts/alma_3c286_cal_666.extracted.py",
+    "/home/pjaganna/Data/casaguides/alma_3c286_band6_pol/scripts/alma_3c286_img_666.extracted.py"
+  ],
+  "archives": [
+    {
+      "name": "3C286_Band6_UncalibratedData.tgz",
+      "url": "https://almascience.nrao.edu/almadata/sciver/3C286Band6/3C286_Band6_UncalibratedData.tgz",
+      "url_source": "overview page section 'Obtaining the Data' gives the directory http://almascience.nrao.edu/almadata/sciver/3C286Band6; file URL from the local mirror manifest",
+      "sha256": "409752baa63d18a4207cad98dc5a31edc22e2b2092a1f38685369aed3843ff50",
+      "bytes": 6673492551,
+      "extract_subdir": "",
+      "top_dir": "3C286_Band6_UncalibratedData"
+    },
+    {
+      "name": "3C286_Band6_CalibratedData.tgz",
+      "url": "https://bulk.cv.nrao.edu/almadata/public/casaguides/3C286_Band6Pol_6.6.6/3C286_Band6_CalibratedData.tgz",
+      "url_source": "overview page section 'Obtaining the Data' gives the directory https://bulk.cv.nrao.edu/almadata/public/casaguides/3C286_Band6Pol_6.6.6",
+      "sha256": "e35244fdf15c24e810aa90c5cfaa172326ae4cee620969d19db66dcbb5aae243",
+      "bytes": 3317497204,
+      "extract_subdir": "",
+      "top_dir": "3C286_Band6_CalibratedData"
+    },
+    {
+      "name": "3C286_Band6_ReferenceImages.tgz",
+      "url": "https://bulk.cv.nrao.edu/almadata/public/casaguides/3C286_Band6Pol_6.6.6/3C286_Band6_ReferenceImages.tgz",
+      "url_source": "overview page section 'Obtaining the Data' gives the directory https://bulk.cv.nrao.edu/almadata/public/casaguides/3C286_Band6Pol_6.6.6",
+      "sha256": "da3f6cb5664895c7fbea9e1c0b2479af67bf74ee7534d430d7b4c651b9bc144e",
+      "bytes": 4669400,
+      "extract_subdir": "3C286_Band6_ReferenceImages",
+      "top_dir": "3C286_Band6_ReferenceImages"
+    }
+  ]
+}

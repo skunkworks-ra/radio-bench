@@ -1,0 +1,133 @@
+[suite]
+suite_id = "alma_3c286_band6_pol"
+split = "reference"
+telescope = "ALMA"
+band = "Band 6"
+pol_basis = "linear"
+description = "ALMA Band 6 (224-242 GHz) full-polarization observation of 3C286 over three execution blocks"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "alma", "interferometry", "band6", "polarization", "casaguide"]
+
+[roles]
+flux_cal = ["Ceres"]
+bandpass_cal = ["J1256-0547"]
+phase_cal = ["J1310+3220"]
+pol_angle_cal = ["J1337-1257"]
+pol_leakage_cal = ["J1337-1257"]
+targets = ["3c286"]
+dead_antennas = []
+missing_stations = []
+target_retention_excludes_dead_antenna = false
+
+[geometry]
+dish_diameter_m = 12.0
+pb_mask_min = 0.20
+offsource_inner_exclusion_beams = 5.0
+
+[[geometry.source_apertures]]
+label = "3c286"
+kind = "point"
+ra = "13:31:08.288100"
+dec = "+30.30.32.96000"
+radius_arcsec = 1.5
+
+[geometry.verifier_tclean_recipe]
+field = "3c286"
+spw = ""
+specmode = "mfs"
+gridder = "standard"
+deconvolver = "clark"
+imsize = [250, 250]
+cell_arcsec = 0.1
+weighting = "briggs"
+robust = 0.5
+pblimit = 0.2
+usemask = "pb"
+pbmask = 0.2
+niter = 500
+threshold = "0.0mJy"
+pbcor = true
+timeout_sec = 1800.0
+
+[resources]
+cpus = 8
+verifier_cpus = 8
+memory_mb = 16384
+n_concurrent_trials = 1
+
+[checkpoints]
+builder = "build_alma_3c286_band6_pol:main"
+
+[checkpoints.entries.raw]
+input_ms = "casaguides/alma_3c286_band6_pol/raw/input.ms"
+
+[checkpoints.entries.post_precal]
+input_ms = "casaguides/alma_3c286_band6_pol/post_precal/input.ms"
+
+[checkpoints.entries.post_calibrate]
+input_ms = "casaguides/alma_3c286_band6_pol/post_calibrate/input.ms"
+
+[checkpoints.entries.guide_calibrated]
+input_ms = "casaguides/alma_3c286_band6_pol/guide_calibrated/input.ms"
+
+[tasks.g1_3c286pol_inspect]
+stages = ["inspect"]
+stage = "inspect"
+checkpoint_in = "raw"
+data_dir = "casaguides/alma_3c286_band6_pol/g1_3c286pol_inspect"
+input_ms = "casaguides/alma_3c286_band6_pol/raw/input.ms"
+ground_truth = "casaguides/alma_3c286_band6_pol/g1_3c286pol_inspect/ground_truth.json"
+extra_test_files = []
+difficulty = "easy"
+agent_timeout_sec = 900.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/g1_3c286pol_inspect/instruction.md"
+oracle_script = "task_specs/g1_3c286pol_inspect/solve.py"
+rubric = "rubrics/g1_3c286pol_inspect.json"
+
+[tasks.g1_3c286pol_calibrate]
+stages = ["calibrate"]
+stage = "calibrate"
+checkpoint_in = "post_precal"
+data_dir = "casaguides/alma_3c286_band6_pol/g1_3c286pol_calibrate"
+input_ms = "casaguides/alma_3c286_band6_pol/post_precal/input.ms"
+ground_truth = "casaguides/alma_3c286_band6_pol/g1_3c286pol_calibrate/ground_truth.json"
+extra_test_files = []
+use_verifier_tclean_recipe = true
+difficulty = "medium"
+agent_timeout_sec = 2400.0
+verifier_timeout_sec = 2400.0
+instruction = "task_specs/g1_3c286pol_calibrate/instruction.md"
+oracle_script = "task_specs/g1_3c286pol_calibrate/solve.py"
+rubric = "rubrics/g1_3c286pol_calibrate.json"
+
+[tasks.g1_3c286pol_image]
+stages = ["image"]
+stage = "image"
+checkpoint_in = "guide_calibrated"
+data_dir = "casaguides/alma_3c286_band6_pol/g1_3c286pol_image"
+input_ms = "casaguides/alma_3c286_band6_pol/guide_calibrated/input.ms"
+ground_truth = "casaguides/alma_3c286_band6_pol/g1_3c286pol_image/ground_truth.json"
+extra_test_files = []
+difficulty = "medium"
+agent_timeout_sec = 3600.0
+verifier_timeout_sec = 900.0
+instruction = "task_specs/g1_3c286pol_image/instruction.md"
+oracle_script = "task_specs/g1_3c286pol_image/solve.py"
+rubric = "rubrics/g1_3c286pol_image.json"
+
+[tasks.g2_3c286pol_e2e]
+stages = ["inspect", "precal", "calibrate", "image"]
+stage = "e2e"
+checkpoint_in = "raw"
+data_dir = "casaguides/alma_3c286_band6_pol/g2_3c286pol_e2e"
+input_ms = "casaguides/alma_3c286_band6_pol/raw/input.ms"
+ground_truth = "casaguides/alma_3c286_band6_pol/g2_3c286pol_e2e/ground_truth.json"
+extra_test_files = []
+use_verifier_tclean_recipe = true
+difficulty = "hard"
+agent_timeout_sec = 7200.0
+verifier_timeout_sec = 2400.0
+instruction = "task_specs/g2_3c286pol_e2e/instruction.md"
+oracle_script = "task_specs/g2_3c286pol_e2e/solve.py"
+rubric = "rubrics/g2_3c286pol_e2e.json"

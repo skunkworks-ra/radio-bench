@@ -1,0 +1,152 @@
+[suite]
+suite_id = "vla_24a376_lband"
+legacy_suite_alias = "24a376"
+split = "dev"
+telescope = "VLA"
+band = "L-band"
+pol_basis = "circular"
+description = "VLA C-configuration L-band 4-SPW wideband 4-pointing mosaic from project 24A-376 (Perseus)"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "vla", "interferometry", "l-band", "wideband", "mosaic"]
+
+[roles]
+flux_cal = ["0542+498=3C147"]
+bandpass_cal = ["0542+498=3C147"]
+phase_cal = ["J0336+3218"]
+pol_angle_cal = ["0521+166=3C138"]
+pol_leakage_cal = ["0542+498=3C147"]
+targets = ["PER_FIELD_71", "PER_FIELD_75", "PER_FIELD_77", "PER_FIELD_81"]
+dead_antennas = []
+missing_stations = []
+target_retention_excludes_dead_antenna = false
+
+[geometry]
+dish_diameter_m = 25.0
+pb_mask_min = 0.20
+offsource_inner_exclusion_beams = 5.0
+phasecenter = "J2000 52.11772deg 30.44509deg"
+off_source_min_radius_arcsec = 150.0
+
+[geometry.verifier_tclean_recipe]
+field = "PER_FIELD_71,PER_FIELD_75,PER_FIELD_77,PER_FIELD_81"
+spw = ""
+phasecenter = "J2000 52.11772deg 30.44509deg"
+specmode = "mfs"
+gridder = "mosaic"
+deconvolver = "mtmfs"
+nterms = 2
+scales = [0, 5, 15]
+imsize = [4096, 4096]
+cell_arcsec = 2.5
+weighting = "briggs"
+robust = 0.5
+pblimit = 0.2
+usemask = "pb"
+pbmask = 0.2
+niter = 4000
+cycleniter = 1000
+nmajor = 4
+threshold = "0.60mJy"
+pbcor = true
+off_source_min_radius_arcsec = 150.0
+timeout_sec = 2100.0
+
+[resources]
+cpus = 8
+verifier_cpus = 8
+memory_mb = 16384
+n_concurrent_trials = 1
+
+[checkpoints]
+builder = "build_24a376_clean:main"
+
+[checkpoints.entries.raw]
+input_ms = "24a376_clean/raw/input.ms"
+
+[checkpoints.entries.post_precal]
+input_ms = "24a376_clean/post_precal/input.ms"
+input_calibrators_ms = "24a376_clean/post_precal/calibrators.ms"
+
+[checkpoints.entries.post_calibrate]
+input_ms = "24a376_clean/post_calibrate/input.ms"
+
+[tasks.r1_24a376_inspect]
+stages = ["inspect"]
+stage = "inspect"
+checkpoint_in = "raw"
+data_dir = "24a376_clean/r1_24a376_inspect"
+input_ms = "24a376_clean/raw/input.ms"
+ground_truth = "24a376_clean/r1_24a376_inspect/ground_truth.json"
+extra_test_files = []
+difficulty = "easy"
+agent_timeout_sec = 900.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/r1_24a376_inspect/instruction.md"
+oracle_script = "task_specs/r1_24a376_inspect/solve.py"
+rubric = "rubrics/r1_24a376_inspect.json"
+
+[tasks.r1_24a376_precal]
+stages = ["precal"]
+stage = "precal"
+checkpoint_in = "raw"
+data_dir = "24a376_clean/r1_24a376_precal"
+input_ms = "24a376_clean/raw/input.ms"
+ground_truth = "24a376_clean/r1_24a376_precal/ground_truth.json"
+extra_test_files = ["precal_masks.npz"]
+ref_flags_file = "precal_masks.npz"
+allow_virtual_model = false
+difficulty = "medium"
+agent_timeout_sec = 1800.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/r1_24a376_precal/instruction.md"
+oracle_script = "task_specs/r1_24a376_precal/solve.py"
+rubric = "rubrics/r1_24a376_precal.json"
+
+[tasks.r1_24a376_calibrate]
+stages = ["calibrate"]
+stage = "calibrate"
+checkpoint_in = "post_precal"
+data_dir = "24a376_clean/r1_24a376_calibrate"
+input_ms = "24a376_clean/post_precal/input.ms"
+input_calibrators_ms = "24a376_clean/post_precal/calibrators.ms"
+ground_truth = "24a376_clean/r1_24a376_calibrate/ground_truth.json"
+extra_test_files = []
+use_verifier_tclean_recipe = true
+difficulty = "medium"
+agent_timeout_sec = 2400.0
+verifier_timeout_sec = 2400.0
+instruction = "task_specs/r1_24a376_calibrate/instruction.md"
+oracle_script = "task_specs/r1_24a376_calibrate/solve.py"
+rubric = "rubrics/r1_24a376_calibrate.json"
+
+[tasks.r1_24a376_image]
+stages = ["image"]
+stage = "image"
+checkpoint_in = "post_calibrate"
+data_dir = "24a376_clean/r1_24a376_image"
+input_ms = "24a376_clean/post_calibrate/input.ms"
+ground_truth = "24a376_clean/r1_24a376_image/ground_truth.json"
+extra_test_files = []
+difficulty = "hard"
+agent_timeout_sec = 5400.0
+verifier_timeout_sec = 900.0
+instruction = "task_specs/r1_24a376_image/instruction.md"
+oracle_script = "task_specs/r1_24a376_image/solve.py"
+rubric = "rubrics/r1_24a376_image.json"
+
+[tasks.r2_24a376_e2e]
+stages = ["inspect", "precal", "calibrate", "image"]
+stage = "e2e"
+checkpoint_in = "raw"
+data_dir = "24a376_clean/r2_24a376_e2e"
+input_ms = "24a376_clean/raw/input.ms"
+ground_truth = "24a376_clean/r2_24a376_e2e/ground_truth.json"
+extra_test_files = ["precal_masks.npz"]
+ref_flags_file = "precal_masks.npz"
+use_verifier_tclean_recipe = true
+difficulty = "hard"
+agent_timeout_sec = 7200.0
+verifier_timeout_sec = 2400.0
+instruction = "task_specs/r2_24a376_e2e/instruction.md"
+oracle_script = "task_specs/r2_24a376_e2e/solve.py"
+rubric = "rubrics/r2_24a376_e2e.json"

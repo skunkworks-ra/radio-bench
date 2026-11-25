@@ -1,0 +1,147 @@
+[suite]
+suite_id = "vla_snr_g55"
+legacy_suite_alias = "vla_snr_g55"
+split = "reference"
+telescope = "VLA"
+band = "L-band"
+pol_basis = "circular"
+description = "VLA D-configuration L-band 4-SPW wideband single-pointing widefield continuum of a supernova remnant"
+category = "astronomy"
+tags = ["radio-astronomy", "casa", "vla", "interferometry", "l-band", "wideband", "widefield"]
+
+[roles]
+flux_cal = ["0542+498=3C147"]
+bandpass_cal = ["0542+498=3C147"]
+phase_cal = ["J1925+2106"]
+pol_angle_cal = []
+pol_leakage_cal = []
+targets = ["G55.7+3.4"]
+dead_antennas = []
+missing_stations = []
+target_retention_excludes_dead_antenna = false
+
+[geometry]
+dish_diameter_m = 25.0
+pb_mask_min = 0.20
+offsource_inner_exclusion_beams = 5.0
+phasecenter = "J2000 290.41666667deg 21.75deg"
+off_source_min_radius_arcsec = 480.0
+
+[geometry.verifier_tclean_recipe]
+field = "G55.7+3.4"
+spw = ""
+phasecenter = "J2000 290.41666667deg 21.75deg"
+specmode = "mfs"
+gridder = "standard"
+deconvolver = "hogbom"
+imsize = [1280, 1280]
+cell_arcsec = 8.0
+weighting = "natural"
+pblimit = 0.2
+usemask = "user"
+niter = 10000
+nmajor = 4
+threshold = "0mJy"
+pbcor = true
+off_source_min_radius_arcsec = 480.0
+timeout_sec = 2400.0
+
+[resources]
+cpus = 8
+verifier_cpus = 8
+memory_mb = 16384
+n_concurrent_trials = 1
+
+[checkpoints]
+builder = "build_vla_snr_g55:main"
+
+[checkpoints.entries.raw]
+input_ms = "casaguides/vla_snr_g55/raw/input.ms"
+
+[checkpoints.entries.post_precal]
+input_ms = "casaguides/vla_snr_g55/post_precal/input.ms"
+input_calibrators_ms = "casaguides/vla_snr_g55/post_precal/calibrators.ms"
+
+[checkpoints.entries.guide_calibrated]
+input_ms = "casaguides/vla_snr_g55/guide_calibrated/input.ms"
+
+[tasks.g1_g55_inspect]
+stages = ["inspect"]
+stage = "inspect"
+checkpoint_in = "raw"
+data_dir = "casaguides/vla_snr_g55/g1_g55_inspect"
+input_ms = "casaguides/vla_snr_g55/raw/input.ms"
+ground_truth = "casaguides/vla_snr_g55/g1_g55_inspect/ground_truth.json"
+extra_test_files = []
+difficulty = "easy"
+agent_timeout_sec = 900.0
+verifier_timeout_sec = 600.0
+instruction = "task_specs/g1_g55_inspect/instruction.md"
+oracle_script = "task_specs/g1_g55_inspect/solve.py"
+rubric = "rubrics/g1_g55_inspect.json"
+
+[tasks.g1_g55_precal]
+stages = ["precal"]
+stage = "precal"
+checkpoint_in = "raw"
+data_dir = "casaguides/vla_snr_g55/g1_g55_precal"
+input_ms = "casaguides/vla_snr_g55/raw/input.ms"
+ground_truth = "casaguides/vla_snr_g55/g1_g55_precal/ground_truth.json"
+extra_test_files = ["precal_masks.npz"]
+ref_flags_file = "precal_masks.npz"
+allow_virtual_model = false
+difficulty = "medium"
+agent_timeout_sec = 2400.0
+verifier_timeout_sec = 900.0
+instruction = "task_specs/g1_g55_precal/instruction.md"
+oracle_script = "task_specs/g1_g55_precal/solve.py"
+rubric = "rubrics/g1_g55_precal.json"
+
+[tasks.g1_g55_calibrate]
+stages = ["calibrate"]
+stage = "calibrate"
+checkpoint_in = "post_precal"
+data_dir = "casaguides/vla_snr_g55/g1_g55_calibrate"
+input_ms = "casaguides/vla_snr_g55/post_precal/input.ms"
+input_calibrators_ms = "casaguides/vla_snr_g55/post_precal/calibrators.ms"
+ground_truth = "casaguides/vla_snr_g55/g1_g55_calibrate/ground_truth.json"
+extra_test_files = []
+use_verifier_tclean_recipe = true
+difficulty = "medium"
+agent_timeout_sec = 2400.0
+verifier_timeout_sec = 3600.0
+instruction = "task_specs/g1_g55_calibrate/instruction.md"
+oracle_script = "task_specs/g1_g55_calibrate/solve.py"
+rubric = "rubrics/g1_g55_calibrate.json"
+
+[tasks.g1_g55_image]
+stages = ["image"]
+stage = "image"
+checkpoint_in = "guide_calibrated"
+data_dir = "casaguides/vla_snr_g55/g1_g55_image"
+input_ms = "casaguides/vla_snr_g55/guide_calibrated/input.ms"
+ground_truth = "casaguides/vla_snr_g55/g1_g55_image/ground_truth.json"
+extra_test_files = []
+difficulty = "hard"
+agent_timeout_sec = 5400.0
+verifier_timeout_sec = 900.0
+instruction = "task_specs/g1_g55_image/instruction.md"
+oracle_script = "task_specs/g1_g55_image/solve.py"
+rubric = "rubrics/g1_g55_image.json"
+
+[tasks.g2_g55_e2e]
+stages = ["inspect", "precal", "calibrate", "image"]
+stage = "e2e"
+checkpoint_in = "raw"
+data_dir = "casaguides/vla_snr_g55/g2_g55_e2e"
+input_ms = "casaguides/vla_snr_g55/raw/input.ms"
+ground_truth = "casaguides/vla_snr_g55/g2_g55_e2e/ground_truth.json"
+extra_test_files = ["precal_masks.npz"]
+ref_flags_file = "precal_masks.npz"
+use_verifier_tclean_recipe = true
+difficulty = "hard"
+agent_timeout_sec = 7200.0
+verifier_timeout_sec = 3600.0
+instruction = "task_specs/g2_g55_e2e/instruction.md"
+oracle_script = "task_specs/g2_g55_e2e/solve.py"
+rubric = "rubrics/g2_g55_e2e.json"
