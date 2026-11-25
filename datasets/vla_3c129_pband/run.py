@@ -346,8 +346,11 @@ def cmd_tasks(args: argparse.Namespace, paths: SimpleNamespace) -> int:
         )
         if not dirs:
             raise SystemExit(f"error: no compiled task dirs for {SUITE_ID} in {out_dir}")
-    harbor = shutil.which("harbor") or "harbor"
-    return _run([harbor, "lint", *dirs], dry=args.dry_run)
+    from radio_bench.podman_env import build_podman_env  # harbor lint needs the Podman/Compose env
+
+    lint_env = None if args.dry_run else build_podman_env()
+    harbor = shutil.which("harbor", path=(lint_env or os.environ).get("PATH")) or "harbor"
+    return _run([harbor, "lint", *dirs], dry=args.dry_run, env=lint_env)
 
 
 def _render_job(

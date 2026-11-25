@@ -284,8 +284,11 @@ def cmd_tasks(args: argparse.Namespace, paths: dict[str, Path]) -> None:
     dirs = compiled_task_dirs(paths)
     if not dirs:
         sys.exit(f"no compiled task dirs found in {paths['tasks_out']}")
+    from radio_bench.podman_env import build_podman_env  # harbor lint needs the Podman/Compose env
+
+    lint_env = build_podman_env()
     for d in dirs:
-        run_cmd(["harbor", "lint", f"{d}/"], dry_run=False)
+        run_cmd(["harbor", "lint", f"{d}/"], dry_run=False, env=lint_env)
 
 
 def _register_suite_for_render() -> Any:

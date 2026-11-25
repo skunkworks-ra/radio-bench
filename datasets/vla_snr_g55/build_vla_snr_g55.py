@@ -424,6 +424,7 @@ def main() -> None:
     scratch = root / "_scratch"
     scratch.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("TMPDIR", str(scratch))
+    orig_cwd = Path.cwd()
     os.chdir(scratch)
 
     import casatasks
@@ -596,6 +597,7 @@ def main() -> None:
         "target_row_retention": retention,
     }
     write_json(root / "build_summary.json", summary)
+    os.chdir(orig_cwd)  # leave _scratch before deleting it (CASA aborts on a deleted cwd)
     shutil.rmtree(scratch, ignore_errors=True)
     print(f"[5/5] done: {root / 'build_summary.json'}", flush=True)
 

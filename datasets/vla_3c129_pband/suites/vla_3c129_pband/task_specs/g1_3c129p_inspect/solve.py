@@ -116,7 +116,9 @@ def do_inspect(ws: Path) -> None:
     with open_tb(ms / "ANTENNA") as tb:
         ants = [str(x) for x in tb.getcol("NAME")]
     with open_tb(ms) as tb:
-        sub = tb.query(f"FIELD_ID == {fid} && ANTENNA1 != ANTENNA2 && DATA_DESC_ID == 0")
+        # The slice keeps spw 2-9, so DDID 0 can be absent; use the lowest DDID present.
+        ddid = int(np.unique(tb.getcol("DATA_DESC_ID")).min())
+        sub = tb.query(f"FIELD_ID == {fid} && ANTENNA1 != ANTENNA2 && DATA_DESC_ID == {ddid}")
         try:
             a1 = sub.getcol("ANTENNA1")
             a2 = sub.getcol("ANTENNA2")

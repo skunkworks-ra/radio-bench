@@ -315,7 +315,9 @@ def phase_truth(root: Path) -> None:
         ),
         (
             f"negative_bowl_ratio <= {GOLDEN_BOWL_MAX}",
-            float(o.get("image.negative_bowl_ratio") or 1.0) <= GOLDEN_BOWL_MAX,
+            # missing fails; a measured 0.0 must stay 0.0
+            o.get("image.negative_bowl_ratio") is not None
+            and float(o["image.negative_bowl_ratio"]) <= GOLDEN_BOWL_MAX,
         ),
         (
             f"mad_over_rms >= {MAD_OVER_RMS_MIN}",

@@ -27,8 +27,8 @@ offsource_inner_exclusion_beams = 5.0
 [[geometry.source_apertures]]
 label = "3c286"
 kind = "point"
-ra = "13:31:08.288100"
-dec = "+30.30.32.96000"
+ra = "13h31m08.288100s"  # guide 13:31:08.288100 +30.30.32.96000, astropy form
+dec = "+30d30m32.96000s"
 radius_arcsec = 1.5
 
 [geometry.verifier_tclean_recipe]

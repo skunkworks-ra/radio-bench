@@ -282,8 +282,11 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         if not task_dirs:
             raise SystemExit(f"no compiled task directories under {out_dir}")
     harbor = shlex.split(args.harbor)
+    from radio_bench.podman_env import build_podman_env  # harbor lint needs the Podman/Compose env
+
+    lint_env = None if args.dry_run else build_podman_env()
     for tdir in task_dirs:
-        run_cmd([*harbor, "lint", f"{tdir}/"], dry=args.dry_run)
+        run_cmd([*harbor, "lint", f"{tdir}/"], dry=args.dry_run, env=lint_env)
 
 
 def render_cmd(args: argparse.Namespace, paths: dict[str, Path | None], **kw: Any) -> list[str]:

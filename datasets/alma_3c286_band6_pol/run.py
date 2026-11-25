@@ -247,14 +247,17 @@ def cmd_tasks(args: argparse.Namespace) -> int:
     rc = _run(cmd, dry_run=args.dry_run)
     if rc != 0:
         return rc
-    harbor = shutil.which("harbor") or "harbor"
+    from radio_bench.podman_env import build_podman_env  # harbor lint needs the Podman/Compose env
+
+    lint_env = None if args.dry_run else build_podman_env()
+    harbor = shutil.which("harbor", path=(lint_env or os.environ).get("PATH")) or "harbor"
     task_dirs = (
         sorted(str(p) for p in tasks_dir.iterdir() if p.is_dir())
         if tasks_dir.is_dir() and not args.dry_run
         else [f"{tasks_dir}/<compiled task dir>"]
     )
     for tdir in task_dirs:
-        rc = _run([harbor, "lint", tdir], dry_run=args.dry_run)
+        rc = _run([harbor, "lint", tdir], dry_run=args.dry_run, env=lint_env)
         if rc != 0:
             return rc
     return 0

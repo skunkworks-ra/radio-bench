@@ -50,8 +50,8 @@ CHANBIN = 4  # 64 -> 16 channels; guide's own final split uses width='4'
 EDGE_FLAG_SPW = "*:0;15"
 # Guide gaincal G0ph uses spw='*:20~45' on 64 channels; nearest 16-channel bins are 5~11 (20~47).
 G0PH_SPW = "*:5~11"
-TARGET_RA = "13:31:08.288100"  # guide listobs Fields table, field 4 (3c286)
-TARGET_DEC = "+30.30.32.96000"
+TARGET_RA = "13h31m08.288100s"  # guide listobs field 4: 13:31:08.288100 +30.30.32.96000
+TARGET_DEC = "+30d30m32.96000s"
 
 # Guide-quoted numbers (see REFERENCE.json for page, section, quote).
 GUIDE = {

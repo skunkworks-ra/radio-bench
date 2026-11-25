@@ -356,8 +356,11 @@ def cmd_tasks(args: argparse.Namespace) -> None:
     task_dirs = sorted(p for p in out_dir.iterdir() if p.is_dir() and p.name.startswith(prefixes))
     if not task_dirs:
         raise SystemExit(f"No compiled task dirs under {out_dir}")
+    from radio_bench.podman_env import build_podman_env  # harbor lint needs the Podman/Compose env
+
+    lint_env = {k: v for k, v in build_podman_env().items() if os.environ.get(k) != v}
     for tdir in task_dirs:
-        run_cmd([harbor, "lint", f"{tdir}/"], dry_run=False)
+        run_cmd([harbor, "lint", f"{tdir}/"], dry_run=False, env_extra=lint_env)
 
 
 def render_job(

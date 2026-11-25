@@ -524,6 +524,8 @@ def build_polcal(src_ms: Path, root: Path, ref: dict[str, Any]) -> dict[str, Any
     post_ms = root / "post_polcal" / "input.ms"
     if post_ms.exists():
         shutil.rmtree(post_ms)
+    # statwt below writes <post_ms>.flagversions; mstransform refuses a leftover one.
+    shutil.rmtree(post_ms.with_name(post_ms.name + ".flagversions"), ignore_errors=True)
     post_ms.parent.mkdir(parents=True, exist_ok=True)
     casatasks.mstransform(
         vis=v,

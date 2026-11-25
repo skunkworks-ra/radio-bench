@@ -236,7 +236,16 @@ def inspect_ms_meta(ms_path: Path) -> dict[str, Any]:
             t = np.asarray(msmd.timesforscan(s), dtype=float)
             scan_secs[str(s)] = round(float(t.max() - t.min()), 1) if t.size else 0.0
         intg = (
-            float(np.median(np.asarray(msmd.exposuretime(scan=scans[0])["value"])))
+            # default spwid=0 may be absent from the scan (slice keeps spw 2-9)
+            float(
+                np.median(
+                    np.asarray(
+                        msmd.exposuretime(
+                            scan=scans[0], spwid=int(min(msmd.spwsforscan(scans[0])))
+                        )["value"]
+                    )
+                )
+            )
             if scans
             else None
         )
@@ -300,7 +309,9 @@ def raw_antenna_median_amps(ms_path: Path) -> dict[str, float]:
     with open_tb(ms_path / "FIELD") as tb:
         fid = [str(x) for x in tb.getcol("NAME")].index(FLUX_CAL)
     with open_tb(ms_path) as tb:
-        sub = tb.query(f"FIELD_ID == {fid} && ANTENNA1 != ANTENNA2 && DATA_DESC_ID == 0")
+        # slice keeps spw 2-9, so DDID 0 has no rows; use the lowest DDID present
+        dd0 = int(np.min(tb.getcol("DATA_DESC_ID")))
+        sub = tb.query(f"FIELD_ID == {fid} && ANTENNA1 != ANTENNA2 && DATA_DESC_ID == {dd0}")
         try:
             a1 = sub.getcol("ANTENNA1")
             a2 = sub.getcol("ANTENNA2")
@@ -681,7 +692,7 @@ def main() -> None:
     flux_rows = field_id == flux_fid
     par_good = (~np.any(golden[[0, 3]], axis=0)) & flux_rows[np.newaxis, :]
     flux_mean_jy = float(np.mean(par_mod[par_good]))
-    spw0_rows = flux_rows & (ddid == 0)
+    spw0_rows = flux_rows & (ddid == int(np.min(ddid)))  # lowest DDID present (slice has no DDID 0)
     spw0_spec = [round(float(np.mean(par_mod[ch, spw0_rows])), 6) for ch in range(nch)]
     del model, par_mod
     set_intents(pre_ms)

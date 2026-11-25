@@ -285,9 +285,12 @@ def cmd_tasks(args: argparse.Namespace) -> int:
     if not task_dirs:
         print(f"error: zero compiled task dirs in {out_dir}", file=sys.stderr)
         return 1
+    from radio_bench.podman_env import build_podman_env  # harbor lint needs the Podman/Compose env
+
+    lint_env = build_podman_env()
     failed = 0
     for tdir in task_dirs:
-        if run_cmd([harbor_bin, "lint", f"{tdir}/"], dry_run=False) != 0:
+        if run_cmd([harbor_bin, "lint", f"{tdir}/"], dry_run=False, env=lint_env) != 0:
             failed += 1
     print(f"harbor lint: {len(task_dirs) - failed} passed, {failed} failed")
     return 1 if failed else 0

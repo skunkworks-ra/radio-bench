@@ -207,6 +207,16 @@ def check_product_vs_guide(side: str, prod: dict[str, Any], guide: dict[str, Any
             )
 
 
+def rewrite_subtables(ms_path: Path) -> None:
+    # Guide tarball keeps true subtable row counts only in table.lock; rewrite before unlinking.
+    for sub in sorted(d for d in ms_path.iterdir() if (d / "table.dat").is_file()):
+        tmp = sub.with_name(sub.name + ".rewrite")
+        with open_tb(sub) as tb:
+            tb.copy(str(tmp), deep=True, valuecopy=True).close()
+        shutil.rmtree(sub)
+        tmp.rename(sub)
+
+
 def make_checkpoint(src_ms: Path, out_dir: Path) -> Path:
     final_ms = out_dir / "input.ms"
     staging = out_dir.with_name(out_dir.name + ".staging")
@@ -215,6 +225,7 @@ def make_checkpoint(src_ms: Path, out_dir: Path) -> Path:
     staging.mkdir(parents=True)
     stage_ms = staging / "input.ms"
     shutil.copytree(src_ms, stage_ms, symlinks=False)
+    rewrite_subtables(stage_ms)
     for lock in stage_ms.rglob("table.lock"):
         lock.unlink()
     clear_history(stage_ms)
