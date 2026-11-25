@@ -1091,6 +1091,12 @@ def _evaluate_leaf(
                 score = 1.0 if abs(x - limit) <= 1e-9 else 0.0
             else:
                 raise ValueError(f"Unsupported threshold_gate op: {op!r}")
+        elif (
+            bool(p.get("pass_if_not_applicable", False))
+            and rec is not None
+            and rec.status == "not_applicable"
+        ):
+            score = 1.0
 
     score = min(1.0, max(0.0, float(score)))
     if leaf.id:

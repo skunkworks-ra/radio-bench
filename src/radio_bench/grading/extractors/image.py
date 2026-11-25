@@ -13,7 +13,12 @@ import numpy as np
 from radio_bench.grading.extractors.common import (
     check_table_multiused,
     has_active_table_lock,
+    natural_thermal_noise_jy,
     parse_sky_coord_rad,
+    resolve_ant_ids_by_names,
+    resolve_field_ids_by_names,
+    target_parallel_hand_retention,
+    thermal_floor_ratio,
     verify_pb_taper,
 )
 from radio_bench.grading.schema import ExtractConfig, ObservableRecord, finite_observable
@@ -433,6 +438,9 @@ def extract_image(
         ("image.offsource_residual_rms_jy", "Jy/beam"),
         ("image.offsource_residual_mad_std_jy", "Jy/beam"),
         ("image.offsource_residual_mad_over_rms", None),
+        ("image.thermal_noise_natural_jy", "Jy/beam"),
+        ("image.offsource_rms_over_thermal_floor", None),
+        ("image.target_row_retention", None),
         ("image.peak_jy_per_beam", "Jy/beam"),
         ("image.dynamic_range", None),
         ("image.source_integrated_flux_jy", "Jy"),
@@ -676,6 +684,7 @@ def extract_image(
     offsource_rms_jy: float | None = None
     offsource_mad_std_jy: float | None = None
     offsource_mad_over_rms: float | None = None
+    n_offsource_beams: float | None = None
 
     if res_arr is not None and res_arr.shape == shape_2d and valid_pb20_count >= 100:
         if geom.off_source_min_radius_arcsec is not None:
@@ -737,6 +746,31 @@ def extract_image(
             offsource_mad_std_jy = float(1.4826 * np.median(np.abs(off_vals - off_med)))
             if math.isfinite(offsource_rms_jy) and offsource_rms_jy > 0.0:
                 offsource_mad_over_rms = float(offsource_mad_std_jy / offsource_rms_jy)
+            beam_pix = (math.pi * hdr["b_major_arcsec"] * hdr["b_minor_arcsec"]) / (
+                4.0 * math.log(2.0) * max(cell_x * cell_y, 1e-24)
+            )
+            if beam_pix > 0.0:
+                n_offsource_beams = float(np.sum(off_mask)) / beam_pix
+
+    # Thermal floor from the agent's own unflagged target visibilities
+    sigma_nat_jy: float | None = None
+    target_retention: float | None = None
+    target_names = [t.strip() for t in extract_config.roles.targets if t.strip()]
+    if target_names and (ws / "input.ms" / "table.dat").is_file():
+        try:
+            tgt_fids = resolve_field_ids_by_names(ws / "input.ms", target_names)
+            sigma_nat_jy, _ = natural_thermal_noise_jy(ws / "input.ms", tgt_fids)
+            dead_ids = (
+                resolve_ant_ids_by_names(ws / "input.ms", list(extract_config.roles.dead_antennas))
+                if extract_config.target_retention_excludes_dead_antenna
+                else []
+            )
+            target_retention = target_parallel_hand_retention(
+                ws / "input.ms", tgt_fids, exclude_ant_ids=dead_ids
+            )
+        except Exception as exc:
+            errors.append(f"Thermal noise / retention estimate failed: {type(exc).__name__}: {exc}")
+    floor_ratio = thermal_floor_ratio(offsource_rms_jy, sigma_nat_jy, n_offsource_beams)
 
     # Clean model negative-bowl ratio
     negative_bowl_ratio: float | None = None
@@ -865,6 +899,24 @@ def extract_image(
         offsource_mad_over_rms,
         provenance=chosen.residual_path.name if chosen.residual_path else prov,
         missing_status="missing_artifact",
+    )
+    obs["image.thermal_noise_natural_jy"] = (
+        finite_observable(sigma_nat_jy, unit="Jy/beam", provenance="input.ms")
+        if sigma_nat_jy is not None
+        else ObservableRecord(value=None, status="not_applicable", unit="Jy/beam")
+    )
+    obs["image.offsource_rms_over_thermal_floor"] = (
+        finite_observable(
+            floor_ratio,
+            provenance=f"{chosen.residual_path.name if chosen.residual_path else prov} vs input.ms",
+        )
+        if floor_ratio is not None
+        else ObservableRecord(value=None, status="not_applicable")
+    )
+    obs["image.target_row_retention"] = (
+        finite_observable(target_retention, provenance="input.ms::FLAG", ndigits=6)
+        if target_retention is not None
+        else ObservableRecord(value=None, status="not_applicable")
     )
     obs["image.peak_jy_per_beam"] = finite_observable(
         peak_img_jy,

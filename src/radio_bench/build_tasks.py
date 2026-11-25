@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
+import functools
 import json
 import logging
 import os
@@ -1126,7 +1127,11 @@ def compile_variant(
             json.dumps(rb_fb.model_dump(mode="json"), indent=2, allow_nan=False) + "\n",
         )
 
-    _hardlink_file(spec.ground_truth, tests_dir / "ground_truth.json")
+    gt_with_retention = _ground_truth_with_input_retention(spec, tests_dir / "rubric.json")
+    if gt_with_retention is not None:
+        _write_text_file(tests_dir / "ground_truth.json", gt_with_retention)
+    else:
+        _hardlink_file(spec.ground_truth, tests_dir / "ground_truth.json")
     for extra_name in spec.extra_test_files:
         _hardlink_file(spec.data_dir / extra_name, tests_dir / extra_name)
 
@@ -1159,6 +1164,96 @@ def compile_variant(
     )
 
     return variant_dir
+
+
+@functools.lru_cache(maxsize=64)
+def _input_target_retention(
+    input_ms: str, targets: tuple[str, ...], dead_ants: tuple[str, ...]
+) -> float | None:
+    from radio_bench.grading.extractors.common import (
+        resolve_ant_ids_by_names,
+        resolve_field_ids_by_names,
+        target_parallel_hand_retention,
+    )
+
+    ms = Path(input_ms)
+    fids = resolve_field_ids_by_names(ms, list(targets))
+    dead_ids = resolve_ant_ids_by_names(ms, list(dead_ants)) if dead_ants else []
+    return target_parallel_hand_retention(ms, fids, exclude_ant_ids=dead_ids)
+
+
+def _ground_truth_with_input_retention(spec: TaskSpec, rubric_path: Path) -> str | None:
+    """Add the image-stage retention window, anchored on the delivered input.ms, to ground truth.
+
+    Window: [input retention - 0.20, input retention] (24A-376 builder convention for the low
+    side; an image task should not unflag data). Returns None when the rubric does not use it.
+    """
+    if not rubric_path.is_file() or "image.target_row_retention" not in rubric_path.read_text(
+        encoding="utf-8"
+    ):
+        return None
+    roles = (json.loads(spec.extract_config_json or "{}").get("roles")) or {}
+    excl = bool(
+        json.loads(spec.extract_config_json or "{}").get(
+            "target_retention_excludes_dead_antenna", True
+        )
+    )
+    ret = _input_target_retention(
+        str(spec.input_ms),
+        tuple(str(t) for t in roles.get("targets") or []),
+        tuple(str(a) for a in roles.get("dead_antennas") or []) if excl else (),
+    )
+    if ret is None:
+        raise ValueError(f"{spec.task_id}: cannot measure target retention on {spec.input_ms}")
+    gt = loads_strict_json(spec.ground_truth.read_text(encoding="utf-8"))
+    return json.dumps(add_image_retention_window(gt, ret), indent=2, allow_nan=False) + "\n"
+
+
+def add_image_retention_window(gt: dict[str, Any], input_retention: float) -> dict[str, Any]:
+    """Set `tolerances.image_target_retention_{input,min,max}` from the delivered input retention."""
+    tol = gt.setdefault("tolerances", {})
+    tol["image_target_retention_input"] = round(input_retention, 6)
+    tol["image_target_retention_min"] = round(max(0.0, input_retention - 0.20), 6)
+    tol["image_target_retention_max"] = round(input_retention, 6)
+    return gt
+
+
+_CAL_ROLE_KEYS = ("flux_cal", "bandpass_cal", "pol_angle_cal", "pol_leakage_cal")
+# VLA primary flux/pol-angle calibrators (3C48, 3C138, 3C147, 3C286): skills name them even
+# when a suite observes one as its target.
+_STANDARD_CALIBRATORS = frozenset(
+    {"3C48", "3C138", "3C147", "3C286", "0137+331", "0521+166", "0542+498", "1331+305"}
+)
+
+
+def find_split_leakage(specs: Sequence[TaskSpec], skills_dir: Path) -> list[str]:
+    """Return `file: name` hits where a non-dev suite's target or phase-cal name appears in skills.
+
+    Standard calibrators (the VLA primary set, plus names in any suite's flux/bandpass/pol
+    roles) are exempt, since skills legitimately name them.
+    """
+    leak_names: set[str] = set()
+    exempt: set[str] = set(_STANDARD_CALIBRATORS)
+    for spec in specs:
+        if not spec.extract_config_json:
+            continue
+        roles = json.loads(spec.extract_config_json).get("roles") or {}
+        for key in _CAL_ROLE_KEYS:
+            exempt.update(str(n).strip().upper() for n in roles.get(key) or [])
+        if spec.split != "dev":
+            for key in ("targets", "phase_cal"):
+                leak_names.update(str(n).strip() for n in roles.get(key) or [] if str(n).strip())
+    names = sorted(n for n in leak_names if n.upper() not in exempt)
+    if not names or not skills_dir.is_dir():
+        return []
+    patterns = {
+        n: re.compile(rf"(?<![\w+-]){re.escape(n)}(?![\w+-])", re.IGNORECASE) for n in names
+    }
+    hits: list[str] = []
+    for md in sorted(skills_dir.rglob("*.md")):
+        text = md.read_text(encoding="utf-8", errors="replace")
+        hits.extend(f"{md}: {n}" for n, pat in patterns.items() if pat.search(text))
+    return hits
 
 
 def build_all_tasks(
@@ -1217,6 +1312,13 @@ def build_all_tasks(
         specs = load_suite_tasks(suites_dir=suites_dir, cfg=resolved_cfg)
         if not specs:
             raise FileNotFoundError("No tasks loaded from suites/*/suite.toml")
+
+    for _p_cfg, p_skills_dir, _p_sha in pack_bundles:
+        leaks = find_split_leakage(specs, p_skills_dir)
+        if leaks:
+            raise ValueError(
+                "Reference/held-out dataset names found in exported skills:\n" + "\n".join(leaks)
+            )
 
     eff_output_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(eff_output_dir, 0o755)

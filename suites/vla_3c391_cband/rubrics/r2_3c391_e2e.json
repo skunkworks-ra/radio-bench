@@ -218,11 +218,10 @@
                 "params": { "expected": true }
               },
               {
-                "observable": "cal.verifier_tclean_offsource_rms_jy",
+                "observable": "cal.verifier_tclean_rms_over_thermal_floor",
                 "primitive": "threshold_gate",
-                "label": "Verifier tclean Off-Source RMS (Jy/beam)",
-                "unit": "Jy/beam",
-                "params": { "op": ">=", "limit": 0.00008 }
+                "label": "Verifier RMS / thermal floor",
+                "params": { "op": ">=", "limit": 1.0, "pass_if_not_applicable": true }
               },
               {
                 "observable": "cal.verifier_tclean_offsource_mad_over_rms",
@@ -321,13 +320,10 @@
                 }
               },
               {
-                "observable": "image.offsource_residual_rms_jy",
+                "observable": "image.offsource_rms_over_thermal_floor",
                 "primitive": "threshold_gate",
-                "params": {
-                  "op": ">=",
-                  "limit_key": "tolerances.off_source_residual_rms_min_jy_per_beam",
-                  "limit": 0.00008
-                }
+                "label": "Residual RMS / thermal floor",
+                "params": { "op": ">=", "limit": 1.0, "pass_if_not_applicable": true }
               },
               {
                 "observable": "image.offsource_residual_mad_over_rms",
@@ -387,13 +383,10 @@
                 "params": { "expected": true }
               },
               {
-                "observable": "image.offsource_residual_rms_jy",
+                "observable": "image.offsource_rms_over_thermal_floor",
                 "primitive": "threshold_gate",
-                "params": {
-                  "op": ">=",
-                  "limit_key": "tolerances.off_source_residual_rms_min_jy_per_beam",
-                  "limit": 0.00008
-                }
+                "label": "Residual RMS / thermal floor",
+                "params": { "op": ">=", "limit": 1.0, "pass_if_not_applicable": true }
               },
               {
                 "observable": "image.offsource_residual_mad_over_rms",

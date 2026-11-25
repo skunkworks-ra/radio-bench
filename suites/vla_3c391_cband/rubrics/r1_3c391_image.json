@@ -96,19 +96,28 @@
             }
           },
           {
-            "observable": "image.offsource_residual_rms_jy",
+            "observable": "image.offsource_rms_over_thermal_floor",
             "primitive": "threshold_gate",
-            "params": {
-              "op": ">=",
-              "limit_key": "tolerances.off_source_residual_rms_min_jy_per_beam",
-              "limit": 0.00008
-            }
+            "label": "Residual RMS / thermal floor",
+            "params": { "op": ">=", "limit": 1.0, "pass_if_not_applicable": true }
           },
           {
             "observable": "image.offsource_residual_mad_over_rms",
             "primitive": "threshold_gate",
             "label": "Off-Source Residual MAD/RMS",
             "params": { "op": ">=", "limit": 0.50 }
+          },
+          {
+            "observable": "image.target_row_retention",
+            "primitive": "window_ramp",
+            "label": "Target Retention vs Delivered Input",
+            "params": {
+              "min_key": "tolerances.image_target_retention_min",
+              "max_key": "tolerances.image_target_retention_max",
+              "pad_low": 0.30,
+              "pad_high": 0.08,
+              "strict_positive": true
+            }
           }
         ]
       }
@@ -162,13 +171,10 @@
             "params": { "expected": true }
           },
           {
-            "observable": "image.offsource_residual_rms_jy",
+            "observable": "image.offsource_rms_over_thermal_floor",
             "primitive": "threshold_gate",
-            "params": {
-              "op": ">=",
-              "limit_key": "tolerances.off_source_residual_rms_min_jy_per_beam",
-              "limit": 0.00008
-            }
+            "label": "Residual RMS / thermal floor",
+            "params": { "op": ">=", "limit": 1.0, "pass_if_not_applicable": true }
           },
           {
             "observable": "image.offsource_residual_mad_over_rms",

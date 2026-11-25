@@ -20,6 +20,7 @@ from radio_bench.grading.extractors.common import (
     discover_fluxscale_from_caltables,
     has_active_table_lock,
     iter_ddid_chunks,
+    natural_thermal_noise_jy,
     open_ro_table,
     parse_sky_coord_rad,
     read_ddid_to_spw_map,
@@ -28,6 +29,7 @@ from radio_bench.grading.extractors.common import (
     resolve_field_id_by_name,
     resolve_field_ids_by_names,
     resolve_scratch_root,
+    thermal_floor_ratio,
     verify_pb_taper,
 )
 from radio_bench.grading.schema import ExtractConfig, ObservableRecord, finite_observable
@@ -868,16 +870,19 @@ def _verifier_tclean_child_entry(payload_json_path: str) -> None:
                             )
                             break
                     b_major_arcsec: float | None = None
+                    b_minor_arcsec: float | None = None
                     with contextlib.suppress(Exception):
                         rb = ia.restoringbeam()
                         if isinstance(rb, dict) and "major" in rb:
                             b_major_arcsec = float(qa.convert(rb["major"], "arcsec")["value"])
+                            b_minor_arcsec = float(qa.convert(rb["minor"], "arcsec")["value"])
                     wcs_info = {
                         "refpix": refpix,
                         "refval": [rv0, rv1],
                         "inc": [ic0, ic1],
                         "freq_hz": freq_hz,
                         "b_major_arcsec": b_major_arcsec,
+                        "b_minor_arcsec": b_minor_arcsec,
                     }
                 return arr.astype(np.float64).copy(), msk.astype(bool).copy(), wcs_info
             finally:
@@ -998,6 +1003,13 @@ def _verifier_tclean_child_entry(payload_json_path: str) -> None:
             off_mask = pb_valid
 
         off_vals = res_arr[off_mask]
+        n_off_beams: float | None = None
+        if wcs is not None and wcs.get("b_major_arcsec") and wcs.get("b_minor_arcsec"):
+            beam_pix = (math.pi * float(wcs["b_major_arcsec"]) * float(wcs["b_minor_arcsec"])) / (
+                4.0 * math.log(2.0) * cell_arcsec * cell_arcsec
+            )
+            if beam_pix > 0.0:
+                n_off_beams = float(np.sum(off_mask)) / beam_pix
         off_rms_jy = float(np.sqrt(np.mean(off_vals**2)))
         off_med = float(np.median(off_vals))
         off_mad_std_jy = float(1.4826 * np.median(np.abs(off_vals - off_med)))
@@ -1031,6 +1043,7 @@ def _verifier_tclean_child_entry(payload_json_path: str) -> None:
                     else None,
                     "verifier_tclean_dynamic_range": round(dr, 3) if dr is not None else None,
                     "verifier_tclean_pb_valid": pb_both_ok,
+                    "verifier_tclean_offsource_n_beams": n_off_beams,
                 }
             ),
             encoding="utf-8",
@@ -1203,6 +1216,7 @@ def extract_calibrate(
         ("cal.verifier_tclean_peak_jy", "Jy/beam"),
         ("cal.verifier_tclean_offsource_rms_jy", "Jy/beam"),
         ("cal.verifier_tclean_offsource_mad_over_rms", None),
+        ("cal.verifier_tclean_rms_over_thermal_floor", None),
         ("cal.verifier_tclean_pb_valid", None),
     )
 
@@ -1592,5 +1606,22 @@ def extract_calibrate(
                 provenance="verifier_tclean",
                 missing_status="extractor_error",
             )
+
+    floor_ratio: float | None = None
+    if ran_tclean and target_fids:
+        try:
+            sigma_nat_jy, _ = natural_thermal_noise_jy(input_ms, target_fids)
+            floor_ratio = thermal_floor_ratio(
+                tclean_info.get("verifier_tclean_offsource_rms_jy"),
+                sigma_nat_jy,
+                tclean_info.get("verifier_tclean_offsource_n_beams"),
+            )
+        except Exception as exc:
+            errors.append(f"Thermal noise estimate failed: {type(exc).__name__}: {exc}")
+    obs["cal.verifier_tclean_rms_over_thermal_floor"] = (
+        finite_observable(floor_ratio, provenance="verifier_tclean vs input.ms")
+        if floor_ratio is not None
+        else ObservableRecord(value=None, status="not_applicable")
+    )
 
     return obs, errors

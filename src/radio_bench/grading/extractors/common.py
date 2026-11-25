@@ -900,3 +900,148 @@ def parse_stage_manifest(
         value=None, status="missing_artifact", provenance="stage_output.json"
     )
     return None, None, obs, errors
+
+
+# CASA Stokes codes for the parallel hands: RR, LL, XX, YY.
+_PARALLEL_HAND_CORR_TYPES = frozenset({5, 8, 9, 12})
+
+
+def natural_thermal_noise_jy(
+    ms_path: Path,
+    field_ids: list[int],
+    *,
+    chunk_size: int = 20_000,
+    max_diff_samples: int = 4_000_000,
+) -> tuple[float | None, dict[str, Any]]:
+    """Natural-weighting Stokes I image noise implied by the MS's own unflagged visibilities.
+
+    `sigma = sqrt(c / sum(w))` over unflagged parallel-hand samples, where `c` is the
+    per-unit-weight variance of one real visibility component, estimated robustly (MAD) from
+    weight-normalised adjacent-channel differences. No weighting scheme can beat natural
+    weighting, so this is a lower bound on any Stokes I image noise made from these data.
+    """
+    info: dict[str, Any] = {"n_samples": 0, "n_diff": 0, "column": None, "weight_column": None}
+    if not field_ids or not (ms_path / "table.dat").is_file():
+        return None, info
+
+    with open_ro_table(ms_path / "DATA_DESCRIPTION") as dd:
+        ddid_pol = [int(x) for x in dd.getcol("POLARIZATION_ID")]
+    with open_ro_table(ms_path / "POLARIZATION") as pt:
+        pol_corr = [
+            [int(c) for c in np.asarray(pt.getcell("CORR_TYPE", i)).ravel()]
+            for i in range(int(pt.nrows()))
+        ]
+
+    sum_w = 0.0
+    n_samples = 0
+    diff_vals: list[np.ndarray] = []
+    with open_ro_table(ms_path) as tb:
+        cols = set(tb.colnames())
+        data_col = "CORRECTED_DATA" if "CORRECTED_DATA" in cols else "DATA"
+        use_ws = "WEIGHT_SPECTRUM" in cols
+        if use_ws:
+            with contextlib.suppress(Exception):
+                use_ws = bool(tb.iscelldefined("WEIGHT_SPECTRUM", 0))
+        info["column"] = data_col
+        info["weight_column"] = "WEIGHT_SPECTRUM" if use_ws else "WEIGHT"
+        fid_list = ",".join(str(int(f)) for f in field_ids)
+        sel = tb.query(f"FIELD_ID IN [{fid_list}] && !FLAG_ROW && ANTENNA1 != ANTENNA2")
+        try:
+            total_rows = int(sel.nrows())
+        finally:
+            with contextlib.suppress(Exception):
+                sel.close()
+            with contextlib.suppress(Exception):
+                sel.done()
+        if total_rows == 0:
+            return None, info
+        wcol = "WEIGHT_SPECTRUM" if use_ws else "WEIGHT"
+        for chunk in iter_ddid_chunks(
+            tb,
+            (data_col, "FLAG", wcol),
+            query_expr=f"FIELD_ID IN [{fid_list}] && !FLAG_ROW && ANTENNA1 != ANTENNA2",
+            chunk_size=chunk_size,
+        ):
+            corr = pol_corr[ddid_pol[chunk.ddid]]
+            keep = [i for i, c in enumerate(corr) if c in _PARALLEL_HAND_CORR_TYPES]
+            if not keep:
+                continue
+            vis = chunk.columns[data_col][keep]
+            flg = chunk.columns["FLAG"][keep]
+            w = np.asarray(chunk.columns[wcol], dtype=np.float64)
+            w = w[keep] if use_ws else np.broadcast_to(w[keep][:, None, :], vis.shape)
+            good = (~flg) & (w > 0.0) & np.isfinite(vis.real) & np.isfinite(vis.imag)
+            sum_w += float(np.sum(w[good]))
+            n_samples += int(np.count_nonzero(good))
+            if vis.shape[1] < 2:
+                continue
+            pair = good[:, 1:, :] & good[:, :-1, :]
+            if not np.any(pair):
+                continue
+            var_norm = 1.0 / np.where(w[:, 1:, :] > 0, w[:, 1:, :], np.inf) + 1.0 / np.where(
+                w[:, :-1, :] > 0, w[:, :-1, :], np.inf
+            )
+            z = (vis[:, 1:, :] - vis[:, :-1, :])[pair] / np.sqrt(var_norm[pair])
+            budget = max(1, int(max_diff_samples * chunk.nrow / max(total_rows, 1)))
+            stride = max(1, z.size // budget)
+            z = z[::stride]
+            diff_vals.append(np.concatenate([z.real, z.imag]))
+
+    info["n_samples"] = n_samples
+    if sum_w <= 0.0 or not diff_vals:
+        return None, info
+    d = np.concatenate(diff_vals)
+    info["n_diff"] = int(d.size)
+    if d.size < 1000:
+        return None, info
+    c = (1.4826 * float(np.median(np.abs(d - np.median(d))))) ** 2
+    sigma = math.sqrt(c / sum_w)
+    return (sigma if math.isfinite(sigma) and sigma > 0.0 else None), info
+
+
+def thermal_floor_ratio(
+    offsource_rms_jy: float | None, sigma_nat_jy: float | None, n_offsource_beams: float | None
+) -> float | None:
+    """Off-source residual rms over the natural-weighting thermal floor.
+
+    The floor allows three standard errors of the rms estimate itself,
+    `sigma_nat * (1 - 3 / sqrt(2 * n_beams))`. A ratio below 1 is physically impossible.
+    """
+    if not offsource_rms_jy or not sigma_nat_jy or not n_offsource_beams:
+        return None
+    if n_offsource_beams <= 4.5:
+        return None
+    floor = sigma_nat_jy * (1.0 - 3.0 / math.sqrt(2.0 * n_offsource_beams))
+    if floor <= 0.0:
+        return None
+    return float(offsource_rms_jy / floor)
+
+
+def target_parallel_hand_retention(
+    ms_path: Path, field_ids: list[int], *, exclude_ant_ids: list[int] | None = None
+) -> float | None:
+    """Unflagged fraction of parallel-hand cells on target cross-correlations.
+
+    Same definition as `cal.target_row_retention`: first and last correlation, FLAG or FLAG_ROW.
+    """
+    if not field_ids or not (ms_path / "table.dat").is_file():
+        return None
+    unflg = 0
+    total = 0
+    with open_ro_table(ms_path) as tb:
+        fids = np.asarray(tb.getcol("FIELD_ID"), dtype=np.int64)
+        a1 = np.asarray(tb.getcol("ANTENNA1"), dtype=np.int64)
+        a2 = np.asarray(tb.getcol("ANTENNA2"), dtype=np.int64)
+        tgt = np.isin(fids, field_ids) & (a1 != a2)
+        if exclude_ant_ids:
+            tgt &= ~np.isin(a1, exclude_ant_ids) & ~np.isin(a2, exclude_ant_ids)
+        for chunk in iter_ddid_chunks(tb, ("FLAG", "FLAG_ROW"), include_rownumbers=True):
+            sel = tgt[chunk.rownumbers]
+            if not np.any(sel):
+                continue
+            flg = chunk.columns["FLAG"].astype(bool)
+            p_idx = [0, flg.shape[0] - 1] if flg.shape[0] >= 2 else [0]
+            eff = flg[p_idx][:, :, sel] | chunk.columns["FLAG_ROW"].astype(bool)[sel][None, None, :]
+            unflg += int(np.sum(~eff))
+            total += int(eff.size)
+    return float(unflg / total) if total > 0 else None

@@ -303,6 +303,12 @@ class ObservableRecord(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# Dataset tiers. dev: capability development, traces are read. reference: public walkthrough
+# (CASA Guide, VLA pipeline) with a human-verified result; likely known to the LLM, never used to
+# drive skill edits. held_out: no public walkthrough, not seen by the LLM, run once per frozen pack.
+SplitTier = Literal["dev", "reference", "held_out"]
+
+
 class ArchiveSpec(BaseModel):
     """Archival tarball checksum entry in `[suite.archives]`."""
 
@@ -320,7 +326,7 @@ class SuiteInfoSpec(BaseModel):
 
     suite_id: str
     legacy_suite_alias: str | None = None
-    split: Literal["dev", "held_out"] = "dev"
+    split: SplitTier = "dev"
     telescope: str = "VLA"
     band: str = ""
     pol_basis: Literal["circular", "linear"] = "circular"
@@ -542,7 +548,7 @@ class ExtractConfig(BaseModel):
 
     schema_version: Literal["0.2"] = "0.2"
     suite_id: str
-    split: Literal["dev", "held_out"] = "dev"
+    split: SplitTier = "dev"
     telescope: str = "VLA"
     pol_basis: Literal["circular", "linear"] = "circular"
     stages: list[str]
@@ -722,7 +728,16 @@ ALLOWED_PRIMITIVE_PARAMS: dict[str, frozenset[str]] = {
         }
     ),
     "threshold_gate": frozenset(
-        {"op", "limit", "limit_key", "scale", "mult_key", "use_abs", "truth_key"}
+        {
+            "op",
+            "limit",
+            "limit_key",
+            "scale",
+            "mult_key",
+            "use_abs",
+            "truth_key",
+            "pass_if_not_applicable",
+        }
     ),
 }
 

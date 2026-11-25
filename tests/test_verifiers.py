@@ -705,12 +705,33 @@ def test_image_golden_both_suites(synth_golden_image_dir: Path, tmp_path: Path) 
     for p in (R3C391_ROOT / "reference_image").iterdir():
         os.symlink(p, ws_r1 / p.name)
 
+    # Mirror a compiled task: delivered input.ms in the workspace, retention window in ground truth.
+    from radio_bench.build_tasks import add_image_retention_window
+    from radio_bench.grading.extractors.common import (
+        resolve_field_ids_by_names,
+        target_parallel_hand_retention,
+    )
+
+    in_ms = R3C391_ROOT / "post_calibrate" / "input.ms"
+    os.symlink(in_ms, ws_r1 / "input.ms")
+    gt_r1 = _load_gt(R3C391_ROOT / "r1_3c391_image" / "ground_truth.json")
+    import tomllib
+
+    suite_toml = Path(__file__).parents[1] / "suites" / "vla_3c391_cband" / "suite.toml"
+    tgt = tomllib.loads(suite_toml.read_text(encoding="utf-8"))["roles"]["targets"]
+    ret_in = target_parallel_hand_retention(in_ms, resolve_field_ids_by_names(in_ms, tgt))
+    tests_r1 = tmp_path / "tests_r1_img"
+    tests_r1.mkdir()
+    (tests_r1 / "ground_truth.json").write_text(
+        json.dumps(add_image_retention_window(gt_r1, ret_in), indent=2) + "\n", encoding="utf-8"
+    )
+
     log_r1 = tmp_path / "log_r1_img"
     rew_r1, met_r1 = grade_task(
         "r1_3c391_image",
         "image",
         ws_r1,
-        R3C391_ROOT / "r1_3c391_image",
+        tests_r1,
         log_r1,
     )
     _parse_with_harbor(log_r1 / "reward.json")
